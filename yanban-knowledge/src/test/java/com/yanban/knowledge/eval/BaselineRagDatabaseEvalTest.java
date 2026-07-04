@@ -122,6 +122,23 @@ class BaselineRagDatabaseEvalTest {
                 .sourceType()).isEqualTo("PAPER_POLISHED");
     }
 
+    @Test
+    void databaseBaselineNeverInjectsArchivedDocuments() {
+        KbDocument archived = new KbDocument(101L, "archived-note.md", "READY", false);
+        archived.setSourceType("LAB_NOTE");
+        archived.setVersionStatus("ARCHIVED");
+        KbDocument saved = documents.saveAndFlush(archived);
+        chunks.saveAndFlush(new KbChunk(saved.getId(), 0, "archived-only-calibration-token"));
+
+        SimpleKnowledgeSearchService searchService = new SimpleKnowledgeSearchService(chunks, documents);
+
+        assertThat(searchService.search("archived-only-calibration-token", 101L, 10)).isEmpty();
+        assertThat(searchService.search(
+                "archived-only-calibration-token",
+                new KnowledgeSearchOptions(101L, 10, null, true)
+        )).isEmpty();
+    }
+
     private Map<Long, Long> seedDocuments(RagSpikeFixtureLoader loader,
                                           List<RagSpikeDocumentFixture> fixtureDocuments) throws Exception {
         Map<Long, Long> savedIdByFixtureId = new LinkedHashMap<>();
