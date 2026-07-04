@@ -2,11 +2,12 @@ package com.yanban.api.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yanban.api.memory.LongTermMemoryRetrievalService;
+import com.yanban.api.observability.TraceIdFilter;
 import com.yanban.api.settings.SysUserSettings;
 import com.yanban.api.settings.UserSettingsService;
 import com.yanban.api.skills.ResolvedSkill;
 import com.yanban.api.skills.SkillsService;
-import com.yanban.api.observability.TraceIdFilter;
 import com.yanban.core.agent.AgentMessage;
 import com.yanban.core.agent.AgentMessageRepository;
 import com.yanban.core.agent.AgentSession;
@@ -66,6 +67,7 @@ public class AgentService {
     private final AgentContextBuilder agentContextBuilder;
     private final AgentContextSnapshotService contextSnapshotService;
     private final AgentSessionSummaryService sessionSummaryService;
+    private final LongTermMemoryRetrievalService longTermMemoryRetrievalService;
     private final ChatModelProvider titleModelProvider;
     private final UserAccountPolicy accountPolicy;
 
@@ -82,6 +84,7 @@ public class AgentService {
                         AgentContextBuilder agentContextBuilder,
                         AgentContextSnapshotService contextSnapshotService,
                         AgentSessionSummaryService sessionSummaryService,
+                        LongTermMemoryRetrievalService longTermMemoryRetrievalService,
                         @Qualifier("chatModelProvider") ChatModelProvider titleModelProvider,
                         UserAccountPolicy accountPolicy) {
         this.sessions = sessions;
@@ -97,6 +100,7 @@ public class AgentService {
         this.agentContextBuilder = agentContextBuilder;
         this.contextSnapshotService = contextSnapshotService;
         this.sessionSummaryService = sessionSummaryService;
+        this.longTermMemoryRetrievalService = longTermMemoryRetrievalService;
         this.titleModelProvider = titleModelProvider;
         this.accountPolicy = accountPolicy;
     }
@@ -223,6 +227,9 @@ public class AgentService {
                 endpoint.providerKey(),
                 endpoint.modelName(),
                 loadSessionSummaryText(session.getId(), userId),
+                loadLongTermMemoryContext(userId, request.content()),
+                null,
+                null,
                 null,
                 null
         ));
@@ -385,6 +392,15 @@ public class AgentService {
         } catch (Exception ex) {
             log.warn("Failed to load agent session summary sessionId={} userId={}", sessionId, userId, ex);
             return null;
+        }
+    }
+
+    private AgentLongTermMemoryContext loadLongTermMemoryContext(Long userId, String content) {
+        try {
+            return longTermMemoryRetrievalService.retrieve(userId, content);
+        } catch (Exception ex) {
+            log.warn("Failed to retrieve long-term memory context userId={}", userId, ex);
+            return AgentLongTermMemoryContext.empty();
         }
     }
 

@@ -43,11 +43,13 @@ public class AgentContextBuilder {
         List<ChatMessage> contextMessages = new ArrayList<>();
 
         ChatMessage summaryMessage = buildContextMessage("Session summary", request.sessionSummary());
+        ChatMessage longTermMemoryMessage = buildContextMessage("Long-term memory", contextContent(request.longTermMemoryContext()));
         ChatMessage ragMessage = buildContextMessage("RAG context", request.ragContext());
         ChatMessage toolTraceMessage = buildContextMessage("Tool trace context", request.toolTraceContext());
         ChatMessage identityGuard = ChatMessage.system(buildRuntimeIdentityPrompt(request.providerKey(), request.modelName()));
         int maxCharacters = safeMaxCharacters(request.maxContextCharacters());
         int reservedCharacters = estimateCharacters(summaryMessage)
+                + estimateCharacters(longTermMemoryMessage)
                 + estimateCharacters(ragMessage)
                 + estimateCharacters(toolTraceMessage)
                 + estimateCharacters(identityGuard);
@@ -56,6 +58,20 @@ public class AgentContextBuilder {
         if (summaryMessage != null) {
             contextMessages.add(summaryMessage);
             sections.add(section("session_summary", 1, estimateCharacters(summaryMessage), "Optional rolling session summary."));
+        }
+        if (longTermMemoryMessage != null) {
+            AgentLongTermMemoryContext memoryContext = request.longTermMemoryContext();
+            contextMessages.add(longTermMemoryMessage);
+            sections.add(section("long_term_memory",
+                    memoryContext == null ? 1 : Math.max(0, memoryContext.hitCount()),
+                    estimateCharacters(longTermMemoryMessage),
+                    memoryContext == null || !StringUtils.hasText(memoryContext.note())
+                            ? "Relevant long-term memory prepared outside the builder."
+                            : memoryContext.note()));
+            if (memoryContext != null && memoryContext.omittedCount() > 0) {
+                droppedItems.add(new AgentContextDroppedItem("long_term_memory", memoryContext.omittedCount(),
+                        "Dropped by long-term memory context budget or relevance threshold."));
+            }
         }
         if (ragMessage != null) {
             contextMessages.add(ragMessage);
@@ -179,6 +195,10 @@ public class AgentContextBuilder {
             return null;
         }
         return ChatMessage.system(label + ":\n" + content.trim());
+    }
+
+    private String contextContent(AgentLongTermMemoryContext context) {
+        return context == null ? null : context.content();
     }
 
     private List<ChatMessage> normalizeHistoryForModel(Long sessionId, List<ChatMessage> history) {
