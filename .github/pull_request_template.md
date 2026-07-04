@@ -1,38 +1,37 @@
-## Summary
+## 摘要
 
-Describe the change in one or two short paragraphs.
+用一到两个短段落说明本 PR 做了什么。
 
-## Linked issue
+## 关联 issue
 
 Closes #
 
-## Phase
+## 阶段
 
-Example: Phase 1 - Development Process Baseline
+示例：Phase 1 - Development Process Baseline
 
-## Scope
+## 范围
 
-- [ ] The PR has one primary goal.
-- [ ] Non-goals from the issue were not implemented.
-- [ ] The change follows `memory-bank/agent-product-reconstruction-roadmap.md`.
-- [ ] User-visible behavior is described when applicable.
+- [ ] 本 PR 只有一个主要目标。
+- [ ] 没有实现 issue 中列出的非目标。
+- [ ] 本 PR 遵循 `memory-bank/agent-product-reconstruction-roadmap.md`。
+- [ ] 如涉及用户可见行为，已说明行为变化。
 
-## Compatibility and rollback
+## 兼容性和回滚
 
-- [ ] Existing APIs, data, UI flows, or docs remain compatible, or migration is explained.
-- [ ] Rollback or disablement is documented for risky changes.
+- [ ] 现有 API、数据、UI 流程或文档保持兼容，或已说明迁移方式。
+- [ ] 对有风险的改动，已说明回滚或关闭方式。
 
-## Verification
+## 验证
 
-Record exact commands and results.
+记录精确命令和结果。
 
 - [ ] `git diff --check`
-- [ ] Backend tests or focused Maven command:
-- [ ] Frontend build or focused command:
-- [ ] Agent/RAG eval when applicable:
-- [ ] Manual verification when applicable:
+- [ ] 后端测试或 focused Maven 命令：
+- [ ] 前端 build 或 focused 命令：
+- [ ] 必要时执行 Agent/RAG eval：
+- [ ] 必要时执行手动验证：
 
-## Notes for reviewers
+## 给审核者的说明
 
-Call out risks, skipped checks, follow-up issues, or intentionally deferred work.
-
+说明风险、跳过的检查、后续 issue，或有意延后的工作。

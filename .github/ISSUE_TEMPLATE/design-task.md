@@ -1,50 +1,49 @@
 ---
-name: Design task
-about: Architecture, lifecycle, protocol, or spike planning before implementation
+name: 设计任务
+about: 用于实现前的架构、生命周期、协议或 spike 规划
 title: ""
 labels: ""
 assignees: ""
 ---
 
-## Background
+## 背景
 
-What problem or roadmap phase requires this design?
+说明哪个问题或 roadmap 阶段需要这份设计。
 
-## Decision needed
+## 需要决策的问题
 
-What concrete decision should this design produce?
+这份设计需要产出什么明确结论？
 
-## Scope
+## 范围
 
-What systems, modules, data models, APIs, UI states, or evals are included?
+本设计覆盖哪些系统、模块、数据模型、API、UI 状态或 eval？
 
-## Non-goals
+## 非目标
 
-What must remain out of scope?
+哪些内容必须保持在范围之外？
 
-## Current system notes
+## 当前系统现状
 
-Summarize relevant existing code paths, tables, APIs, events, tests, and known constraints.
+总结相关现有代码路径、表结构、API、事件、测试和已知约束。
 
-## Proposed design
+## 设计方案
 
-Describe the proposal with lifecycle states, data ownership, compatibility strategy, failure handling, and rollout path where relevant.
+描述方案。必要时说明生命周期状态、数据归属、兼容策略、失败处理和发布路径。
 
-## Alternatives considered
+## 备选方案
 
-List meaningful alternatives and why they are not the default.
+列出有意义的备选方案，并说明为什么不作为默认方案。
 
-## Acceptance criteria
+## 验收标准
 
-- [ ] The design answers the decision needed.
-- [ ] Compatibility with existing behavior is addressed.
-- [ ] Risks and rollback path are documented.
-- [ ] Follow-up implementation issues can be split from this design.
+- [ ] 设计回答了需要决策的问题。
+- [ ] 已说明如何兼容现有行为。
+- [ ] 已记录风险和回滚路径。
+- [ ] 可以从该设计继续拆分后续实现 issue。
 
-## Review checklist
+## 评审清单
 
-- [ ] Does not jump ahead of the current roadmap phase.
-- [ ] Does not replace working systems without a migration path.
-- [ ] Preserves user experience and task stability.
-- [ ] Defines tests or evals needed before implementation.
-
+- [ ] 没有跳过当前 roadmap 阶段。
+- [ ] 没有在缺少迁移路径时直接替换可用系统。
+- [ ] 保持用户体验和任务稳定性。
+- [ ] 已定义实现前需要的测试或 eval。

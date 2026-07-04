@@ -1,51 +1,50 @@
 ---
-name: Phase task
-about: Scoped implementation, design, spike, or documentation work
+name: 阶段任务
+about: 用于拆分实现、设计、spike 或文档类任务
 title: ""
 labels: ""
 assignees: ""
 ---
 
-## Background
+## 背景
 
-Link the roadmap section or previous issue that motivates this work.
+说明本任务来自 roadmap 的哪一节，或由哪个前置 issue 推动。
 
-## Phase
+## 阶段
 
-Example: Phase 1 - Development Process Baseline
+示例：Phase 1 - Development Process Baseline
 
-## Goal
+## 目标
 
-Describe the single outcome this issue must achieve.
+描述本 issue 必须完成的单一结果。
 
-## Non-goals
+## 非目标
 
-List work that must not be included in this issue.
+列出本 issue 明确不做的内容，防止范围膨胀。
 
-## Impacted modules
+## 影响模块
 
-List affected modules, packages, pages, docs, migrations, or tools.
+列出受影响的模块、package、页面、文档、migration 或工具。
 
-## Design notes
+## 设计说明
 
-Summarize the proposed approach. For runtime, RAG, memory, task, event, database, or frontend-state changes, include the relevant boundary and compatibility notes before implementation begins.
+简要说明实现思路。涉及 runtime、RAG、memory、任务、事件、数据库或前端状态机时，必须先说明边界、兼容策略和迁移方式。
 
-## Acceptance criteria
+## 验收标准
 
-- [ ] The issue goal is satisfied.
-- [ ] Non-goals were not implemented.
-- [ ] User-visible behavior is clear and stable.
-- [ ] Existing behavior remains compatible, or migration/rollback is documented.
+- [ ] issue 目标已完成。
+- [ ] 没有实现非目标内容。
+- [ ] 用户可见行为清晰、稳定。
+- [ ] 现有行为保持兼容，或已说明迁移/回滚方式。
 
-## Tests
+## 测试
 
-List the exact verification commands or evals required for this issue.
+列出本 issue 需要执行的精确验证命令或 eval。
 
-## Risks
+## 风险
 
-List behavior, data, migration, reliability, UX, and rollout risks.
+列出行为、数据、迁移、稳定性、用户体验和发布风险。
 
-## Rollback plan
+## 回滚方案
 
-Describe how to revert the change or disable the new behavior safely.
-
+说明如何安全撤回改动，或如何关闭新行为。
