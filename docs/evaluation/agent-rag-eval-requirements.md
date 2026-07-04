@@ -1,46 +1,46 @@
-# Agent and RAG Eval Requirements
+# Agent 和 RAG 评测要求
 
-Traditional unit tests are necessary, but they are not sufficient for Agent, RAG, paper polishing, literature recommendation, memory, or tool-calling changes.
+传统单元测试是必要的，但不足以验证 Agent、RAG、论文润色、文献推荐、长期记忆和工具调用能力。
 
-This document defines the minimum eval expectations for changes that can affect model behavior or retrieval quality.
+本文档定义会影响模型行为或检索质量的改动所需的最低 eval 要求。
 
-## When Evals Are Required
+## 什么时候必须做 eval
 
-Run or define eval cases when a PR changes any of the following:
+当 PR 修改以下内容时，必须运行或定义 eval cases：
 
-1. Agent runtime, Harness loop, strategy selection, planning, reflection, or tool policy.
-2. RAG retrieval, chunking, embedding, reranking, context assembly, or citation formatting.
-3. Literature search, literature card deduplication, ranking, or BibTeX handling.
-4. Paper polishing prompts, section rewriting, review, repair, or citation insertion.
-5. Long-term memory extraction, retrieval, update, deletion, or context injection.
-6. Streaming/event behavior that can produce duplicate final answers or confusing trace output.
-7. Tool definitions, tool schemas, tool result normalization, retry behavior, or permissions.
+1. Agent runtime、Harness loop、策略选择、planning、reflection 或工具策略。
+2. RAG 检索、切块、embedding、rerank、上下文组装或引用格式。
+3. 文献检索、文献卡片去重、排序或 BibTeX 处理。
+4. 论文润色 prompt、章节改写、review、repair 或引用插入。
+5. 长期记忆抽取、检索、更新、删除或上下文注入。
+6. 可能导致重复最终回答或 trace 输出混乱的流式/事件行为。
+7. 工具定义、工具 schema、工具结果归一化、重试行为或权限。
 
-Docs-only and pure UI styling changes do not require Agent/RAG evals unless they change user-visible task behavior.
+仅文档变更和纯 UI 样式变更通常不需要 Agent/RAG eval，除非它们改变了用户可见的任务行为。
 
-## Minimum Eval Categories
+## 最低 eval 类别
 
-### Tool Selection
+### 工具选择
 
-Check that the Agent:
+检查 Agent 是否：
 
-1. Calls the correct tool when a tool is needed.
-2. Avoids tool calls when direct answering is enough.
-3. Does not loop indefinitely.
-4. Respects tool budget and risk policy.
-5. Produces one final user-visible answer.
+1. 在需要工具时调用正确工具。
+2. 在直接回答足够时避免调用工具。
+3. 不会无限循环。
+4. 遵守工具预算和风险策略。
+5. 只生成一个最终用户可见回答。
 
-### RAG Retrieval
+### RAG 检索
 
-Check:
+检查：
 
-1. Relevant snippets appear in the top results.
-2. Cross-user leakage does not occur.
-3. Deleted or superseded documents are excluded.
-4. Active versions are preferred over stale versions.
-5. The answer cites retrieved evidence when evidence is used.
+1. 相关片段出现在 top results 中。
+2. 不发生跨用户数据泄漏。
+3. 已删除或已废弃文档不会被检索。
+4. ACTIVE 版本优先于过时版本。
+5. 回答使用证据时能引用检索到的来源。
 
-Recommended metrics:
+推荐指标：
 
 ```text
 Recall@5
@@ -50,50 +50,50 @@ citation coverage
 source correctness
 ```
 
-### Literature Recommendation
+### 文献推荐
 
-Check:
+检查：
 
-1. Recommended papers are real.
-2. DOI, arXiv ID, URL, venue, year, or source metadata is retained when available.
-3. `.bib` uploads are used for deduplication when provided.
-4. Duplicates are not returned as separate recommendations.
-5. Low-confidence or incomplete metadata is marked clearly.
-6. The model does not fabricate citations.
+1. 推荐论文真实存在。
+2. 有 DOI、arXiv ID、URL、venue、year 或来源元数据时必须保留。
+3. 用户上传 `.bib` 时，推荐结果会和已有文献去重。
+4. 重复文献不会作为多篇独立推荐返回。
+5. 低置信度或元数据不完整的文献会明确标注。
+6. 模型不会编造引用。
 
-### Paper Polishing
+### 论文润色
 
-Check:
+检查：
 
-1. The original meaning is preserved.
-2. Technical claims are not strengthened without evidence.
-3. Formula, citation, label, and LaTeX structure are preserved.
-4. Rewrites are scoped to the requested section or task.
-5. Suggestions are explainable and can be accepted or rejected.
+1. 原意被保留。
+2. 技术 claim 不会在缺少证据时被强化。
+3. 公式、引用、label 和 LaTeX 结构被保留。
+4. 改写范围符合用户请求或任务范围。
+5. 建议可解释，并且能被用户接受或拒绝。
 
-### Memory
+### 长期记忆
 
-Check:
+检查：
 
-1. Only durable, useful facts are written to long-term memory.
-2. Sensitive or accidental data is not stored.
-3. Deleted memory is not retrieved.
-4. Superseded memory is not injected.
-5. Memory injection does not dominate the current user intent.
+1. 只有持久、有用的事实会写入长期记忆。
+2. 敏感或偶然数据不会被存储。
+3. 已删除记忆不会被检索。
+4. 已废弃记忆不会被注入。
+5. 记忆注入不会压过当前用户意图。
 
-### Long-running Tasks and Events
+### 长任务和事件
 
-Check:
+检查：
 
-1. A task id is returned.
-2. Intermediate trace is visible but does not become a chat answer.
-3. Terminal states are clear.
-4. Cancellation does not produce a completed artifact.
-5. Reconnect or refresh does not duplicate the final answer.
+1. 返回 task id。
+2. 中间 trace 可见，但不会变成聊天最终回答。
+3. 终态清晰。
+4. 取消任务不会生成已完成产物。
+5. 重连或刷新不会重复最终回答。
 
-## Eval Case Format
+## Eval case 格式
 
-Use this format until a formal eval runner exists:
+在正式 eval runner 建立前，使用以下格式：
 
 ```text
 Case ID:
@@ -106,7 +106,7 @@ Pass/Fail:
 Notes:
 ```
 
-Example:
+示例：
 
 ```text
 Case ID: RAG-AUTH-001
@@ -119,41 +119,41 @@ Pass/Fail:
 Notes:
 ```
 
-## PR Reporting
+## PR 报告要求
 
-For PRs requiring evals, include:
+需要 eval 的 PR 必须包含：
 
 ```text
-Eval cases run:
+执行的 eval cases:
 - ...
 
-Pass:
+通过:
 - ...
 
-Fail:
+失败:
 - ...
 
-Skipped:
+跳过:
 - ...
 
-Risk:
+风险:
 - ...
 ```
 
-If evals are skipped, explain why. "Model behavior looked okay" is not enough.
+如果跳过 eval，必须说明原因。只写“模型行为看起来正常”是不够的。
 
-## Spike Requirements
+## Spike 要求
 
-For LangChain4j RAG spike work, compare against the current RAG chain using the same sample set.
+LangChain4j RAG spike 必须使用同一批样本，与当前 RAG 链路对照。
 
-A spike result must answer:
+Spike 结论必须回答：
 
-1. Is retrieval quality better, worse, or equivalent?
-2. Is faithfulness better, worse, or equivalent?
-3. Can user/project/version filtering be preserved?
-4. Can citation metadata be preserved?
-5. What integration complexity does LangChain4j add or remove?
-6. Should the project keep current RAG, partially migrate, or stage a replacement?
+1. 检索质量是更好、更差还是相当？
+2. 忠实度是更好、更差还是相当？
+3. 能否保留用户、Project 和版本过滤？
+4. 能否保留引用元数据？
+5. LangChain4j 增加或减少了哪些接入复杂度？
+6. 项目应保留当前 RAG、部分迁移，还是分阶段替换？
 
-The spike must not replace the production RAG chain without a follow-up implementation issue.
+Spike 不得在没有后续实现 issue 的情况下直接替换生产 RAG 链路。
 
