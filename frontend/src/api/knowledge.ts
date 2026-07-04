@@ -71,6 +71,12 @@ export interface KnowledgeSearchResult {
   chunkText: string;
   score: number;
   isPublic: boolean;
+  sourceType: string;
+  versionStatus: string;
+  lineageId: string | null;
+  versionNo: number;
+  projectId: number | null;
+  canonicalKey: string | null;
 }
 
 export function listKbDocuments() {
@@ -119,6 +125,11 @@ export function mergeKbUpload(payload: {
   return http.post<KbDocumentResponse>('/upload/merge', payload);
 }
 
-export function searchKnowledge(payload: { query: string; topK: number }) {
+export function searchKnowledge(payload: {
+  query: string;
+  topK: number;
+  projectId?: number | null;
+  includeSuperseded?: boolean;
+}) {
   return http.post<KnowledgeSearchResult[]>('/search', payload);
 }

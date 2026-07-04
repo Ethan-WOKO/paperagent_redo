@@ -36,35 +36,45 @@ public class SimpleKnowledgeSearchService implements KnowledgeSearchService {
 
     @Override
     public List<KnowledgeSearchResult> search(String query, Long userId, int topK) {
-        if (!StringUtils.hasText(query) || topK <= 0) {
+        return search(query, KnowledgeSearchOptions.activeOnly(userId, topK));
+    }
+
+    @Override
+    public List<KnowledgeSearchResult> search(String query, KnowledgeSearchOptions options) {
+        if (!StringUtils.hasText(query) || options == null || options.topK() <= 0) {
             return List.of();
         }
+        int topK = options.topK();
         int candidateLimit = Math.max(topK, Math.min(50, topK * 4));
         List<String> queryVariants = KnowledgeQueryVariants.expand(query);
-        List<KbChunk> found = searchVariants(queryVariants, userId, candidateLimit);
+        List<KbChunk> found = searchVariants(queryVariants, options, candidateLimit);
         List<KnowledgeSearchResult> results = new ArrayList<>();
         for (KbChunk chunk : found) {
             KbDocument document = documents.findById(chunk.getDocumentId()).orElse(null);
-            if (document == null) {
+            if (!KnowledgeDocumentSearchPolicy.canInject(document, options)) {
                 continue;
             }
-            results.add(new KnowledgeSearchResult(
-                    document.getId(),
-                    document.getFilename(),
+            results.add(KnowledgeDocumentSearchPolicy.toResult(
+                    document,
                     chunk.getChunkIndex(),
                     chunk.getChunkText(),
-                    score(chunk.getChunkText(), queryVariants),
-                    Boolean.TRUE.equals(document.getIsPublic())
+                    score(chunk.getChunkText(), queryVariants)
             ));
         }
         return reranker.rerank(query, results, topK);
     }
 
-    private List<KbChunk> searchVariants(List<String> queryVariants, Long userId, int candidateLimit) {
+    private List<KbChunk> searchVariants(List<String> queryVariants, KnowledgeSearchOptions options, int candidateLimit) {
         List<KbChunk> found = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (String variant : queryVariants) {
-            List<KbChunk> variantHits = chunks.searchAccessibleChunks(variant, userId, PageRequest.of(0, candidateLimit));
+            List<KbChunk> variantHits = chunks.searchAccessibleVersionedChunks(
+                    variant,
+                    options.userId(),
+                    options.projectId(),
+                    options.includeSuperseded(),
+                    PageRequest.of(0, candidateLimit)
+            );
             if (variantHits == null) {
                 continue;
             }

@@ -20,6 +20,12 @@ public class KnowledgeSearchServiceContentRetriever implements ContentRetriever 
     public static final String META_CITATION_ID = "citationId";
     public static final String META_SOURCE = "source";
     public static final String META_VISIBILITY = "visibility";
+    public static final String META_SOURCE_TYPE = "sourceType";
+    public static final String META_VERSION_STATUS = "versionStatus";
+    public static final String META_LINEAGE_ID = "lineageId";
+    public static final String META_VERSION_NO = "versionNo";
+    public static final String META_PROJECT_ID = "projectId";
+    public static final String META_CANONICAL_KEY = "canonicalKey";
 
     private final KnowledgeSearchService searchService;
     private final Long userId;
@@ -46,7 +52,13 @@ public class KnowledgeSearchServiceContentRetriever implements ContentRetriever 
                 .put(META_CHUNK_INDEX, result.chunkIndex() == null ? 0 : result.chunkIndex())
                 .put(META_CITATION_ID, nullToBlank(result.citationId()))
                 .put(META_SOURCE, nullToBlank(result.source()))
-                .put(META_VISIBILITY, result.isPublic() ? "PUBLIC" : "PRIVATE");
+                .put(META_VISIBILITY, result.isPublic() ? "PUBLIC" : "PRIVATE")
+                .put(META_SOURCE_TYPE, nullToBlank(result.sourceType()))
+                .put(META_VERSION_STATUS, nullToBlank(result.versionStatus()))
+                .put(META_LINEAGE_ID, nullToBlank(result.lineageId()))
+                .put(META_VERSION_NO, result.versionNo() == null ? 1 : result.versionNo())
+                .put(META_PROJECT_ID, result.projectId() == null ? -1L : result.projectId())
+                .put(META_CANONICAL_KEY, nullToBlank(result.canonicalKey()));
         TextSegment segment = TextSegment.from(nullToBlank(result.chunkText()), metadata);
         return Content.from(segment, Map.of(ContentMetadata.SCORE, result.score()));
     }
