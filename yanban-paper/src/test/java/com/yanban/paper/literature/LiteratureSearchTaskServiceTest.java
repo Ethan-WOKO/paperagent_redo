@@ -2,6 +2,7 @@ package com.yanban.paper.literature;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -10,10 +11,14 @@ import static org.mockito.Mockito.when;
 
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -161,6 +166,99 @@ class LiteratureSearchTaskServiceTest {
     }
 
     @Test
+    void saveResultDoesNotOverwriteTimedOutFailedTask() {
+        LiteratureSearchTask task = task(LiteratureSearchTaskService.STATUS_FAILED);
+        task.setCurrentStage("TIMEOUT");
+        when(tasks.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(Optional.of(task));
+
+        LiteratureSearchTask result = service.saveResult(USER_ID, TASK_ID, "{}", 1, 1, 1, "[]");
+
+        assertThat(result.getStatus()).isEqualTo(LiteratureSearchTaskService.STATUS_FAILED);
+        assertThat(result.getCurrentStage()).isEqualTo("TIMEOUT");
+        assertThat(result.getResultJson()).isNull();
+        verify(tasks, never()).save(any());
+    }
+
+    @Test
+    void scanStalledTasksRequeuesOldPendingTasks() {
+        LiteratureSearchTaskPublisher publisher = mock(LiteratureSearchTaskPublisher.class);
+        service = new LiteratureSearchTaskService(tasks, provider(publisher));
+        LiteratureSearchTask pending = task(LiteratureSearchTaskService.STATUS_PENDING);
+        when(tasks.findByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(
+                eq(LiteratureSearchTaskService.STATUS_PENDING),
+                any(Instant.class),
+                eq(PageRequest.of(0, 10))))
+                .thenReturn(List.of(pending));
+        when(tasks.findByStatusAndStartedAtBeforeOrderByStartedAtAsc(
+                eq(LiteratureSearchTaskService.STATUS_RUNNING),
+                any(Instant.class),
+                eq(PageRequest.of(0, 10))))
+                .thenReturn(List.of());
+        when(tasks.save(any(LiteratureSearchTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        LiteratureSearchTaskService.ScanResult result =
+                service.scanStalledTasks(Duration.ofMinutes(5), Duration.ofMinutes(30), 10);
+
+        assertThat(result.requeuedPendingCount()).isEqualTo(1);
+        assertThat(result.timedOutRunningCount()).isZero();
+        assertThat(pending.getStatus()).isEqualTo(LiteratureSearchTaskService.STATUS_PENDING);
+        assertThat(pending.getCurrentStage()).isEqualTo("REQUEUED");
+        verify(publisher).publishTaskCreated(pending);
+    }
+
+    @Test
+    void scanStalledTasksMarksOldRunningTasksFailed() {
+        LiteratureSearchTaskPublisher publisher = mock(LiteratureSearchTaskPublisher.class);
+        service = new LiteratureSearchTaskService(tasks, provider(publisher));
+        LiteratureSearchTask running = task(LiteratureSearchTaskService.STATUS_RUNNING);
+        when(tasks.findByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(
+                eq(LiteratureSearchTaskService.STATUS_PENDING),
+                any(Instant.class),
+                eq(PageRequest.of(0, 10))))
+                .thenReturn(List.of());
+        when(tasks.findByStatusAndStartedAtBeforeOrderByStartedAtAsc(
+                eq(LiteratureSearchTaskService.STATUS_RUNNING),
+                any(Instant.class),
+                eq(PageRequest.of(0, 10))))
+                .thenReturn(List.of(running));
+        when(tasks.save(any(LiteratureSearchTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        LiteratureSearchTaskService.ScanResult result =
+                service.scanStalledTasks(Duration.ofMinutes(5), Duration.ofMinutes(30), 10);
+
+        assertThat(result.requeuedPendingCount()).isZero();
+        assertThat(result.timedOutRunningCount()).isEqualTo(1);
+        assertThat(running.getStatus()).isEqualTo(LiteratureSearchTaskService.STATUS_FAILED);
+        assertThat(running.getCurrentStage()).isEqualTo("TIMEOUT");
+        assertThat(running.getErrorMessage()).contains("超时");
+        assertThat(running.getFinishedAt()).isNotNull();
+        verify(publisher, never()).publishTaskCreated(any());
+    }
+
+    @Test
+    void scanStalledTasksDoesNothingWhenNoPendingOrRunningMatches() {
+        LiteratureSearchTaskPublisher publisher = mock(LiteratureSearchTaskPublisher.class);
+        service = new LiteratureSearchTaskService(tasks, provider(publisher));
+        when(tasks.findByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(
+                eq(LiteratureSearchTaskService.STATUS_PENDING),
+                any(Instant.class),
+                eq(PageRequest.of(0, 50))))
+                .thenReturn(List.of());
+        when(tasks.findByStatusAndStartedAtBeforeOrderByStartedAtAsc(
+                eq(LiteratureSearchTaskService.STATUS_RUNNING),
+                any(Instant.class),
+                eq(PageRequest.of(0, 50))))
+                .thenReturn(List.of());
+
+        LiteratureSearchTaskService.ScanResult result =
+                service.scanStalledTasks(Duration.ofMinutes(5), Duration.ofMinutes(30), 50);
+
+        assertThat(result.hasWork()).isFalse();
+        verify(tasks, never()).save(any());
+        verify(publisher, never()).publishTaskCreated(any());
+    }
+
+    @Test
     void inaccessibleTaskThrowsNotFound() {
         when(tasks.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(Optional.empty());
 
@@ -189,5 +287,12 @@ class LiteratureSearchTaskServiceTest {
         );
         ReflectionTestUtils.setField(task, "id", TASK_ID);
         return task;
+    }
+
+    private ObjectProvider<LiteratureSearchTaskPublisher> provider(LiteratureSearchTaskPublisher publisher) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<LiteratureSearchTaskPublisher> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(publisher);
+        return provider;
     }
 }
