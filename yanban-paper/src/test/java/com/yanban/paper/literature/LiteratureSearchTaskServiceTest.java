@@ -2,6 +2,7 @@ package com.yanban.paper.literature;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import java.util.Optional;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -26,7 +28,9 @@ class LiteratureSearchTaskServiceTest {
     @BeforeEach
     void setUp() {
         tasks = mock(LiteratureSearchTaskRepository.class);
-        service = new LiteratureSearchTaskService(tasks);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<LiteratureSearchTaskPublisher> provider = mock(ObjectProvider.class);
+        service = new LiteratureSearchTaskService(tasks, provider);
     }
 
     @Test
@@ -54,6 +58,29 @@ class LiteratureSearchTaskServiceTest {
     }
 
     @Test
+    void createTaskPublishesNewTaskMessage() {
+        LiteratureSearchTaskPublisher publisher = mock(LiteratureSearchTaskPublisher.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<LiteratureSearchTaskPublisher> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(publisher);
+        service = new LiteratureSearchTaskService(tasks, provider);
+        when(tasks.findByIdempotencyKey(any())).thenReturn(Optional.empty());
+        when(tasks.save(any(LiteratureSearchTask.class))).thenAnswer(invocation -> {
+            LiteratureSearchTask task = invocation.getArgument(0);
+            ReflectionTestUtils.setField(task, "id", TASK_ID);
+            return task;
+        });
+
+        LiteratureSearchTaskService.TaskStartResult result = service.createTask(
+                USER_ID,
+                new LiteratureSearchTaskRequest("hybrid RAG", 8, null, true, "req-1", null)
+        );
+
+        assertThat(result.idempotent()).isFalse();
+        verify(publisher).publishTaskCreated(result.task());
+    }
+
+    @Test
     void duplicateClientRequestReturnsExistingTask() {
         LiteratureSearchTask existing = task(LiteratureSearchTaskService.STATUS_PENDING);
         when(tasks.findByIdempotencyKey(any())).thenReturn(Optional.of(existing));
@@ -66,6 +93,21 @@ class LiteratureSearchTaskServiceTest {
         assertThat(result.idempotent()).isTrue();
         assertThat(result.task()).isSameAs(existing);
         verify(tasks, never()).save(any());
+    }
+
+    @Test
+    void duplicateClientRequestDoesNotPublishMessage() {
+        LiteratureSearchTaskPublisher publisher = mock(LiteratureSearchTaskPublisher.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<LiteratureSearchTaskPublisher> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(publisher);
+        service = new LiteratureSearchTaskService(tasks, provider);
+        LiteratureSearchTask existing = task(LiteratureSearchTaskService.STATUS_PENDING);
+        when(tasks.findByIdempotencyKey(any())).thenReturn(Optional.of(existing));
+
+        service.createTask(USER_ID, new LiteratureSearchTaskRequest("hybrid RAG", 8, null, true, "req-1", null));
+
+        verify(publisher, never()).publishTaskCreated(any());
     }
 
     @Test
@@ -90,6 +132,32 @@ class LiteratureSearchTaskServiceTest {
 
         assertThat(result.getStatus()).isEqualTo(LiteratureSearchTaskService.STATUS_COMPLETED);
         verify(tasks, never()).save(any());
+    }
+
+    @Test
+    void claimForRunMovesPendingTaskToRunning() {
+        LiteratureSearchTask task = task(LiteratureSearchTaskService.STATUS_PENDING);
+        when(tasks.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(tasks.save(any(LiteratureSearchTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<LiteratureSearchTask> result = service.claimForRun(TASK_ID);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().getStatus()).isEqualTo(LiteratureSearchTaskService.STATUS_RUNNING);
+        assertThat(result.get().getCurrentStage()).isEqualTo("SEARCHING");
+        assertThat(result.get().getStartedAt()).isNotNull();
+    }
+
+    @Test
+    void saveResultRespectsCancellationRace() {
+        LiteratureSearchTask task = task(LiteratureSearchTaskService.STATUS_CANCEL_REQUESTED);
+        when(tasks.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(Optional.of(task));
+        when(tasks.save(any(LiteratureSearchTask.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        LiteratureSearchTask result = service.saveResult(USER_ID, TASK_ID, "{}", 1, 1, 1, "[]");
+
+        assertThat(result.getStatus()).isEqualTo(LiteratureSearchTaskService.STATUS_CANCELLED);
+        assertThat(result.getResultJson()).isNull();
     }
 
     @Test

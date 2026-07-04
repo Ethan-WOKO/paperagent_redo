@@ -18,4 +18,15 @@ public class PaperAsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean(name = "literatureTaskExecutor")
+    public Executor literatureTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("yanban-literature-");
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(6);
+        executor.setQueueCapacity(50);
+        executor.initialize();
+        return executor;
+    }
 }
