@@ -83,3 +83,26 @@ KnowledgeSearchService
 ```powershell
 mvn -pl yanban-knowledge -am '-Dtest=BaselineRagRunnerTest,LangChain4jAdapterRagRunnerTest' '-Dsurefire.failIfNoSpecifiedTests=false' test
 ```
+
+## Database-backed baseline smoke eval
+
+`BaselineRagDatabaseEvalTest` 会把 `rag-spike` fixture seed 到 H2 测试数据库，并通过当前 `SimpleKnowledgeSearchService` 运行 10 个 case。
+
+该测试验证：
+
+1. fixture 可以进入真实 `kb_documents` 和 `kb_chunks` 表。
+2. user B 不能检索 user A 的私有论文和文献卡片。
+3. public fixture 对 user B 可见。
+4. `DELETED` fixture 在当前 schema 没有版本字段前不进入 seed 集合。
+5. 输出仍复用 `BaselineRagEvaluationResult`。
+
+当前限制：
+
+1. 该测试使用 H2 和 `SimpleKnowledgeSearchService`，不是 Elasticsearch vector/hybrid 检索。
+2. 当前 `KbDocument` 尚无 `versionStatus/lineageId/projectId` 字段，ACTIVE/SUPERSEDED 排序需要 #22 继续设计和实现。
+
+验证命令：
+
+```powershell
+mvn -pl yanban-knowledge -am '-Dtest=BaselineRagDatabaseEvalTest' '-Dsurefire.failIfNoSpecifiedTests=false' test
+```
