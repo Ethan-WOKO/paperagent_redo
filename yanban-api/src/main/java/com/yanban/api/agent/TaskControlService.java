@@ -53,6 +53,18 @@ public class TaskControlService {
         return agentTaskService.getStatus(userId, taskId, requestedTaskType);
     }
 
+    public TaskDispatchRetryResponse retryDelivery(Long userId, Long taskId, String requestedTaskType) {
+        TaskType taskType = resolveTaskType(requestedTaskType);
+        if (taskType != null) {
+            return switch (taskType) {
+                case PAPER_POLISH -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "manual delivery retry is only supported for literature search tasks");
+                case LITERATURE_SEARCH -> retryLiteratureDelivery(userId, taskId);
+            };
+        }
+        return retryDeliveryAutoDetect(userId, taskId);
+    }
+
     private TaskCancelResponse cancelAutoDetect(Long userId, Long taskId, String cancelReason) {
         PaperTask paperTask = paperTasks.findByIdAndUserId(taskId, userId).orElse(null);
         LiteratureSearchTask literatureTask = literatureTasks.findByIdAndUserId(taskId, userId).orElse(null);
@@ -66,6 +78,24 @@ public class TaskControlService {
         }
         if (literatureTask != null) {
             return cancelLiteratureTask(userId, taskId, cancelReason);
+        }
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "task not found");
+    }
+
+    private TaskDispatchRetryResponse retryDeliveryAutoDetect(Long userId, Long taskId) {
+        PaperTask paperTask = paperTasks.findByIdAndUserId(taskId, userId).orElse(null);
+        LiteratureSearchTask literatureTask = literatureTasks.findByIdAndUserId(taskId, userId).orElse(null);
+
+        if (paperTask != null && literatureTask != null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "taskId matches both paper and literature task types; please specify taskType");
+        }
+        if (paperTask != null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "manual delivery retry is only supported for literature search tasks");
+        }
+        if (literatureTask != null) {
+            return retryLiteratureDelivery(userId, taskId);
         }
         throw new ResponseStatusException(HttpStatus.NOT_FOUND, "task not found");
     }
@@ -108,6 +138,23 @@ public class TaskControlService {
                 after.getStatus(),
                 after.getCurrentStage(),
                 messageForCancel(before.getStatus(), cancelAccepted, "literature search task")
+        );
+    }
+
+    private TaskDispatchRetryResponse retryLiteratureDelivery(Long userId, Long taskId) {
+        LiteratureSearchTask before = literatureTasks.findByIdAndUserId(taskId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "literature search task not found"));
+        LiteratureSearchTaskService.DispatchRetryResult result = literatureTaskService.retryPendingDispatch(userId, taskId);
+        LiteratureSearchTask after = result.task();
+        return new TaskDispatchRetryResponse(
+                "literature_search",
+                taskId,
+                result.retryAccepted(),
+                result.idempotent(),
+                before.getStatus(),
+                after.getStatus(),
+                after.getCurrentStage(),
+                result.message()
         );
     }
 

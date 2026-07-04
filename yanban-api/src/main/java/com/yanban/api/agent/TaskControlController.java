@@ -34,6 +34,19 @@ public class TaskControlController {
         return taskControlService.cancel(currentUser.id(), taskId, effectiveTaskType, cancelReason);
     }
 
+    @PostMapping({"/api/tasks/{taskId}/retry-delivery", "/api/v1/tasks/{taskId}/retry-delivery", "/api/v1/agent/tasks/{taskId}/retry-delivery"})
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public TaskDispatchRetryResponse retryDelivery(
+            @AuthenticationPrincipal JwtUser currentUser,
+            @org.springframework.web.bind.annotation.PathVariable Long taskId,
+            @RequestParam(required = false) String taskType,
+            @Valid @RequestBody(required = false) TaskTypeRequest request) {
+        String effectiveTaskType = request == null || request.taskType() == null || request.taskType().isBlank()
+                ? taskType
+                : request.taskType();
+        return taskControlService.retryDelivery(currentUser.id(), taskId, effectiveTaskType);
+    }
+
     @GetMapping({"/api/tasks/{taskId}/status", "/api/v1/tasks/{taskId}/status", "/api/v1/agent/tasks/{taskId}/status"})
     public TaskStatusResponse getTaskStatus(
             @AuthenticationPrincipal JwtUser currentUser,

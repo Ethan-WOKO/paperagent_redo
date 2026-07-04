@@ -148,6 +148,27 @@ class TaskControlControllerIntegrationTest {
     }
 
     @Test
+    void retryPendingLiteratureDeliveryThroughUnifiedEndpoint() throws Exception {
+        String username = "task_control_retry_literature";
+        String token = registerAndGetToken(username);
+        Long userId = sysUserRepository.findByUsername(username).orElseThrow().getId();
+        LiteratureSearchTask literatureTask = createLiteratureTask(userId, "PENDING", "QUEUED");
+        Long taskId = literatureTask.getId();
+
+        mockMvc.perform(post("/api/v1/tasks/{taskId}/retry-delivery", taskId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("taskType", "literature_search"))))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.taskType").value("literature_search"))
+                .andExpect(jsonPath("$.retryAccepted").value(true))
+                .andExpect(jsonPath("$.idempotent").value(false))
+                .andExpect(jsonPath("$.beforeStatus").value("PENDING"))
+                .andExpect(jsonPath("$.afterStatus").value("PENDING"))
+                .andExpect(jsonPath("$.currentStage").value("RETRY_QUEUED"));
+    }
+
+    @Test
     void queryLiteratureTaskStatusAutoDetectThroughUnifiedEndpoint() throws Exception {
         String username = "task_control_owner_status_literature";
         String token = registerAndGetToken(username);

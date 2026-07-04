@@ -201,6 +201,33 @@ class TaskControlServiceTest {
         verify(paperOrchestrator).stop(USER_ID, TASK_ID);
     }
 
+    @Test
+    void retryLiteratureDeliveryQueuesPendingTask() {
+        LiteratureSearchTask literatureTask = literatureSearchTask("PENDING", "QUEUED");
+        when(literatureTaskRepository.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(java.util.Optional.of(literatureTask));
+        LiteratureSearchTask retried = literatureSearchTask("PENDING", "RETRY_QUEUED");
+        when(literatureTaskService.retryPendingDispatch(USER_ID, TASK_ID))
+                .thenReturn(new LiteratureSearchTaskService.DispatchRetryResult(retried, true, false, "manual dispatch retry queued"));
+
+        TaskDispatchRetryResponse response = service.retryDelivery(USER_ID, TASK_ID, "literature_search");
+
+        assertThat(response.retryAccepted()).isTrue();
+        assertThat(response.idempotent()).isFalse();
+        assertThat(response.beforeStatus()).isEqualTo("PENDING");
+        assertThat(response.afterStatus()).isEqualTo("PENDING");
+        assertThat(response.currentStage()).isEqualTo("RETRY_QUEUED");
+    }
+
+    @Test
+    void retryDeliveryRejectsPaperTaskType() {
+        try {
+            service.retryDelivery(USER_ID, TASK_ID, "paper_polish");
+            throw new AssertionError("Expected ResponseStatusException");
+        } catch (ResponseStatusException ex) {
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+    }
+
     private PaperTask paperTask(String status, String stage) {
         PaperTask task = new PaperTask(USER_ID, "paper", "paper.tex", "paper/object.tex", status, "zh", stage, null);
         ReflectionTestUtils.setField(task, "id", TASK_ID);
