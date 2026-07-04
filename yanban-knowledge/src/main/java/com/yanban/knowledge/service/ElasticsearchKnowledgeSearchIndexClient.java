@@ -28,10 +28,10 @@ public class ElasticsearchKnowledgeSearchIndexClient implements KnowledgeSearchI
     }
 
     @Override
-    public List<KnowledgeSearchIndexHit> search(String query, Long userId, int topK, List<Double> queryVector) {
+    public List<KnowledgeSearchIndexHit> search(String query, KnowledgeSearchOptions options, int topK, List<Double> queryVector) {
         try {
             Request request = new Request("POST", "/" + properties.getIndexName() + "/_search");
-            request.setJsonEntity(buildQueryJson(query, userId, topK, queryVector));
+            request.setJsonEntity(buildQueryJson(query, options, topK, queryVector));
             Response response = restClient.performRequest(request);
             return parseResponse(EntityUtils.toString(response.getEntity()));
         } catch (IOException ex) {
@@ -39,9 +39,26 @@ public class ElasticsearchKnowledgeSearchIndexClient implements KnowledgeSearchI
         }
     }
 
-    private String buildQueryJson(String query, Long userId, int topK, List<Double> queryVector) throws IOException {
+    String buildQueryJson(String query, KnowledgeSearchOptions options, int topK, List<Double> queryVector) throws IOException {
         String escapedQuery = objectMapper.writeValueAsString(query);
         String vectorJson = objectMapper.writeValueAsString(queryVector);
+        String versionStatuses = options.includeSuperseded()
+                ? "[\"ACTIVE\", \"SUPERSEDED\"]"
+                : "[\"ACTIVE\"]";
+        String projectFilter = options.projectId() == null
+                ? ""
+                : """
+                            ,
+                            {
+                              \"bool\": {
+                                \"should\": [
+                                  { \"bool\": { \"must_not\": { \"exists\": { \"field\": \"projectId\" } } } },
+                                  { \"term\": { \"projectId\": %d } }
+                                ],
+                                \"minimum_should_match\": 1
+                              }
+                            }
+                  """.formatted(options.projectId());
         return """
                 {
                   \"size\": %d,
@@ -58,7 +75,11 @@ public class ElasticsearchKnowledgeSearchIndexClient implements KnowledgeSearchI
                                 ],
                                 \"minimum_should_match\": 1
                               }
+                            },
+                            {
+                              \"terms\": { \"versionStatus\": %s }
                             }
+                            %s
                           ],
                           \"should\": [
                             { \"match\": { \"text\": %s } }
@@ -74,7 +95,7 @@ public class ElasticsearchKnowledgeSearchIndexClient implements KnowledgeSearchI
                     }
                   }
                 }
-                """.formatted(topK, userId, escapedQuery, vectorJson);
+                """.formatted(topK, options.userId(), versionStatuses, projectFilter, escapedQuery, vectorJson);
     }
 
     private List<KnowledgeSearchIndexHit> parseResponse(String json) throws IOException {

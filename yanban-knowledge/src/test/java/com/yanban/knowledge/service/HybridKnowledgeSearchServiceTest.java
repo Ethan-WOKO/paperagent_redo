@@ -23,12 +23,13 @@ class HybridKnowledgeSearchServiceTest {
         HybridKnowledgeSearchService service = new HybridKnowledgeSearchService(embeddingClient, indexClient, documents, fallback);
 
         when(embeddingClient.embed("alpha")).thenReturn(List.of(0.1d, 0.2d));
-        when(indexClient.search("alpha", 1001L, 12, List.of(0.1d, 0.2d))).thenReturn(List.of(
+        KnowledgeSearchOptions alphaOptions = KnowledgeSearchOptions.activeOnly(1001L, 3);
+        when(indexClient.search("alpha", alphaOptions, 12, List.of(0.1d, 0.2d))).thenReturn(List.of(
                 new KnowledgeSearchIndexHit(1L, 0, "alpha content", 1.5d)
         ));
         when(documents.findById(1L)).thenReturn(java.util.Optional.of(new KbDocument(1001L, "paper.md", "READY", false)));
 
-        List<KnowledgeSearchResult> results = service.search("alpha", 1001L, 3);
+        List<KnowledgeSearchResult> results = service.search("alpha", alphaOptions);
 
         assertThat(results).hasSize(1);
         assertThat(results.get(0).filename()).isEqualTo("paper.md");
@@ -68,14 +69,15 @@ class HybridKnowledgeSearchServiceTest {
 
         String query = "find the exact answer for mentor_lookup_deepseek-20260701.";
         List<Double> vector = List.of(0.1d, 0.2d);
+        KnowledgeSearchOptions options = KnowledgeSearchOptions.activeOnly(1001L, 3);
         when(embeddingClient.embed(query)).thenReturn(vector);
-        when(indexClient.search(query.substring(0, query.length() - 1), 1001L, 12, vector)).thenReturn(List.of());
-        when(indexClient.search("mentor_lookup_deepseek", 1001L, 12, vector)).thenReturn(List.of(
+        when(indexClient.search(query.substring(0, query.length() - 1), options, 12, vector)).thenReturn(List.of());
+        when(indexClient.search("mentor_lookup_deepseek", options, 12, vector)).thenReturn(List.of(
                 new KnowledgeSearchIndexHit(1L, 0, "mentor_lookup_deepseek-20260701 key: Zhang Mingyuan.", 1.1d)
         ));
         when(documents.findById(1L)).thenReturn(java.util.Optional.of(new KbDocument(1001L, "lab-notes.md", "READY", false)));
 
-        List<KnowledgeSearchResult> results = service.search(query, 1001L, 3);
+        List<KnowledgeSearchResult> results = service.search(query, options);
 
         assertThat(results).hasSize(1);
         assertThat(results.get(0).chunkText()).contains("Zhang Mingyuan");
@@ -114,7 +116,8 @@ class HybridKnowledgeSearchServiceTest {
         HybridKnowledgeSearchService service = new HybridKnowledgeSearchService(embeddingClient, indexClient, documents, fallback);
 
         when(embeddingClient.embed("gamma")).thenReturn(List.of(0.1d, 0.2d));
-        when(indexClient.search("gamma", 3003L, 8, List.of(0.1d, 0.2d))).thenReturn(List.of(
+        KnowledgeSearchOptions options = KnowledgeSearchOptions.activeOnly(3003L, 2);
+        when(indexClient.search("gamma", options, 8, List.of(0.1d, 0.2d))).thenReturn(List.of(
                 new KnowledgeSearchIndexHit(1L, 0, "gamma deleted", 2.0d)
         ));
         KbDocument deleted = new KbDocument(3003L, "deleted.md", "READY", false);
@@ -125,7 +128,7 @@ class HybridKnowledgeSearchServiceTest {
         when(chunks.searchAccessibleVersionedChunks("gamma", 3003L, null, false, PageRequest.of(0, 8))).thenReturn(List.of(activeChunk));
         when(documents.findById(2L)).thenReturn(java.util.Optional.of(new KbDocument(3003L, "active.md", "READY", false)));
 
-        List<KnowledgeSearchResult> results = service.search("gamma", 3003L, 2);
+        List<KnowledgeSearchResult> results = service.search("gamma", options);
 
         assertThat(results).hasSize(1);
         assertThat(results.get(0).filename()).isEqualTo("active.md");

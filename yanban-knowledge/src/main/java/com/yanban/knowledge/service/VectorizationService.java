@@ -35,7 +35,13 @@ public class VectorizationService {
                     chunk.getId(),
                     document.getId(),
                     document.getUserId(),
+                    document.getProjectId(),
                     Boolean.TRUE.equals(document.getIsPublic()),
+                    document.getSourceType(),
+                    document.getVersionStatus(),
+                    document.getLineageId(),
+                    document.getVersionNo(),
+                    document.getCanonicalKey(),
                     chunk.getChunkIndex(),
                     chunk.getChunkText(),
                     vector
