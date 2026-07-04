@@ -5,8 +5,15 @@ import com.yanban.core.agent.AgentPlanEvent;
 import com.yanban.core.agent.AgentPlanEventRepository;
 import com.yanban.core.agent.AgentPlanRepository;
 import com.yanban.core.agent.AgentPlanStatus;
+import com.yanban.core.agent.AgentTaskEvent;
+import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskEventRepository;
+import com.yanban.paper.domain.LiteratureSearchTask;
+import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -26,21 +33,33 @@ public class AgentObservabilityService {
             "step_verification_failed",
             "step_verification_inconclusive"
     );
+    private static final List<String> LITERATURE_MONITOR_EVENTS = List.of(
+            "TASK_REQUEUED",
+            "TASK_MANUAL_REQUEUED",
+            "TASK_TIMED_OUT"
+    );
 
     private final AgentPlanRepository plans;
     private final AgentPlanEventRepository events;
+    private final AgentTaskEventRepository taskEvents;
+    private final LiteratureSearchTaskRepository literatureTasks;
     private final ObservabilityProperties properties;
 
     public AgentObservabilityService(AgentPlanRepository plans,
                                      AgentPlanEventRepository events,
+                                     AgentTaskEventRepository taskEvents,
+                                     LiteratureSearchTaskRepository literatureTasks,
                                      ObservabilityProperties properties) {
         this.plans = plans;
         this.events = events;
+        this.taskEvents = taskEvents;
+        this.literatureTasks = literatureTasks;
         this.properties = properties;
     }
 
     public DashboardResponse dashboard(Integer requestedWindowMinutes) {
         WindowData data = loadWindow(requestedWindowMinutes);
+        LiteratureLifecycleSummary literature = literatureSummary(data);
         List<PlanSummary> slowPlans = data.plans().stream()
                 .filter(plan -> durationMs(plan) != null)
                 .sorted(Comparator.comparingLong((AgentPlan plan) -> durationMs(plan)).reversed())
@@ -77,15 +96,21 @@ public class AgentObservabilityService {
                 failureRate(data.plans()),
                 averageDurationMs(data.plans()),
                 percentileDurationMs(data.plans(), 0.95d),
+                literature.statusCounts(),
+                literature.eventCounts(),
+                literature.pendingCount(),
+                literature.runningCount(),
+                literature.oldestPendingAgeMs(),
+                literature.oldestRunningAgeMs(),
                 runningPlans,
                 slowPlans,
-                alerts(data)
+                alerts(data, literature)
         );
     }
 
     public AlertResponse alerts(Integer requestedWindowMinutes) {
         WindowData data = loadWindow(requestedWindowMinutes);
-        List<AlertItem> alertItems = alerts(data);
+        List<AlertItem> alertItems = alerts(data, literatureSummary(data));
         String status = alertItems.stream().anyMatch(item -> "CRITICAL".equals(item.severity()))
                 ? "CRITICAL"
                 : alertItems.stream().anyMatch(item -> "WARN".equals(item.severity())) ? "WARN" : "OK";
@@ -98,11 +123,14 @@ public class AgentObservabilityService {
                 ? properties.getDefaultWindowMinutes()
                 : Math.min(24 * 60, requestedWindowMinutes);
         LocalDateTime cutoff = now.minusMinutes(windowMinutes);
+        Instant cutoffInstant = cutoff.atZone(ZoneId.systemDefault()).toInstant();
         return new WindowData(
                 now,
                 windowMinutes,
                 plans.findByCreatedAtAfterOrderByCreatedAtDesc(cutoff),
-                events.findByCreatedAtAfterOrderByCreatedAtDesc(cutoff)
+                events.findByCreatedAtAfterOrderByCreatedAtDesc(cutoff),
+                taskEvents.findByCreatedAtAfterOrderByCreatedAtDesc(cutoffInstant),
+                literatureTasks.findByCreatedAtAfterOrderByCreatedAtDesc(cutoffInstant)
         );
     }
 
@@ -125,7 +153,7 @@ public class AgentObservabilityService {
         return counts;
     }
 
-    private List<AlertItem> alerts(WindowData data) {
+    private List<AlertItem> alerts(WindowData data, LiteratureLifecycleSummary literature) {
         List<AlertItem> alerts = new ArrayList<>();
         double failureRate = failureRate(data.plans());
         alerts.add(rateAlert(
@@ -165,7 +193,82 @@ public class AgentObservabilityService {
                 properties.getGuardrailEventCritical(),
                 "Guardrail or verification events in the selected window."
         ));
+        alerts.add(countAlert(
+                "literature_pending_backlog",
+                literature.pendingCount(),
+                properties.getLiteraturePendingBacklogWarning(),
+                properties.getLiteraturePendingBacklogCritical(),
+                "Pending literature search task backlog."
+        ));
+        alerts.add(durationAlert(
+                "literature_running_age",
+                literature.oldestRunningAgeMs(),
+                properties.getLiteratureRunningAgeWarningSeconds() * 1000L,
+                properties.getLiteratureRunningAgeCriticalSeconds() * 1000L,
+                "Oldest RUNNING literature search task age."
+        ));
+        alerts.add(countAlert(
+                "literature_timeout_events",
+                literature.eventCounts().getOrDefault("TASK_TIMED_OUT", 0L),
+                properties.getLiteratureTimeoutEventWarning(),
+                properties.getLiteratureTimeoutEventCritical(),
+                "Timed out literature search tasks in the selected window."
+        ));
         return alerts;
+    }
+
+    private LiteratureLifecycleSummary literatureSummary(WindowData data) {
+        Map<String, Long> statusCounts = new LinkedHashMap<>();
+        statusCounts.put("PENDING", 0L);
+        statusCounts.put("RUNNING", 0L);
+        statusCounts.put("CANCEL_REQUESTED", 0L);
+        statusCounts.put("CANCELLING", 0L);
+        statusCounts.put("COMPLETED", 0L);
+        statusCounts.put("FAILED", 0L);
+        statusCounts.put("CANCELLED", 0L);
+        for (LiteratureSearchTask task : data.literatureTasks()) {
+            statusCounts.compute(task.getStatus(), (ignored, count) -> count == null ? 1L : count + 1L);
+        }
+
+        Map<String, Long> eventCounts = new LinkedHashMap<>();
+        for (String eventType : LITERATURE_MONITOR_EVENTS) {
+            eventCounts.put(eventType, 0L);
+        }
+        for (AgentTaskEvent event : data.taskEvents()) {
+            if (!AgentTaskEventRecorder.TASK_TYPE_LITERATURE_SEARCH.equals(event.getTaskType())) {
+                continue;
+            }
+            if (!LITERATURE_MONITOR_EVENTS.contains(event.getEventType())) {
+                continue;
+            }
+            eventCounts.compute(event.getEventType(), (ignored, count) -> count == null ? 1L : count + 1L);
+        }
+
+        long pendingCount = statusCounts.getOrDefault("PENDING", 0L);
+        long runningCount = statusCounts.getOrDefault("RUNNING", 0L);
+        Instant nowInstant = data.now().atZone(ZoneId.systemDefault()).toInstant();
+        long oldestPendingAgeMs = data.literatureTasks().stream()
+                .filter(task -> "PENDING".equals(task.getStatus()))
+                .map(LiteratureSearchTask::getCreatedAt)
+                .filter(createdAt -> createdAt != null)
+                .mapToLong(createdAt -> Duration.between(createdAt, nowInstant).toMillis())
+                .max()
+                .orElse(0L);
+        long oldestRunningAgeMs = data.literatureTasks().stream()
+                .filter(task -> "RUNNING".equals(task.getStatus()))
+                .map(task -> task.getStartedAt() == null ? task.getCreatedAt() : task.getStartedAt())
+                .filter(startedAt -> startedAt != null)
+                .mapToLong(startedAt -> Duration.between(startedAt, nowInstant).toMillis())
+                .max()
+                .orElse(0L);
+        return new LiteratureLifecycleSummary(
+                statusCounts,
+                eventCounts,
+                pendingCount,
+                runningCount,
+                oldestPendingAgeMs,
+                oldestRunningAgeMs
+        );
     }
 
     private AlertItem rateAlert(String id, double value, double warning, double critical, String message) {
@@ -248,7 +351,9 @@ public class AgentObservabilityService {
     private record WindowData(LocalDateTime now,
                               int windowMinutes,
                               List<AgentPlan> plans,
-                              List<AgentPlanEvent> events) {
+                              List<AgentPlanEvent> events,
+                              List<AgentTaskEvent> taskEvents,
+                              List<LiteratureSearchTask> literatureTasks) {
     }
 
     public record DashboardResponse(LocalDateTime generatedAt,
@@ -260,6 +365,12 @@ public class AgentObservabilityService {
                                     double planFailureRate,
                                     long averagePlanDurationMs,
                                     long p95PlanDurationMs,
+                                    Map<String, Long> literatureTaskStatusCounts,
+                                    Map<String, Long> literatureLifecycleEventCounts,
+                                    long literaturePendingCount,
+                                    long literatureRunningCount,
+                                    long literatureOldestPendingAgeMs,
+                                    long literatureOldestRunningAgeMs,
                                     List<PlanSummary> runningPlans,
                                     List<PlanSummary> slowPlans,
                                     List<AlertItem> alerts) {
@@ -285,5 +396,13 @@ public class AgentObservabilityService {
                               LocalDateTime startedAt,
                               LocalDateTime finishedAt,
                               String error) {
+    }
+
+    private record LiteratureLifecycleSummary(Map<String, Long> statusCounts,
+                                              Map<String, Long> eventCounts,
+                                              long pendingCount,
+                                              long runningCount,
+                                              long oldestPendingAgeMs,
+                                              long oldestRunningAgeMs) {
     }
 }

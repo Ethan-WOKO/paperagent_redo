@@ -13,6 +13,8 @@ public interface LiteratureSearchTaskRepository extends JpaRepository<Literature
 
     List<LiteratureSearchTask> findByUserIdOrderByCreatedAtDesc(Long userId);
 
+    List<LiteratureSearchTask> findByCreatedAtAfterOrderByCreatedAtDesc(Instant createdAt);
+
     List<LiteratureSearchTask> findByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(String status,
                                                                                  Instant updatedBefore,
                                                                                  Pageable pageable);

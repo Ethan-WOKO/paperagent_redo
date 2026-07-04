@@ -16,6 +16,12 @@ public class ObservabilityProperties {
     private long planP95CriticalMs = 300_000L;
     private int guardrailEventWarning = 5;
     private int guardrailEventCritical = 20;
+    private int literaturePendingBacklogWarning = 3;
+    private int literaturePendingBacklogCritical = 10;
+    private long literatureRunningAgeWarningSeconds = 180L;
+    private long literatureRunningAgeCriticalSeconds = 600L;
+    private int literatureTimeoutEventWarning = 1;
+    private int literatureTimeoutEventCritical = 3;
 
     public int getDefaultWindowMinutes() {
         return defaultWindowMinutes;
@@ -87,5 +93,53 @@ public class ObservabilityProperties {
 
     public void setGuardrailEventCritical(int guardrailEventCritical) {
         this.guardrailEventCritical = guardrailEventCritical;
+    }
+
+    public int getLiteraturePendingBacklogWarning() {
+        return literaturePendingBacklogWarning;
+    }
+
+    public void setLiteraturePendingBacklogWarning(int literaturePendingBacklogWarning) {
+        this.literaturePendingBacklogWarning = literaturePendingBacklogWarning;
+    }
+
+    public int getLiteraturePendingBacklogCritical() {
+        return literaturePendingBacklogCritical;
+    }
+
+    public void setLiteraturePendingBacklogCritical(int literaturePendingBacklogCritical) {
+        this.literaturePendingBacklogCritical = literaturePendingBacklogCritical;
+    }
+
+    public long getLiteratureRunningAgeWarningSeconds() {
+        return literatureRunningAgeWarningSeconds;
+    }
+
+    public void setLiteratureRunningAgeWarningSeconds(long literatureRunningAgeWarningSeconds) {
+        this.literatureRunningAgeWarningSeconds = literatureRunningAgeWarningSeconds;
+    }
+
+    public long getLiteratureRunningAgeCriticalSeconds() {
+        return literatureRunningAgeCriticalSeconds;
+    }
+
+    public void setLiteratureRunningAgeCriticalSeconds(long literatureRunningAgeCriticalSeconds) {
+        this.literatureRunningAgeCriticalSeconds = literatureRunningAgeCriticalSeconds;
+    }
+
+    public int getLiteratureTimeoutEventWarning() {
+        return literatureTimeoutEventWarning;
+    }
+
+    public void setLiteratureTimeoutEventWarning(int literatureTimeoutEventWarning) {
+        this.literatureTimeoutEventWarning = literatureTimeoutEventWarning;
+    }
+
+    public int getLiteratureTimeoutEventCritical() {
+        return literatureTimeoutEventCritical;
+    }
+
+    public void setLiteratureTimeoutEventCritical(int literatureTimeoutEventCritical) {
+        this.literatureTimeoutEventCritical = literatureTimeoutEventCritical;
     }
 }
