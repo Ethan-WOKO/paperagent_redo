@@ -1,0 +1,80 @@
+package com.yanban.paper.literature;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yanban.paper.domain.LiteratureSearchTask;
+import java.util.Optional;
+import java.util.concurrent.Executor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+@Service
+public class LiteratureSearchTaskWorker {
+
+    private static final Logger log = LoggerFactory.getLogger(LiteratureSearchTaskWorker.class);
+
+    private final LiteratureSearchTaskService taskService;
+    private final AdHocLiteratureSearchService searchService;
+    private final ObjectMapper objectMapper;
+    private final Executor literatureTaskExecutor;
+
+    public LiteratureSearchTaskWorker(LiteratureSearchTaskService taskService,
+                                      AdHocLiteratureSearchService searchService,
+                                      ObjectMapper objectMapper,
+                                      @Qualifier("literatureTaskExecutor") Executor literatureTaskExecutor) {
+        this.taskService = taskService;
+        this.searchService = searchService;
+        this.objectMapper = objectMapper;
+        this.literatureTaskExecutor = literatureTaskExecutor;
+    }
+
+    public void submit(Long taskId) {
+        literatureTaskExecutor.execute(() -> process(taskId));
+    }
+
+    public void process(Long taskId) {
+        Optional<LiteratureSearchTask> claimed = taskService.claimForRun(taskId);
+        if (claimed.isEmpty()) {
+            return;
+        }
+        LiteratureSearchTask task = claimed.get();
+        Long userId = task.getUserId();
+        try {
+            if (taskService.isCancellationRequested(userId, taskId)) {
+                taskService.markCancelled(userId, taskId);
+                return;
+            }
+            AdHocLiteratureSearchService.AdHocLiteratureSearchResult result =
+                    searchService.search(task.getQuery(), task.getTopK(), task.getYearFrom());
+            if (taskService.isCancellationRequested(userId, taskId)) {
+                taskService.markCancelled(userId, taskId);
+                return;
+            }
+            taskService.saveResult(
+                    userId,
+                    taskId,
+                    objectMapper.writeValueAsString(result),
+                    result.rawCandidateCount(),
+                    result.uniqueCandidateCount(),
+                    result.sourceAttempts(),
+                    objectMapper.writeValueAsString(result.sourceFailures())
+            );
+        } catch (Exception ex) {
+            if (taskService.isCancellationRequested(userId, taskId)) {
+                taskService.markCancelled(userId, taskId);
+                return;
+            }
+            log.warn("文献检索任务执行失败 taskId={} userId={}", taskId, userId, ex);
+            taskService.markFailed(userId, taskId, failureMessage(ex));
+        }
+    }
+
+    private String failureMessage(Exception ex) {
+        if (ex instanceof JsonProcessingException jsonEx) {
+            return "结果序列化失败: " + jsonEx.getOriginalMessage();
+        }
+        return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+    }
+}

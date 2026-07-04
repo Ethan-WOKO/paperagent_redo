@@ -8,9 +8,13 @@ import java.time.Instant;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Optional;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -26,11 +30,15 @@ public class LiteratureSearchTaskService {
     public static final String STATUS_CANCELLED = "CANCELLED";
 
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED);
+    private static final Set<String> CANCEL_STATUSES = Set.of(STATUS_CANCEL_REQUESTED, STATUS_CANCELLING, STATUS_CANCELLED);
 
     private final LiteratureSearchTaskRepository tasks;
+    private final LiteratureSearchTaskPublisher publisher;
 
-    public LiteratureSearchTaskService(LiteratureSearchTaskRepository tasks) {
+    public LiteratureSearchTaskService(LiteratureSearchTaskRepository tasks,
+                                       ObjectProvider<LiteratureSearchTaskPublisher> publisherProvider) {
         this.tasks = tasks;
+        this.publisher = publisherProvider == null ? null : publisherProvider.getIfAvailable();
     }
 
     @Transactional
@@ -52,20 +60,23 @@ public class LiteratureSearchTaskService {
         String idempotencyKey = idempotencyKey(userId, query, topK, yearFrom, includeBibtex, clientRequestId);
         return tasks.findByIdempotencyKey(idempotencyKey)
                 .map(task -> new TaskStartResult(task, true))
-                .orElseGet(() -> new TaskStartResult(tasks.save(new LiteratureSearchTask(
-                                userId,
-                                request.projectId(),
-                                query,
-                                query.toLowerCase(Locale.ROOT),
-                                topK,
-                                yearFrom,
-                                includeBibtex,
-                                STATUS_PENDING,
-                                "QUEUED",
-                                clientRequestId,
-                                idempotencyKey
-                        )),
-                        false));
+                .orElseGet(() -> {
+                    LiteratureSearchTask saved = tasks.save(new LiteratureSearchTask(
+                            userId,
+                            request.projectId(),
+                            query,
+                            query.toLowerCase(Locale.ROOT),
+                            topK,
+                            yearFrom,
+                            includeBibtex,
+                            STATUS_PENDING,
+                            "QUEUED",
+                            clientRequestId,
+                            idempotencyKey
+                    ));
+                    publishAfterCommit(saved);
+                    return new TaskStartResult(saved, false);
+                });
     }
 
     @Transactional(readOnly = true)
@@ -92,8 +103,11 @@ public class LiteratureSearchTaskService {
                                            Integer rawCandidateCount,
                                            Integer uniqueCandidateCount,
                                            Integer sourceAttempts,
-                                           String sourceFailuresJson) {
+        String sourceFailuresJson) {
         LiteratureSearchTask task = ownedTask(userId, taskId);
+        if (CANCEL_STATUSES.contains(task.getStatus())) {
+            return markCancelled(userId, taskId);
+        }
         task.setResultJson(resultJson);
         task.setRawCandidateCount(rawCandidateCount);
         task.setUniqueCandidateCount(uniqueCandidateCount);
@@ -101,6 +115,61 @@ public class LiteratureSearchTaskService {
         task.setSourceFailuresJson(sourceFailuresJson);
         task.setStatus(STATUS_COMPLETED);
         task.setCurrentStage("COMPLETE");
+        task.setFinishedAt(Instant.now());
+        return tasks.save(task);
+    }
+
+    @Transactional
+    public Optional<LiteratureSearchTask> claimForRun(Long taskId) {
+        if (taskId == null) {
+            return Optional.empty();
+        }
+        Optional<LiteratureSearchTask> taskOpt = tasks.findById(taskId);
+        if (taskOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        LiteratureSearchTask task = taskOpt.get();
+        if (STATUS_PENDING.equals(task.getStatus())) {
+            task.setStatus(STATUS_RUNNING);
+            task.setCurrentStage("SEARCHING");
+            task.setStartedAt(Instant.now());
+            return Optional.of(tasks.save(task));
+        }
+        if (STATUS_CANCEL_REQUESTED.equals(task.getStatus()) || STATUS_CANCELLING.equals(task.getStatus())) {
+            task.setStatus(STATUS_CANCELLED);
+            task.setCurrentStage("CANCELLED");
+            task.setFinishedAt(Instant.now());
+            tasks.save(task);
+            return Optional.empty();
+        }
+        return Optional.empty();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean isCancellationRequested(Long userId, Long taskId) {
+        return tasks.findByIdAndUserId(taskId, userId)
+                .map(task -> CANCEL_STATUSES.contains(task.getStatus()))
+                .orElse(false);
+    }
+
+    @Transactional
+    public LiteratureSearchTask markCancelled(Long userId, Long taskId) {
+        LiteratureSearchTask task = ownedTask(userId, taskId);
+        task.setStatus(STATUS_CANCELLED);
+        task.setCurrentStage("CANCELLED");
+        task.setFinishedAt(Instant.now());
+        return tasks.save(task);
+    }
+
+    @Transactional
+    public LiteratureSearchTask markFailed(Long userId, Long taskId, String errorMessage) {
+        LiteratureSearchTask task = ownedTask(userId, taskId);
+        if (CANCEL_STATUSES.contains(task.getStatus())) {
+            return markCancelled(userId, taskId);
+        }
+        task.setStatus(STATUS_FAILED);
+        task.setCurrentStage("FAILED");
+        task.setErrorMessage(trimToLength(errorMessage, 1000));
         task.setFinishedAt(Instant.now());
         return tasks.save(task);
     }
@@ -150,6 +219,30 @@ public class LiteratureSearchTaskService {
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to build literature task idempotency key", ex);
         }
+    }
+
+    private void publishAfterCommit(LiteratureSearchTask task) {
+        if (publisher == null) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publisher.publishTaskCreated(task);
+                }
+            });
+            return;
+        }
+        publisher.publishTaskCreated(task);
+    }
+
+    private String trimToLength(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength);
     }
 
     public record TaskStartResult(LiteratureSearchTask task, boolean idempotent) {
