@@ -6,6 +6,7 @@ import com.yanban.knowledge.domain.KbChunk;
 import com.yanban.knowledge.domain.KbChunkRepository;
 import com.yanban.knowledge.domain.KbDocument;
 import com.yanban.knowledge.domain.KbDocumentRepository;
+import com.yanban.knowledge.service.KnowledgeSearchOptions;
 import com.yanban.knowledge.service.KnowledgeSearchResult;
 import com.yanban.knowledge.service.SimpleKnowledgeSearchService;
 import java.nio.file.Path;
@@ -66,7 +67,9 @@ class BaselineRagDatabaseEvalTest {
         assertThat(result.summary().forbiddenHitCount()).isZero();
         assertThat(findCase(result, "RAG-LC4J-002").retrievedDocumentIds())
                 .doesNotContain(savedIdByFixtureId.get(1002L));
-        assertThat(savedIdByFixtureId).doesNotContainKey(1005L);
+        assertThat(savedIdByFixtureId).containsKey(1005L);
+        assertThat(findCase(result, "RAG-LC4J-005").retrievedDocumentIds())
+                .doesNotContain(savedIdByFixtureId.get(1005L));
     }
 
     @Test
@@ -90,13 +93,39 @@ class BaselineRagDatabaseEvalTest {
                 .contains(savedIdByFixtureId.get(3001L));
     }
 
+    @Test
+    void databaseBaselineAppliesVersionFilteringAndSourceTypePriority() throws Exception {
+        RagSpikeFixtureLoader loader = new RagSpikeFixtureLoader(FIXTURE_ROOT);
+        Map<Long, Long> savedIdByFixtureId = seedDocuments(loader, loader.loadDocuments());
+        SimpleKnowledgeSearchService searchService = new SimpleKnowledgeSearchService(chunks, documents);
+
+        List<KnowledgeSearchResult> defaultResults = searchService.search("Recall@5", 101L, 10);
+        assertThat(defaultResults)
+                .extracting(KnowledgeSearchResult::documentId)
+                .contains(savedIdByFixtureId.get(1002L))
+                .doesNotContain(savedIdByFixtureId.get(1001L), savedIdByFixtureId.get(1004L), savedIdByFixtureId.get(1005L));
+
+        List<KnowledgeSearchResult> historicalResults = searchService.search(
+                "Recall@5",
+                new KnowledgeSearchOptions(101L, 10, null, true)
+        );
+        assertThat(historicalResults)
+                .extracting(KnowledgeSearchResult::documentId)
+                .contains(savedIdByFixtureId.get(1001L), savedIdByFixtureId.get(1002L), savedIdByFixtureId.get(1004L))
+                .doesNotContain(savedIdByFixtureId.get(1005L));
+        assertThat(indexOf(historicalResults, savedIdByFixtureId.get(1002L)))
+                .isLessThan(indexOf(historicalResults, savedIdByFixtureId.get(1001L)));
+        assertThat(historicalResults.stream()
+                .filter(result -> savedIdByFixtureId.get(1002L).equals(result.documentId()))
+                .findFirst()
+                .orElseThrow()
+                .sourceType()).isEqualTo("PAPER_POLISHED");
+    }
+
     private Map<Long, Long> seedDocuments(RagSpikeFixtureLoader loader,
                                           List<RagSpikeDocumentFixture> fixtureDocuments) throws Exception {
         Map<Long, Long> savedIdByFixtureId = new LinkedHashMap<>();
         for (RagSpikeDocumentFixture fixture : fixtureDocuments) {
-            if ("DELETED".equalsIgnoreCase(fixture.versionStatus())) {
-                continue;
-            }
             KbDocument document = new KbDocument(
                     fixture.userId() == null ? 0L : fixture.userId(),
                     fixture.filename(),
@@ -104,6 +133,10 @@ class BaselineRagDatabaseEvalTest {
                     "PUBLIC".equalsIgnoreCase(fixture.visibility())
             );
             document.setSourceType(fixture.sourceType());
+            document.setProjectId(fixture.projectId());
+            document.setLineageId(fixture.lineageId());
+            document.setVersionStatus(fixture.versionStatus());
+            document.setVersionNo("SUPERSEDED".equalsIgnoreCase(fixture.versionStatus()) ? 1 : 2);
             KbDocument saved = documents.saveAndFlush(document);
             chunks.saveAndFlush(new KbChunk(saved.getId(), 0, loader.readDocumentText(fixture)));
             savedIdByFixtureId.put(fixture.documentId(), saved.getId());
@@ -159,5 +192,14 @@ class BaselineRagDatabaseEvalTest {
                 .filter(item -> caseId.equals(item.caseId()))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    private int indexOf(List<KnowledgeSearchResult> results, Long documentId) {
+        for (int i = 0; i < results.size(); i++) {
+            if (documentId.equals(results.get(i).documentId())) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
     }
 }

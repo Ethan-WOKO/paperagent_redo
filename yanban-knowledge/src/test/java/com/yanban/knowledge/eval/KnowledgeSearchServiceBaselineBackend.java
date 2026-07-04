@@ -1,5 +1,6 @@
 package com.yanban.knowledge.eval;
 
+import com.yanban.knowledge.service.KnowledgeSearchOptions;
 import com.yanban.knowledge.service.KnowledgeSearchResult;
 import com.yanban.knowledge.service.KnowledgeSearchService;
 import java.util.List;
@@ -14,7 +15,12 @@ public class KnowledgeSearchServiceBaselineBackend implements BaselineSearchBack
 
     @Override
     public List<BaselineRagHit> search(RagSpikeEvalCase evalCase) {
-        return searchService.search(evalCase.query(), evalCase.userId(), evalCase.topK()).stream()
+        return searchService.search(evalCase.query(), new KnowledgeSearchOptions(
+                        evalCase.userId(),
+                        evalCase.topK(),
+                        evalCase.projectId(),
+                        false
+                )).stream()
                 .map(this::toHit)
                 .toList();
     }
@@ -28,7 +34,7 @@ public class KnowledgeSearchServiceBaselineBackend implements BaselineSearchBack
                 result.score(),
                 result.citationId(),
                 result.source(),
-                null,
+                result.versionStatus(),
                 result.isPublic() ? "PUBLIC" : "PRIVATE"
         );
     }

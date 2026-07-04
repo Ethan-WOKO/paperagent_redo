@@ -6,6 +6,8 @@ import jakarta.validation.constraints.NotBlank;
 
 public record SearchRequest(
         @NotBlank String query,
-        @Min(1) @Max(20) Integer topK
+        @Min(1) @Max(20) Integer topK,
+        Long projectId,
+        Boolean includeSuperseded
 ) {
 }

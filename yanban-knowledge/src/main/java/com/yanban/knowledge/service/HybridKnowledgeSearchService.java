@@ -45,19 +45,26 @@ public class HybridKnowledgeSearchService implements KnowledgeSearchService {
 
     @Override
     public List<KnowledgeSearchResult> search(String query, Long userId, int topK) {
-        if (!StringUtils.hasText(query) || topK <= 0) {
+        return search(query, KnowledgeSearchOptions.activeOnly(userId, topK));
+    }
+
+    @Override
+    public List<KnowledgeSearchResult> search(String query, KnowledgeSearchOptions options) {
+        if (!StringUtils.hasText(query) || options == null || options.topK() <= 0) {
             return List.of();
         }
+        int topK = options.topK();
         try {
             int candidateLimit = Math.max(topK, Math.min(50, topK * 4));
             List<Double> queryVector = embeddingClient.embed(query.trim());
-            List<KnowledgeSearchIndexHit> hits = searchVariants(query, userId, candidateLimit, queryVector);
+            List<KnowledgeSearchIndexHit> hits = searchVariants(query, options.userId(), candidateLimit, queryVector);
             if (hits.isEmpty()) {
-                return fallbackSearchService.search(query, userId, topK);
+                return fallbackSearchService.search(query, options);
             }
-            return toResults(query.trim(), hits, topK);
+            List<KnowledgeSearchResult> results = toResults(query.trim(), hits, options);
+            return results.isEmpty() ? fallbackSearchService.search(query, options) : results;
         } catch (Exception ex) {
-            return fallbackSearchService.search(query, userId, topK);
+            return fallbackSearchService.search(query, options);
         }
     }
 
@@ -82,25 +89,23 @@ public class HybridKnowledgeSearchService implements KnowledgeSearchService {
         return List.copyOf(deduped.values());
     }
 
-    private List<KnowledgeSearchResult> toResults(String query, List<KnowledgeSearchIndexHit> hits, int topK) {
+    private List<KnowledgeSearchResult> toResults(String query, List<KnowledgeSearchIndexHit> hits, KnowledgeSearchOptions options) {
         List<KnowledgeSearchResult> results = new ArrayList<>();
         for (KnowledgeSearchIndexHit hit : hits) {
             KbDocument document = documents.findById(hit.documentId()).orElse(null);
-            if (document == null) {
+            if (!KnowledgeDocumentSearchPolicy.canInject(document, options)) {
                 continue;
             }
             double lexicalBonus = lexicalBonus(hit.chunkText(), query);
-            results.add(new KnowledgeSearchResult(
-                    document.getId(),
-                    document.getFilename(),
+            results.add(KnowledgeDocumentSearchPolicy.toResult(
+                    document,
                     hit.chunkIndex(),
                     hit.chunkText(),
-                    hit.vectorScore() + lexicalBonus,
-                    Boolean.TRUE.equals(document.getIsPublic())
+                    hit.vectorScore() + lexicalBonus
             ));
         }
         results.sort(Comparator.comparingDouble(KnowledgeSearchResult::score).reversed());
-        return reranker.rerank(query, results, topK);
+        return reranker.rerank(query, results, options.topK());
     }
 
     private double lexicalBonus(String text, String query) {

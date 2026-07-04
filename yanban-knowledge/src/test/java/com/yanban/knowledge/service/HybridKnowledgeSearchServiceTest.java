@@ -48,7 +48,7 @@ class HybridKnowledgeSearchServiceTest {
 
         when(embeddingClient.embed("beta")).thenThrow(new IllegalStateException("embedding down"));
         com.yanban.knowledge.domain.KbChunk chunk = new com.yanban.knowledge.domain.KbChunk(1L, 0, "beta keyword");
-        when(chunks.searchAccessibleChunks("beta", 2002L, PageRequest.of(0, 8))).thenReturn(List.of(chunk));
+        when(chunks.searchAccessibleVersionedChunks("beta", 2002L, null, false, PageRequest.of(0, 8))).thenReturn(List.of(chunk));
         when(documents.findById(1L)).thenReturn(java.util.Optional.of(new KbDocument(2002L, "notes.md", "READY", false)));
 
         List<KnowledgeSearchResult> results = service.search("beta", 2002L, 2);
@@ -94,7 +94,7 @@ class HybridKnowledgeSearchServiceTest {
         String query = "find the exact answer for beta_lookup_deepseek-20260701.";
         when(embeddingClient.embed(query)).thenThrow(new IllegalStateException("embedding down"));
         com.yanban.knowledge.domain.KbChunk chunk = new com.yanban.knowledge.domain.KbChunk(1L, 0, "beta_lookup_deepseek-20260701 key: beta keyword");
-        when(chunks.searchAccessibleChunks("beta_lookup_deepseek", 2002L, PageRequest.of(0, 8))).thenReturn(List.of(chunk));
+        when(chunks.searchAccessibleVersionedChunks("beta_lookup_deepseek", 2002L, null, false, PageRequest.of(0, 8))).thenReturn(List.of(chunk));
         when(documents.findById(1L)).thenReturn(java.util.Optional.of(new KbDocument(2002L, "notes.md", "READY", false)));
 
         List<KnowledgeSearchResult> results = service.search(query, 2002L, 2);
@@ -102,5 +102,33 @@ class HybridKnowledgeSearchServiceTest {
         assertThat(results).hasSize(1);
         assertThat(results.get(0).filename()).isEqualTo("notes.md");
         assertThat(results.get(0).rerankScore()).isNotNull();
+    }
+
+    @Test
+    void hybridHydrationFiltersDeletedDocumentsAndFallsBack() {
+        EmbeddingClient embeddingClient = Mockito.mock(EmbeddingClient.class);
+        KnowledgeSearchIndexClient indexClient = Mockito.mock(KnowledgeSearchIndexClient.class);
+        KbDocumentRepository documents = Mockito.mock(KbDocumentRepository.class);
+        KbChunkRepository chunks = Mockito.mock(KbChunkRepository.class);
+        SimpleKnowledgeSearchService fallback = new SimpleKnowledgeSearchService(chunks, documents);
+        HybridKnowledgeSearchService service = new HybridKnowledgeSearchService(embeddingClient, indexClient, documents, fallback);
+
+        when(embeddingClient.embed("gamma")).thenReturn(List.of(0.1d, 0.2d));
+        when(indexClient.search("gamma", 3003L, 8, List.of(0.1d, 0.2d))).thenReturn(List.of(
+                new KnowledgeSearchIndexHit(1L, 0, "gamma deleted", 2.0d)
+        ));
+        KbDocument deleted = new KbDocument(3003L, "deleted.md", "READY", false);
+        deleted.setVersionStatus("DELETED");
+        when(documents.findById(1L)).thenReturn(java.util.Optional.of(deleted));
+
+        com.yanban.knowledge.domain.KbChunk activeChunk = new com.yanban.knowledge.domain.KbChunk(2L, 0, "gamma active");
+        when(chunks.searchAccessibleVersionedChunks("gamma", 3003L, null, false, PageRequest.of(0, 8))).thenReturn(List.of(activeChunk));
+        when(documents.findById(2L)).thenReturn(java.util.Optional.of(new KbDocument(3003L, "active.md", "READY", false)));
+
+        List<KnowledgeSearchResult> results = service.search("gamma", 3003L, 2);
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).filename()).isEqualTo("active.md");
+        assertThat(results.get(0).versionStatus()).isEqualTo("ACTIVE");
     }
 }

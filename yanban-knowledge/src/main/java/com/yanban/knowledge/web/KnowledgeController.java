@@ -2,6 +2,7 @@ package com.yanban.knowledge.web;
 
 import com.yanban.knowledge.service.KnowledgeDocumentService;
 import com.yanban.knowledge.service.KnowledgeIngestionService;
+import com.yanban.knowledge.service.KnowledgeSearchOptions;
 import com.yanban.knowledge.service.KnowledgeSearchResult;
 import com.yanban.knowledge.service.KnowledgeSearchService;
 import com.yanban.knowledge.service.KnowledgeUploadService;
@@ -98,7 +99,12 @@ public class KnowledgeController {
     public List<KnowledgeSearchResult> search(@AuthenticationPrincipal(expression = "id") Long userId,
                                               @Valid @RequestBody SearchRequest request) {
         int topK = request.topK() == null ? 5 : request.topK();
-        return searchService.search(request.query(), userId, topK);
+        return searchService.search(request.query(), new KnowledgeSearchOptions(
+                userId,
+                topK,
+                request.projectId(),
+                Boolean.TRUE.equals(request.includeSuperseded())
+        ));
     }
 
     public record SimpleUploadForm(MultipartFile file, boolean isPublic) {
