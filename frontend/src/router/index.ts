@@ -8,6 +8,7 @@ import SettingsPage from '@/views/SettingsPage.vue';
 import KnowledgeBasePage from '@/views/KnowledgeBasePage.vue';
 import KnowledgeSearchDebugPage from '@/views/KnowledgeSearchDebugPage.vue';
 import PaperPage from '@/views/PaperPage.vue';
+import ProjectPreviewPage from '@/views/ProjectPreviewPage.vue';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -18,6 +19,7 @@ const router = createRouter({
     { path: '/register', name: 'register', component: RegisterPage, meta: { guestOnly: true } },
     { path: '/chat', name: 'chat', component: ChatPage, meta: { requiresAuth: true } },
     { path: '/paper', name: 'paper', component: PaperPage, meta: { requiresAuth: true } },
+    { path: '/projects', name: 'projects', component: ProjectPreviewPage, meta: { requiresAuth: true } },
     { path: '/knowledge-base', name: 'knowledge-base', component: KnowledgeBasePage, meta: { requiresAuth: true } },
     { path: '/knowledge-base/search-debug', name: 'knowledge-base-search-debug', component: KnowledgeSearchDebugPage, meta: { requiresAuth: true } },
     { path: '/settings', name: 'settings', component: SettingsPage, meta: { requiresAuth: true } },

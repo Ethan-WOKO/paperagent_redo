@@ -134,6 +134,7 @@ const topbarCollapsed = ref(readStoredBoolean(TOPBAR_COLLAPSED_KEY, false));
 const navItems = [
   { label: 'Workspace', path: '/chat', icon: '⌂' },
   { label: 'Paper Polish', path: '/paper', icon: '✎' },
+  { label: 'Project Preview', path: '/projects', icon: '◫' },
   { label: 'Knowledge Base', path: '/knowledge-base', icon: '▣' },
   { label: 'Search Debug', path: '/knowledge-base/search-debug', icon: '⌕' },
   { label: 'Settings', path: '/settings', icon: '⚙' },
@@ -143,6 +144,7 @@ const userInitial = computed(() => (authStore.currentUser?.username || 'U').slic
 
 const routeTitle = computed(() => {
   if (route.path.startsWith('/paper')) return 'Paper Polish Workspace';
+  if (route.path.startsWith('/projects')) return 'Project Preview';
   if (route.path.startsWith('/knowledge-base/search-debug')) return 'Knowledge Search Debug';
   if (route.path.startsWith('/knowledge-base')) return 'Knowledge Base';
   if (route.path.startsWith('/settings')) return 'Settings';
@@ -151,6 +153,7 @@ const routeTitle = computed(() => {
 
 const routeSubtitle = computed(() => {
   if (route.path.startsWith('/paper')) return 'Polish LaTeX papers, retrieve literature, review suggestions, and export artifacts.';
+  if (route.path.startsWith('/projects')) return 'Preview the future Project or Workspace entry without enabling full project management yet.';
   if (route.path.startsWith('/knowledge-base')) return 'Manage private knowledge and verify retrieval quality.';
   if (route.path.startsWith('/settings')) return 'Configure models, tools, MCP, skills, and provider credentials.';
   return 'Chat, search literature, and run multi-step research workflows.';
@@ -158,6 +161,7 @@ const routeSubtitle = computed(() => {
 
 const routeEyebrow = computed(() => {
   if (route.path.startsWith('/paper')) return 'Academic Writing';
+  if (route.path.startsWith('/projects')) return 'Preview';
   if (route.path.startsWith('/knowledge-base')) return 'Retrieval';
   if (route.path.startsWith('/settings')) return 'System';
   return 'AI Research Assistant';
