@@ -4,13 +4,15 @@ import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.Optional;
-import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -31,6 +33,10 @@ public class LiteratureSearchTaskService {
 
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED);
     private static final Set<String> CANCEL_STATUSES = Set.of(STATUS_CANCEL_REQUESTED, STATUS_CANCELLING, STATUS_CANCELLED);
+    private static final Duration DEFAULT_PENDING_AGE = Duration.ofMinutes(2);
+    private static final Duration DEFAULT_RUNNING_TIMEOUT = Duration.ofMinutes(10);
+    private static final int DEFAULT_SCAN_BATCH_SIZE = 50;
+    private static final int MAX_SCAN_BATCH_SIZE = 200;
 
     private final LiteratureSearchTaskRepository tasks;
     private final LiteratureSearchTaskPublisher publisher;
@@ -103,10 +109,13 @@ public class LiteratureSearchTaskService {
                                            Integer rawCandidateCount,
                                            Integer uniqueCandidateCount,
                                            Integer sourceAttempts,
-        String sourceFailuresJson) {
+                                           String sourceFailuresJson) {
         LiteratureSearchTask task = ownedTask(userId, taskId);
         if (CANCEL_STATUSES.contains(task.getStatus())) {
             return markCancelled(userId, taskId);
+        }
+        if (TERMINAL_STATUSES.contains(task.getStatus())) {
+            return task;
         }
         task.setResultJson(resultJson);
         task.setRawCandidateCount(rawCandidateCount);
@@ -117,6 +126,40 @@ public class LiteratureSearchTaskService {
         task.setCurrentStage("COMPLETE");
         task.setFinishedAt(Instant.now());
         return tasks.save(task);
+    }
+
+    @Transactional
+    public ScanResult scanStalledTasks(Duration pendingAge, Duration runningTimeout, int batchSize) {
+        Instant now = Instant.now();
+        int limit = normalizeBatchSize(batchSize);
+        Instant pendingBefore = now.minus(normalizeDuration(pendingAge, DEFAULT_PENDING_AGE));
+        Instant runningBefore = now.minus(normalizeDuration(runningTimeout, DEFAULT_RUNNING_TIMEOUT));
+
+        int requeued = 0;
+        for (LiteratureSearchTask task : tasks.findByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(
+                STATUS_PENDING,
+                pendingBefore,
+                PageRequest.of(0, limit))) {
+            task.setCurrentStage("REQUEUED");
+            tasks.save(task);
+            publishAfterCommit(task);
+            requeued++;
+        }
+
+        int timedOut = 0;
+        for (LiteratureSearchTask task : tasks.findByStatusAndStartedAtBeforeOrderByStartedAtAsc(
+                STATUS_RUNNING,
+                runningBefore,
+                PageRequest.of(0, limit))) {
+            task.setStatus(STATUS_FAILED);
+            task.setCurrentStage("TIMEOUT");
+            task.setErrorMessage("文献检索任务运行超时，已停止等待并标记失败");
+            task.setFinishedAt(now);
+            tasks.save(task);
+            timedOut++;
+        }
+
+        return new ScanResult(requeued, timedOut);
     }
 
     @Transactional
@@ -245,6 +288,26 @@ public class LiteratureSearchTaskService {
         return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength);
     }
 
+    private Duration normalizeDuration(Duration value, Duration fallback) {
+        if (value == null || value.isZero() || value.isNegative()) {
+            return fallback;
+        }
+        return value;
+    }
+
+    private int normalizeBatchSize(int batchSize) {
+        if (batchSize <= 0) {
+            return DEFAULT_SCAN_BATCH_SIZE;
+        }
+        return Math.min(batchSize, MAX_SCAN_BATCH_SIZE);
+    }
+
     public record TaskStartResult(LiteratureSearchTask task, boolean idempotent) {
+    }
+
+    public record ScanResult(int requeuedPendingCount, int timedOutRunningCount) {
+        public boolean hasWork() {
+            return requeuedPendingCount > 0 || timedOutRunningCount > 0;
+        }
     }
 }
