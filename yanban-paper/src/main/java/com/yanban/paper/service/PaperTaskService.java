@@ -13,9 +13,13 @@ import com.yanban.paper.web.PaperProcessRequest;
 import com.yanban.paper.web.PaperTaskHistoryResponse;
 import com.yanban.paper.web.PaperTaskResponse;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -27,11 +31,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class PaperTaskService {
+
+    private static final String STATUS_PENDING = "PENDING";
+    private static final String INPUT_FORMAT_LATEX = "LATEX";
+    private static final String EVENT_MESSAGE_TASK_CREATED = "paper polish task created";
 
     private final PaperTaskRepository paperTaskRepository;
     private final PaperTaskArtifactRepository artifactRepository;
@@ -58,46 +67,58 @@ public class PaperTaskService {
     }
 
     @Transactional
-    public PaperTaskResponse createTask(Long userId, PaperProcessRequest request) {
+    public PaperTaskResponse createTask(Long userId, PaperProcessRequest request, String clientRequestIdHeader) {
         MultipartFile file = request.mainTex() == null ? request.file() : request.mainTex();
+        MultipartFile bibFile = request.bibFile();
         validateTexFile(file);
-        validateBibFile(request.bibFile());
+        validateBibFile(bibFile);
+
         UserAccountPolicy policy = accountPolicy.getIfAvailable();
         if (policy != null) {
-            long totalBytes = file.getSize() + (request.bibFile() == null ? 0 : request.bibFile().getSize());
+            long totalBytes = file.getSize() + (bibFile == null ? 0 : bibFile.getSize());
             policy.assertCanCreatePaperTask(userId, totalBytes);
         }
+
+        String clientRequestId = resolveClientRequestId(clientRequestIdHeader, request.clientRequestId());
+        int maxLiteratureCount = normalizeLiteratureCount(request.literatureCount());
+        int minLiteratureCount = normalizeLiteratureMinCount(request.literatureMinCount(), maxLiteratureCount);
+        String idempotencyKey = buildIdempotencyKey(userId, request, file, bibFile, clientRequestId, maxLiteratureCount, minLiteratureCount);
+
+        PaperTask existing = paperTaskRepository.findByIdempotencyKey(idempotencyKey).orElse(null);
+        if (existing != null) {
+            return PaperTaskResponse.from(existing, request.scoreThreshold(), request.maxRounds(), request.innerMaxAttempts(), existing.getLiteratureCount(), true);
+        }
+
         String objectKey = paperStorageService.storeOriginal(userId, file);
-        String bibObjectKey = request.bibFile() == null || request.bibFile().isEmpty()
-                ? null
-                : paperStorageService.storeOriginal(userId, request.bibFile());
+        String bibObjectKey = bibFile == null || bibFile.isEmpty() ? null : paperStorageService.storeOriginal(userId, bibFile);
         String title = resolveTitle(file);
         PaperTask task = new PaperTask(
                 userId,
                 title,
                 file.getOriginalFilename(),
                 objectKey,
-                "PENDING",
+                STATUS_PENDING,
                 request.targetLanguage(),
                 "UPLOAD_RECEIVED",
-                null
+                null,
+                clientRequestId,
+                idempotencyKey
         );
-        task.setInputFormat("LATEX");
+        task.setInputFormat(INPUT_FORMAT_LATEX);
         task.setMainEntry(file.getOriginalFilename());
         String baseMode = bibObjectKey == null ? "LATEX_ONLY" : "LATEX_BIB";
         task.setMode(Boolean.TRUE.equals(request.literatureOnly()) ? baseMode + "_LITERATURE_ONLY" : baseMode);
-        int maxLiteratureCount = normalizeLiteratureCount(request.literatureCount());
         task.setLiteratureCount(maxLiteratureCount);
-        task.setLiteratureMinCount(normalizeLiteratureMinCount(request.literatureMinCount(), maxLiteratureCount));
+        task.setLiteratureMinCount(minLiteratureCount);
+
         PaperTask saved = paperTaskRepository.save(task);
-        task = saved;
-        saveSourceArtifact(task.getId(), "source_tex", objectKey, file.getOriginalFilename());
+        saveSourceArtifact(saved.getId(), "source_tex", objectKey, file.getOriginalFilename());
         if (bibObjectKey != null) {
-            saveSourceArtifact(task.getId(), "source_bib", bibObjectKey, request.bibFile().getOriginalFilename());
+            saveSourceArtifact(saved.getId(), "source_bib", bibObjectKey, bibFile.getOriginalFilename());
         }
-        recordTaskCreatedAfterCommit(task);
-        startTaskAfterCommit(task.getId());
-        return PaperTaskResponse.from(task, request.scoreThreshold(), request.maxRounds(), request.innerMaxAttempts(), task.getLiteratureCount());
+        recordTaskCreatedAfterCommit(saved);
+        startTaskAfterCommit(saved.getId());
+        return PaperTaskResponse.from(saved, request.scoreThreshold(), request.maxRounds(), request.innerMaxAttempts(), saved.getLiteratureCount(), false);
     }
 
     private void recordTaskCreatedAfterCommit(PaperTask task) {
@@ -122,7 +143,7 @@ public class PaperTaskService {
                 "TASK_CREATED",
                 task.getCurrentStage(),
                 task.getStatus(),
-                "论文润色任务已创建",
+                EVENT_MESSAGE_TASK_CREATED,
                 null
         ));
     }
@@ -136,7 +157,7 @@ public class PaperTaskService {
                 task.getId(),
                 task.getStatus(),
                 "LONG_RUNNING_TOOL_TASK",
-                null,
+                task.getClientRequestId(),
                 task.getTitle(),
                 task.getSourceFilename(),
                 null,
@@ -152,7 +173,9 @@ public class PaperTaskService {
     }
 
     private Integer normalizeLiteratureCount(Integer literatureCount) {
-        if (literatureCount == null) return 20;
+        if (literatureCount == null) {
+            return 20;
+        }
         return Math.max(1, Math.min(100, literatureCount));
     }
 
@@ -176,11 +199,11 @@ public class PaperTaskService {
 
     private void validateTexFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请上传 LaTeX 主文件（.tex）");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "please upload a LaTeX .tex file");
         }
         String filename = file.getOriginalFilename();
         if (filename == null || !filename.toLowerCase().endsWith(".tex")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "主文件仅支持 .tex");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "main document only supports .tex");
         }
     }
 
@@ -190,8 +213,66 @@ public class PaperTaskService {
         }
         String filename = file.getOriginalFilename();
         if (filename == null || !filename.toLowerCase().endsWith(".bib")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "参考文献文件仅支持 .bib");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "bibliography only supports .bib");
         }
+    }
+
+    private String resolveClientRequestId(String headerValue, String bodyValue) {
+        if (StringUtils.hasText(headerValue)) {
+            return headerValue.trim();
+        }
+        if (StringUtils.hasText(bodyValue)) {
+            return bodyValue.trim();
+        }
+        return UUID.randomUUID().toString();
+    }
+
+    private String buildIdempotencyKey(Long userId,
+                                       PaperProcessRequest request,
+                                       MultipartFile file,
+                                       MultipartFile bibFile,
+                                       String clientRequestId,
+                                       int maxLiteratureCount,
+                                       int minLiteratureCount) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateDigest(digest, String.valueOf(userId));
+            updateDigest(digest, "PAPER_POLISH");
+            updateDigest(digest, clientRequestId);
+            updateDigest(digest, request.targetLanguage());
+            updateDigest(digest, String.valueOf(Boolean.TRUE.equals(request.literatureOnly())));
+            updateDigest(digest, String.valueOf(maxLiteratureCount));
+            updateDigest(digest, String.valueOf(minLiteratureCount));
+            updateDigest(digest, file.getOriginalFilename());
+            updateDigest(digest, file.getBytes());
+            if (bibFile != null && !bibFile.isEmpty()) {
+                updateDigest(digest, bibFile.getOriginalFilename());
+                updateDigest(digest, bibFile.getBytes());
+            } else {
+                updateDigest(digest, "");
+            }
+            return hex(digest.digest());
+        } catch (Exception ex) {
+            throw new IllegalStateException("failed to build paper task idempotency key", ex);
+        }
+    }
+
+    private void updateDigest(MessageDigest digest, String value) {
+        digest.update((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) '\n');
+    }
+
+    private void updateDigest(MessageDigest digest, byte[] value) {
+        digest.update(value);
+        digest.update((byte) '\n');
+    }
+
+    private String hex(byte[] bytes) {
+        StringBuilder hex = new StringBuilder();
+        for (byte b : bytes) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
     }
 
     private void saveSourceArtifact(Long taskId, String type, String objectKey, String filename) {
@@ -201,7 +282,9 @@ public class PaperTaskService {
     }
 
     private String json(String value) {
-        if (value == null) return "";
+        if (value == null) {
+            return "";
+        }
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
@@ -222,14 +305,14 @@ public class PaperTaskService {
     @Transactional(readOnly = true)
     public PaperTaskResponse getTask(Long userId, Long taskId) {
         PaperTask task = paperTaskRepository.findByIdAndUserId(taskId, userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "论文任务不存在"));
-        return PaperTaskResponse.from(task, null, null, null, task.getLiteratureCount());
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "paper task not found"));
+        return PaperTaskResponse.from(task, null, null, null, task.getLiteratureCount(), false);
     }
 
     @Transactional(readOnly = true)
     public Resource downloadResult(Long userId, Long taskId) {
         PaperTask task = paperTaskRepository.findByIdAndUserId(taskId, userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "论文任务不存在"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "paper task not found"));
         List<PaperTaskArtifact> resultArtifacts = downloadableArtifacts(taskId);
         if (!resultArtifacts.isEmpty()) {
             return new ByteArrayResource(zipArtifacts(resultArtifacts));
@@ -237,12 +320,12 @@ public class PaperTaskService {
         if (task.getFinalObjectKey() != null && !task.getFinalObjectKey().isBlank()) {
             return new ByteArrayResource(paperStorageService.read(task.getFinalObjectKey()));
         }
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "论文结果尚未生成");
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "paper result not ready");
     }
 
     public boolean hasDownloadableResult(Long userId, Long taskId) {
         PaperTask task = paperTaskRepository.findByIdAndUserId(taskId, userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "论文任务不存在"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "paper task not found"));
         if (!downloadableArtifacts(taskId).isEmpty()) {
             return true;
         }
@@ -251,7 +334,7 @@ public class PaperTaskService {
 
     public String downloadFilename(Long userId, Long taskId) {
         PaperTask task = paperTaskRepository.findByIdAndUserId(taskId, userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "论文任务不存在"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "paper task not found"));
         String base = task.getSourceFilename() == null || task.getSourceFilename().isBlank()
                 ? "paper-result"
                 : task.getSourceFilename().replaceAll("\\.[^.]+$", "");
@@ -263,7 +346,7 @@ public class PaperTaskService {
 
     public String downloadContentType(Long userId, Long taskId) {
         PaperTask task = paperTaskRepository.findByIdAndUserId(taskId, userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "论文任务不存在"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "paper task not found"));
         if (!downloadableArtifacts(taskId).isEmpty()) {
             return "application/zip";
         }
@@ -288,8 +371,8 @@ public class PaperTaskService {
                 }
             }
             return output.toByteArray();
-        } catch (Exception ex) {
-            throw new IllegalStateException("打包论文结果失败", ex);
+        } catch (IOException ex) {
+            throw new IllegalStateException("failed to zip paper result artifacts", ex);
         }
     }
 
@@ -309,15 +392,23 @@ public class PaperTaskService {
 
     private String metadataFilename(PaperTaskArtifact artifact, String fallback) {
         String metadata = artifact.getMetadataJson();
-        if (metadata == null || metadata.isBlank()) return fallback;
+        if (metadata == null || metadata.isBlank()) {
+            return fallback;
+        }
         String marker = "\"filename\":\"";
         int start = metadata.indexOf(marker);
-        if (start < 0) return fallback;
+        if (start < 0) {
+            return fallback;
+        }
         start += marker.length();
         int end = metadata.indexOf('"', start);
-        if (end <= start) return fallback;
+        if (end <= start) {
+            return fallback;
+        }
         String filename = metadata.substring(start, end).replace("\\\"", "\"").replace("\\\\", "\\").trim();
-        if (filename.isBlank() || filename.contains("/") || filename.contains("\\")) return fallback;
+        if (filename.isBlank() || filename.contains("/") || filename.contains("\\")) {
+            return fallback;
+        }
         return filename;
     }
 
@@ -328,7 +419,7 @@ public class PaperTaskService {
     private String resolveTitle(MultipartFile file) {
         String filename = file.getOriginalFilename();
         if (filename == null || filename.isBlank()) {
-            return "未命名论文任务";
+            return "unnamed paper task";
         }
         int dotIndex = filename.lastIndexOf('.');
         return dotIndex > 0 ? filename.substring(0, dotIndex) : filename;

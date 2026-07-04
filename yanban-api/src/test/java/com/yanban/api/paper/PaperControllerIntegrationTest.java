@@ -14,12 +14,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.paper.domain.PaperTaskRepository;
 import com.yanban.paper.domain.PaperTaskRoundRepository;
 import io.minio.MinioClient;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -50,6 +52,9 @@ class PaperControllerIntegrationTest {
 
     @Autowired
     PaperTaskRoundRepository paperTaskRoundRepository;
+
+    @Autowired
+    JdbcTemplate jdbc;
 
     @MockBean
     MinioClient minioClient;
@@ -84,12 +89,12 @@ class PaperControllerIntegrationTest {
         Long taskId = objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asLong();
         waitForRounds(taskId);
         var task = paperTaskRepository.findById(taskId).orElseThrow();
-        org.assertj.core.api.Assertions.assertThat(task.getStatus()).isIn("PENDING", "RUNNING", "COMPLETED");
-        org.assertj.core.api.Assertions.assertThat(task.getObjectKey()).isNotBlank();
-        org.assertj.core.api.Assertions.assertThat(task.getTargetLanguage()).isEqualTo("zh");
-        org.assertj.core.api.Assertions.assertThat(task.getInputFormat()).isEqualTo("LATEX");
-        org.assertj.core.api.Assertions.assertThat(task.getMode()).isEqualTo("LATEX_BIB");
-        org.assertj.core.api.Assertions.assertThat(paperTaskRoundRepository.findByTaskIdOrderByCreatedAtAsc(taskId)).isNotEmpty();
+        Assertions.assertThat(task.getStatus()).isIn("PENDING", "RUNNING", "COMPLETED");
+        Assertions.assertThat(task.getObjectKey()).isNotBlank();
+        Assertions.assertThat(task.getTargetLanguage()).isEqualTo("zh");
+        Assertions.assertThat(task.getInputFormat()).isEqualTo("LATEX");
+        Assertions.assertThat(task.getMode()).isEqualTo("LATEX_BIB");
+        Assertions.assertThat(paperTaskRoundRepository.findByTaskIdOrderByCreatedAtAsc(taskId)).isNotEmpty();
 
         mockMvc.perform(get("/api/v1/paper/tasks/{taskId}", taskId)
                         .header("Authorization", "Bearer " + token))
@@ -119,6 +124,50 @@ class PaperControllerIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
+    @Test
+    void sameClientRequestIdAndSameInputReusesExistingTask() throws Exception {
+        String token = registerAndGetToken("paper_user_c");
+        String clientRequestId = "paper-req-83";
+
+        MvcResult first = mockMvc.perform(multipart("/api/v1/paper/process")
+                        .file(new MockMultipartFile("mainTex", "main.tex",
+                                "application/x-tex",
+                                "\\documentclass{article}\\begin{document}Hello\\end{document}".getBytes()))
+                        .file(new MockMultipartFile("bibFile", "refs.bib",
+                                "text/x-bibtex",
+                                "@article{a,title={A}}".getBytes()))
+                        .param("literatureCount", "5")
+                        .param("literatureMinCount", "3")
+                        .param("targetLanguage", "zh")
+                        .header("X-Client-Request-Id", clientRequestId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.clientRequestId").value(clientRequestId))
+                .andExpect(jsonPath("$.idempotent").value(false))
+                .andReturn();
+
+        Long firstTaskId = objectMapper.readTree(first.getResponse().getContentAsString()).get("id").asLong();
+
+        mockMvc.perform(multipart("/api/v1/paper/process")
+                        .file(new MockMultipartFile("mainTex", "main.tex",
+                                "application/x-tex",
+                                "\\documentclass{article}\\begin{document}Hello\\end{document}".getBytes()))
+                        .file(new MockMultipartFile("bibFile", "refs.bib",
+                                "text/x-bibtex",
+                                "@article{a,title={A}}".getBytes()))
+                        .param("literatureCount", "5")
+                        .param("literatureMinCount", "3")
+                        .param("targetLanguage", "zh")
+                        .header("X-Client-Request-Id", clientRequestId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").value(firstTaskId))
+                .andExpect(jsonPath("$.clientRequestId").value(clientRequestId))
+                .andExpect(jsonPath("$.idempotent").value(true));
+
+        Assertions.assertThat(paperTaskRepository.countByUserId(resolveUserId("paper_user_c"))).isEqualTo(1L);
+    }
+
     private void waitForRounds(Long taskId) throws InterruptedException {
         for (int i = 0; i < 20; i++) {
             if (!paperTaskRoundRepository.findByTaskIdOrderByCreatedAtAsc(taskId).isEmpty()) {
@@ -136,5 +185,9 @@ class PaperControllerIntegrationTest {
                 .andExpect(jsonPath("$.accessToken", not(blankOrNullString())))
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsString()).get("accessToken").asText();
+    }
+
+    private Long resolveUserId(String username) {
+        return jdbc.queryForObject("SELECT id FROM sys_users WHERE username = ?", Long.class, username);
     }
 }

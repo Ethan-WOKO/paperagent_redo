@@ -7,6 +7,8 @@ export interface PaperTaskResponse {
   sourceFilename: string | null;
   objectKey: string | null;
   finalObjectKey: string | null;
+  clientRequestId: string | null;
+  idempotent: boolean | null;
   status: string;
   targetLanguage: 'zh' | 'en';
   currentStage: string | null;
@@ -117,6 +119,7 @@ export interface PaperTaskHistoryResponse {
   id: number;
   title: string;
   sourceFilename: string | null;
+  clientRequestId: string | null;
   status: string;
   currentStage: string | null;
   errorMessage: string | null;
@@ -129,9 +132,12 @@ export interface PaperTaskHistoryResponse {
   artifacts: PaperArtifactResponse[];
 }
 
-export function createPaperTask(formData: FormData) {
+export function createPaperTask(formData: FormData, clientRequestId?: string) {
   return http.post<PaperTaskResponse>('/paper/process', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      ...(clientRequestId ? { 'X-Client-Request-Id': clientRequestId } : {}),
+    },
   });
 }
 

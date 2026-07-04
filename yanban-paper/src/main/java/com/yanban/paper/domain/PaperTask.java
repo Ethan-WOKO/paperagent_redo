@@ -33,6 +33,12 @@ public class PaperTask {
     @Column(name = "final_object_key", length = 512)
     private String finalObjectKey;
 
+    @Column(name = "client_request_id", length = 128)
+    private String clientRequestId;
+
+    @Column(name = "idempotency_key", length = 64)
+    private String idempotencyKey;
+
     @Column(name = "input_format", length = 16)
     private String inputFormat;
 
@@ -73,6 +79,12 @@ public class PaperTask {
 
     public PaperTask(Long userId, String title, String sourceFilename, String objectKey,
                      String status, String targetLanguage, String currentStage, String errorMessage) {
+        this(userId, title, sourceFilename, objectKey, status, targetLanguage, currentStage, errorMessage, null, null);
+    }
+
+    public PaperTask(Long userId, String title, String sourceFilename, String objectKey,
+                     String status, String targetLanguage, String currentStage, String errorMessage,
+                     String clientRequestId, String idempotencyKey) {
         this.userId = userId;
         this.title = title;
         this.sourceFilename = sourceFilename;
@@ -81,6 +93,8 @@ public class PaperTask {
         this.targetLanguage = targetLanguage;
         this.currentStage = currentStage;
         this.errorMessage = errorMessage;
+        this.clientRequestId = clientRequestId;
+        this.idempotencyKey = idempotencyKey;
     }
 
     public Long getId() { return id; }
@@ -89,6 +103,8 @@ public class PaperTask {
     public String getSourceFilename() { return sourceFilename; }
     public String getObjectKey() { return objectKey; }
     public String getFinalObjectKey() { return finalObjectKey; }
+    public String getClientRequestId() { return clientRequestId; }
+    public String getIdempotencyKey() { return idempotencyKey; }
     public String getInputFormat() { return inputFormat; }
     public String getMode() { return mode; }
     public String getMainEntry() { return mainEntry; }
@@ -102,6 +118,8 @@ public class PaperTask {
     public Instant getUpdatedAt() { return updatedAt; }
 
     public void setFinalObjectKey(String finalObjectKey) { this.finalObjectKey = finalObjectKey; }
+    public void setClientRequestId(String clientRequestId) { this.clientRequestId = clientRequestId; }
+    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
     public void setInputFormat(String inputFormat) { this.inputFormat = inputFormat; }
     public void setMode(String mode) { this.mode = mode; }
     public void setMainEntry(String mainEntry) { this.mainEntry = mainEntry; }

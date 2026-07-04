@@ -10,6 +10,8 @@ public record PaperTaskResponse(
         String sourceFilename,
         String objectKey,
         String finalObjectKey,
+        String clientRequestId,
+        Boolean idempotent,
         String status,
         String targetLanguage,
         String currentStage,
@@ -26,7 +28,8 @@ public record PaperTaskResponse(
                                          Integer scoreThreshold,
                                          Integer maxRounds,
                                          Integer innerMaxAttempts,
-                                         Integer literatureCount) {
+                                         Integer literatureCount,
+                                         boolean idempotent) {
         return new PaperTaskResponse(
                 task.getId(),
                 task.getUserId(),
@@ -34,6 +37,8 @@ public record PaperTaskResponse(
                 task.getSourceFilename(),
                 task.getObjectKey(),
                 task.getFinalObjectKey(),
+                task.getClientRequestId(),
+                idempotent,
                 task.getStatus(),
                 task.getTargetLanguage(),
                 task.getCurrentStage(),

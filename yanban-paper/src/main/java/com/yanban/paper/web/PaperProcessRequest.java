@@ -16,6 +16,7 @@ public record PaperProcessRequest(
         @Min(1) @Max(100) Integer literatureMinCount,
         @Min(1) @Max(100) Integer literatureCount,
         Boolean literatureOnly,
-        @NotBlank @Pattern(regexp = "zh|en", message = "targetLanguage 仅支持 zh 或 en") String targetLanguage
+        @NotBlank @Pattern(regexp = "zh|en", message = "targetLanguage only supports zh or en") String targetLanguage,
+        String clientRequestId
 ) {
 }
