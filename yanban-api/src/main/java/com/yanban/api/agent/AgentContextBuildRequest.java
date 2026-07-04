@@ -6,6 +6,7 @@ public record AgentContextBuildRequest(
         String providerKey,
         String modelName,
         String sessionSummary,
+        AgentLongTermMemoryContext longTermMemoryContext,
         String ragContext,
         String toolTraceContext,
         Integer maxRecentMessages,
@@ -18,7 +19,19 @@ public record AgentContextBuildRequest(
                                     String sessionSummary,
                                     Integer maxRecentMessages,
                                     Integer maxContextCharacters) {
-        this(sessionId, userId, providerKey, modelName, sessionSummary, null, null, maxRecentMessages, maxContextCharacters);
+        this(sessionId, userId, providerKey, modelName, sessionSummary, null, null, null, maxRecentMessages, maxContextCharacters);
+    }
+
+    public AgentContextBuildRequest(Long sessionId,
+                                    Long userId,
+                                    String providerKey,
+                                    String modelName,
+                                    String sessionSummary,
+                                    String ragContext,
+                                    String toolTraceContext,
+                                    Integer maxRecentMessages,
+                                    Integer maxContextCharacters) {
+        this(sessionId, userId, providerKey, modelName, sessionSummary, null, ragContext, toolTraceContext, maxRecentMessages, maxContextCharacters);
     }
 
     public AgentContextBuildRequest {

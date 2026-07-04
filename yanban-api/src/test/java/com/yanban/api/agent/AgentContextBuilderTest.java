@@ -114,6 +114,52 @@ class AgentContextBuilderTest {
     }
 
     @Test
+    void injectsLongTermMemoryBeforeRagAndReportsDroppedMemory() {
+        when(messages.findBySessionIdOrderByCreatedAtAsc(SESSION_ID)).thenReturn(List.of(
+                message("user", "follow up")
+        ));
+
+        AgentContextPackage context = builder.build(new AgentContextBuildRequest(
+                SESSION_ID,
+                USER_ID,
+                "deepseek",
+                "deepseek-chat",
+                "User studies RAG.",
+                new AgentLongTermMemoryContext(
+                        "- memory#7 [PREFERENCE, confidence=0.8000] User prefers careful caveats.",
+                        1,
+                        3,
+                        2,
+                        "Injected long-term memories: hits=1, candidates=3, omitted=2, items=#7:PREFERENCE:User prefers careful caveats."
+                ),
+                "citation-1 says version filtering is active.",
+                null,
+                4,
+                8_000
+        ));
+
+        assertThat(context.sections()).extracting(AgentContextSection::type)
+                .containsExactly("session_summary", "long_term_memory", "rag_context", "recent_messages", "runtime_identity_guard");
+        assertThat(context.messages()).extracting(ChatMessage::content)
+                .contains(
+                        "Long-term memory:\n- memory#7 [PREFERENCE, confidence=0.8000] User prefers careful caveats.",
+                        "RAG context:\ncitation-1 says version filtering is active."
+                );
+        assertThat(context.sections())
+                .filteredOn(section -> "long_term_memory".equals(section.type()))
+                .singleElement()
+                .satisfies(section -> {
+                    assertThat(section.itemCount()).isEqualTo(1);
+                    assertThat(section.note()).contains("hits=1", "omitted=2");
+                });
+        assertThat(context.droppedItems())
+                .anySatisfy(item -> {
+                    assertThat(item.type()).isEqualTo("long_term_memory");
+                    assertThat(item.count()).isEqualTo(2);
+                });
+    }
+
+    @Test
     void downgradesHistoricalToolMessagesWithoutMatchingAssistantCall() {
         when(messages.findBySessionIdOrderByCreatedAtAsc(SESSION_ID)).thenReturn(List.of(
                 message("assistant", "I will call a tool", toolCallsJson("call-1"), null),

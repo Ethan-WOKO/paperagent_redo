@@ -30,6 +30,7 @@ import com.yanban.paper.literature.AdHocLiteratureSearchService;
 import com.yanban.paper.literature.AdHocLiteratureSearchService.AdHocLiteratureItem;
 import com.yanban.paper.literature.AdHocLiteratureSearchService.AdHocLiteratureSearchResult;
 import java.util.List;
+import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -206,6 +207,58 @@ class AgentControllerIntegrationTest {
                     assertThat(message.role()).isEqualTo("system");
                     assertThat(message.content()).contains("Session summary");
                     assertThat(message.content()).contains("hybrid RAG");
+                });
+    }
+
+    @Test
+    void ordinaryMessagesInjectRelevantLongTermMemoryAndExposeSnapshotSection() throws Exception {
+        when(chatModelProvider.providerName()).thenReturn("mock");
+        when(chatModelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("memory aware answer"), "stop", null));
+        String token = registerAndGetToken("agent_user_long_memory_context");
+        long sessionId = createSession(token, "Long Memory Context");
+
+        mockMvc.perform(post("/api/v1/settings/memory")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "memoryType":"RESEARCH_FIELD",
+                                  "content":"User studies GraphRAG evaluation for academic writing assistants.",
+                                  "tags":["GraphRAG","evaluation"],
+                                  "confidence":0.86
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/agent/sessions/{id}/messages", sessionId)
+                        .header("Authorization", "Bearer " + token)
+                        .header("X-Trace-Id", "trace-long-memory")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\"How should I discuss GraphRAG evaluation?\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        ArgumentCaptor<ChatRequest> captor = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModelProvider).chat(captor.capture());
+        assertThat(captor.getValue().messages())
+                .anySatisfy(message -> {
+                    assertThat(message.role()).isEqualTo("system");
+                    assertThat(message.content()).contains("Long-term memory", "GraphRAG evaluation");
+                });
+
+        MvcResult snapshotResult = mockMvc.perform(get("/api/v1/agent/sessions/{id}/context-snapshots", sessionId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode sections = objectMapper.readTree(snapshotResult.getResponse().getContentAsString())
+                .get(0)
+                .get("sections");
+        assertThat(StreamSupport.stream(sections.spliterator(), false).toList())
+                .anySatisfy(section -> {
+                    assertThat(section.get("type").asText()).isEqualTo("long_term_memory");
+                    assertThat(section.get("itemCount").asInt()).isEqualTo(1);
+                    assertThat(section.get("note").asText()).contains("hits=1", "GraphRAG");
                 });
     }
 
