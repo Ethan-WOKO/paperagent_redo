@@ -7,6 +7,14 @@ export interface KbDocumentItem {
   status: 'UPLOADING' | 'PROCESSING' | 'READY' | 'FAILED';
   isPublic: boolean;
   sourceType: 'USER_UPLOAD' | 'DEMO_SEED' | string;
+  projectId: number | null;
+  lineageId: string | null;
+  versionNo: number;
+  versionStatus: 'ACTIVE' | 'SUPERSEDED' | 'DELETED' | 'ARCHIVED' | string;
+  canonicalKey: string | null;
+  effectiveAt: string | null;
+  supersededAt: string | null;
+  deletedAt: string | null;
   mimeType: string | null;
   fileSize: number | null;
   errorMessage: string | null;
@@ -21,6 +29,18 @@ export interface KbDocumentResponse {
   status: string;
   isPublic: boolean;
   sourceType: string;
+  projectId: number | null;
+  lineageId: string | null;
+  versionNo: number;
+  versionStatus: string;
+  sourceTaskType: string | null;
+  sourceTaskId: number | null;
+  sourceArtifactId: number | null;
+  sourceDocumentId: number | null;
+  canonicalKey: string | null;
+  effectiveAt: string | null;
+  supersededAt: string | null;
+  deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,6 +49,12 @@ export interface KbDocumentPreviewResponse {
   id: number;
   filename: string;
   status: string;
+  sourceType: string;
+  projectId: number | null;
+  lineageId: string | null;
+  versionNo: number;
+  versionStatus: string;
+  canonicalKey: string | null;
   mimeType: string | null;
   fileSize: number | null;
   totalChunks: number;
