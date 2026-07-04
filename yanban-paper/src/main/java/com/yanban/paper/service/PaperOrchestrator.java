@@ -38,6 +38,16 @@ import org.springframework.web.server.ResponseStatusException;
 public class PaperOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(PaperOrchestrator.class);
+    static final String STATUS_RUNNING = "RUNNING";
+    static final String STATUS_PAUSED = "PAUSED";
+    static final String STATUS_WAITING_INPUT = "WAITING_INPUT";
+    static final String STATUS_COMPLETED = "COMPLETED";
+    static final String STATUS_FAILED = "FAILED";
+    static final String STATUS_CANCEL_REQUESTED = "CANCEL_REQUESTED";
+    static final String STATUS_CANCELLING = "CANCELLING";
+    static final String STATUS_CANCELLED = "CANCELLED";
+    static final String STATUS_STOPPED = "STOPPED";
+    static final String STAGE_CANCELLED = "CANCELLED";
 
     private final PaperTaskRepository tasks;
     private final PaperTaskRoundRepository rounds;
@@ -113,44 +123,67 @@ public class PaperOrchestrator {
     @Transactional
     public void pause(Long userId, Long taskId) {
         PaperTask task = getOwnedTask(userId, taskId);
+        if (isTerminalStatus(task.getStatus()) || isCancellingStatus(task.getStatus())) {
+            return;
+        }
         controlStates.computeIfAbsent(taskId, key -> new ControlState()).paused = true;
-        task.setStatus("PAUSED");
-        task.setCurrentStage(task.getCurrentStage() == null ? "PAUSED" : task.getCurrentStage());
+        task.setStatus(STATUS_PAUSED);
+        task.setCurrentStage(task.getCurrentStage() == null ? STATUS_PAUSED : task.getCurrentStage());
         eventStreamService.publish(PaperSseEvent.of("paused", taskId, "任务已暂停", task.getCurrentStage()));
     }
 
     @Transactional
     public void resume(Long userId, Long taskId) {
         PaperTask task = getOwnedTask(userId, taskId);
+        if (isTerminalStatus(task.getStatus()) || isCancellingStatus(task.getStatus())) {
+            return;
+        }
         ControlState state = controlStates.computeIfAbsent(taskId, key -> new ControlState());
         state.paused = false;
-        task.setStatus("RUNNING");
+        task.setStatus(STATUS_RUNNING);
         eventStreamService.publish(PaperSseEvent.of("log", taskId, "任务继续执行", task.getCurrentStage()));
     }
 
     @Transactional
     public void stop(Long userId, Long taskId) {
         PaperTask task = getOwnedTask(userId, taskId);
-        controlStates.computeIfAbsent(taskId, key -> new ControlState()).stopped = true;
-        task.setStatus("STOPPED");
-        task.setCurrentStage("STOPPED");
-        eventStreamService.publish(PaperSseEvent.of("error", taskId, "任务已停止", "STOPPED"));
+        if (isTerminalStatus(task.getStatus())) {
+            return;
+        }
+        ControlState state = controlStates.computeIfAbsent(taskId, key -> new ControlState());
+        state.stopped = true;
+        state.paused = false;
+        String currentStage = task.getCurrentStage() == null ? STATUS_CANCEL_REQUESTED : task.getCurrentStage();
+        eventStreamService.publish(PaperSseEvent.of("cancel_requested", taskId, "任务停止请求已受理，正在等待安全检查点", currentStage));
+        if (runningTasks.contains(taskId)) {
+            task.setStatus(STATUS_CANCEL_REQUESTED);
+            task.setCurrentStage(currentStage);
+            task.setErrorMessage(null);
+            return;
+        }
+        task.setStatus(STATUS_CANCELLED);
+        task.setCurrentStage(STAGE_CANCELLED);
+        task.setErrorMessage("任务已取消");
+        eventStreamService.publish(PaperSseEvent.of("cancelled", taskId, "任务已取消", STAGE_CANCELLED));
     }
 
     private void runTask(Long taskId) {
         try {
+            checkpoint(taskId);
             PaperTask task = tasks.findById(taskId).orElseThrow();
-            transition(taskId, "RUNNING", "PARSE", null);
+            transition(taskId, STATUS_RUNNING, "PARSE", null);
             publishProgress("log", taskId, "开始读取 LaTeX 源文件", "PARSE", null, null, null, null, null, 5);
             checkpoint(taskId);
 
             String texContent = new String(readStorageWithRetry(task.getObjectKey(), "source_tex", taskId), StandardCharsets.UTF_8);
             Map<String, String> bibFiles = readBibFiles(taskId);
             LatexDocument document = latexParserService.parse(task.getMainEntry(), texContent, bibFiles);
+            checkpoint(taskId);
             persistRound(taskId, 1, "PARSE", "COMPLETED", task.getMainEntry(), "sections=" + document.sections().size(), "latex parse");
             publishProgress("parse_done", taskId, "LaTeX 解析完成：识别到 " + document.sections().size() + " 个章节", "PARSE", 0, document.sections().size(), null, null, null, 20);
 
-            transition(taskId, "RUNNING", "STRUCTURE_CHECK", null);
+            transition(taskId, STATUS_RUNNING, "STRUCTURE_CHECK", null);
+            checkpoint(taskId);
             RoleRecognitionResult roles = roleRecognitionService.recognize(document);
             saveSections(task, document, roles);
             publishProgress("sections", taskId, "章节角色识别完成", "STRUCTURE_CHECK", 0, document.sections().size(), null, null, null, 35);
@@ -162,12 +195,12 @@ public class PaperOrchestrator {
                 if (existingClarifications.isEmpty()) {
                     clarificationService.createPendingClarifications(taskId, roles.clarifications());
                     if (roles.clarifications().stream().anyMatch(item -> item.blocking())) {
-                        persistRound(taskId, 2, "STRUCTURE_CHECK", "WAITING_INPUT", "clarifications", "pending=" + roles.clarifications().size(), "waiting user confirmation");
+                        persistRound(taskId, 2, "STRUCTURE_CHECK", STATUS_WAITING_INPUT, "clarifications", "pending=" + roles.clarifications().size(), "waiting user confirmation");
                         publishProgress("clarification_needed", taskId, "需要确认论文结构后再继续", "STRUCTURE_CHECK", 0, document.sections().size(), null, null, null, 40);
                         return;
                     }
                 } else if (hasPendingClarification) {
-                    transition(taskId, "WAITING_INPUT", "STRUCTURE_CHECK", null);
+                    transition(taskId, STATUS_WAITING_INPUT, "STRUCTURE_CHECK", null);
                     publishProgress("clarification_needed", taskId, "仍有结构确认问题待回答", "STRUCTURE_CHECK", 0, document.sections().size(), null, null, null, 40);
                     return;
                 } else {
@@ -175,52 +208,67 @@ public class PaperOrchestrator {
                 }
             }
 
-            transition(taskId, "RUNNING", "PROFILE", null);
+            transition(taskId, STATUS_RUNNING, "PROFILE", null);
+            checkpoint(taskId);
             publishProgress("profile_start", taskId, "开始抽取研究画像", "PROFILE", 0, 1, null, null, null, 50);
             ResearchProfileResult profile = researchProfileService.generateAndSave(taskId, document, task.getTargetLanguage());
             introductionAnalysisService.analyzeAndSave(taskId, document, task.getTargetLanguage());
+            checkpoint(taskId);
             persistRound(taskId, 3, "PROFILE", "COMPLETED", "sections=" + document.sections().size(), "keywords=" + profile.keywords(), profile.degraded() ? "degraded" : "model");
             publishProgress("profile_complete", taskId, "研究画像与引言论证骨架完成", "PROFILE", 1, 1, null, null, null, 58);
 
-            transition(taskId, "RUNNING", "RETRIEVE", null);
+            transition(taskId, STATUS_RUNNING, "RETRIEVE", null);
+            checkpoint(taskId);
             publishProgress("retrieve_start", taskId, "按引言 citation slots 检索真实候选文献", "RETRIEVE", 0, 1, null, null, null, 60);
             int literatureLimit = literatureLimit(task);
             int literatureMinLimit = literatureMinLimit(task, literatureLimit);
             int perQueryLimit = Math.max(5, Math.min(20, (int) Math.ceil(literatureLimit / 2.0)));
             List<LiteratureSearchResult> selectedLiterature = literatureService.retrieveForTask(taskId, profile, perQueryLimit, literatureMinLimit, literatureLimit);
+            checkpoint(taskId);
             persistRound(taskId, 4, "RETRIEVE", "COMPLETED", "queries=" + profile.keywords(), "selected=" + selectedLiterature.size(), null);
             publishProgress("retrieve_complete", taskId, "文献检索完成，已选择 " + selectedLiterature.size() + " 篇候选文献", "RETRIEVE", selectedLiterature.size(), literatureLimit, null, null, null, 70);
             if (isLiteratureOnly(task)) {
-                transition(taskId, "RUNNING", "ASSEMBLE", null);
+                transition(taskId, STATUS_RUNNING, "ASSEMBLE", null);
+                checkpoint(taskId);
                 publishProgress("assemble_start", taskId, "仅文献推荐模式：生成 recommended bib 与检索报告", "ASSEMBLE", selectedLiterature.size(), literatureLimit, null, null, null, 92);
                 assembleService.assemble(taskId, document, false);
+                checkpoint(taskId);
                 publishProgress("complete", taskId, "文献推荐已完成：未执行 Gap 分析、章节润色和全文改写", "COMPLETE", selectedLiterature.size(), 8, null, null, null, 100);
                 return;
             }
 
-            transition(taskId, "RUNNING", "GAP_ANALYSIS", null);
+            transition(taskId, STATUS_RUNNING, "GAP_ANALYSIS", null);
+            checkpoint(taskId);
             publishProgress("gap_start", taskId, "开始生成 Gap 分析与建议", "GAP_ANALYSIS", 0, 1, null, null, null, 72);
             List<GapSuggestionResult> gapSuggestions = gapAnalysisService.generateAndSave(taskId, structureSummary(document, roles), task.getTargetLanguage());
+            checkpoint(taskId);
             persistRound(taskId, 5, "GAP_ANALYSIS", "COMPLETED", "selectedLiterature=" + selectedLiterature.size(), "suggestions=" + gapSuggestions.size(), null);
             publishProgress("gap_complete", taskId, "Gap 分析完成，生成 " + gapSuggestions.size() + " 条建议", "GAP_ANALYSIS", gapSuggestions.size(), Math.max(1, gapSuggestions.size()), null, null, null, 80);
 
-            transition(taskId, "RUNNING", "POLISH", null);
+            transition(taskId, STATUS_RUNNING, "POLISH", null);
+            checkpoint(taskId);
             publishProgress("polish_start", taskId, "开始分章润色", "POLISH", 0, document.sections().size(), null, null, null, 82);
             int polishedCount = polishSections(taskId, document, task.getTargetLanguage());
+            checkpoint(taskId);
             persistRound(taskId, 6, "POLISH", "COMPLETED", "sections=" + document.sections().size(), "processed=" + polishedCount, null);
             publishProgress("polish_complete", taskId, "分章润色完成，处理 " + polishedCount + " 个章节", "POLISH", polishedCount, document.sections().size(), null, null, null, 90);
 
-            transition(taskId, "RUNNING", "ASSEMBLE", null);
+            transition(taskId, STATUS_RUNNING, "ASSEMBLE", null);
+            checkpoint(taskId);
             publishProgress("assemble_start", taskId, "开始生成完整产物", "ASSEMBLE", document.sections().size(), document.sections().size(), null, null, null, 92);
             assembleService.assemble(taskId, document, true);
+            checkpoint(taskId);
             publishProgress("complete", taskId, "论文任务已完成：已生成润色文本、推荐文献与审查报告", "COMPLETE", document.sections().size(), document.sections().size(), null, null, null, 100);
         } catch (TaskStoppedException ex) {
-            transition(taskId, "STOPPED", "STOPPED", ex.getMessage());
-            publish("error", taskId, ex.getMessage(), "STOPPED");
+            transitionCancelled(taskId, ex.getMessage());
         } catch (Exception ex) {
+            if (isCancellationRequested(taskId)) {
+                transitionCancelled(taskId, "任务已取消");
+                return;
+            }
             log.error("Paper task {} failed", taskId, ex);
-            transition(taskId, "FAILED", "FAILED", rootMessage(ex));
-            publish("error", taskId, "论文任务失败: " + rootMessage(ex), "FAILED");
+            transition(taskId, STATUS_FAILED, STATUS_FAILED, rootMessage(ex));
+            publish("error", taskId, "论文任务失败: " + rootMessage(ex), STATUS_FAILED);
         }
     }
 
@@ -335,27 +383,40 @@ public class PaperOrchestrator {
         }
     }
 
-    private void checkpoint(Long taskId) {
+    void checkpoint(Long taskId) {
         ControlState state = controlStates.computeIfAbsent(taskId, key -> new ControlState());
-        if (state.stopped) {
-            throw new TaskStoppedException("任务已被停止");
-        }
+        throwIfCancellationRequested(taskId, state);
         while (state.paused) {
             sleep(200);
-            if (state.stopped) {
-                throw new TaskStoppedException("任务已被停止");
-            }
+            throwIfCancellationRequested(taskId, state);
         }
         sleep(200);
+        throwIfCancellationRequested(taskId, state);
     }
 
     @Transactional
     protected void transition(Long taskId, String status, String stage, String errorMessage) {
         PaperTask task = tasks.findById(taskId).orElseThrow();
+        if (isCancellingStatus(task.getStatus()) && !isCancellingStatus(status)) {
+            return;
+        }
         task.setStatus(status);
         task.setCurrentStage(stage);
         task.setErrorMessage(errorMessage);
         tasks.save(task);
+    }
+
+    @Transactional
+    protected void transitionCancelled(Long taskId, String message) {
+        PaperTask task = tasks.findById(taskId).orElseThrow();
+        if (STATUS_COMPLETED.equals(task.getStatus())) {
+            return;
+        }
+        task.setStatus(STATUS_CANCELLED);
+        task.setCurrentStage(STAGE_CANCELLED);
+        task.setErrorMessage(message);
+        tasks.save(task);
+        publish("cancelled", taskId, message, STAGE_CANCELLED);
     }
 
     @Transactional
@@ -420,6 +481,51 @@ public class PaperOrchestrator {
     private PaperTask getOwnedTask(Long userId, Long taskId) {
         return tasks.findByIdAndUserId(taskId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "论文任务不存在"));
+    }
+
+    private void throwIfCancellationRequested(Long taskId, ControlState state) {
+        if (!state.stopped || !markCancelling(taskId)) {
+            return;
+        }
+        throw new TaskStoppedException("任务已取消");
+    }
+
+    private boolean markCancelling(Long taskId) {
+        PaperTask task = tasks.findById(taskId).orElseThrow();
+        if (isTerminalStatus(task.getStatus())) {
+            return false;
+        }
+        if (!STATUS_CANCELLING.equals(task.getStatus())) {
+            task.setStatus(STATUS_CANCELLING);
+            task.setCurrentStage(task.getCurrentStage() == null ? STATUS_CANCELLING : task.getCurrentStage());
+            task.setErrorMessage(null);
+            tasks.save(task);
+            publish("cancelling", taskId, "任务正在安全停止", task.getCurrentStage());
+        }
+        return true;
+    }
+
+    private boolean isCancellationRequested(Long taskId) {
+        ControlState state = controlStates.get(taskId);
+        if (state != null && state.stopped) {
+            return true;
+        }
+        return tasks.findById(taskId)
+                .map(task -> isCancellingStatus(task.getStatus()))
+                .orElse(false);
+    }
+
+    private boolean isTerminalStatus(String status) {
+        return STATUS_COMPLETED.equals(status)
+                || STATUS_FAILED.equals(status)
+                || STATUS_CANCELLED.equals(status)
+                || STATUS_STOPPED.equals(status);
+    }
+
+    private boolean isCancellingStatus(String status) {
+        return STATUS_CANCEL_REQUESTED.equals(status)
+                || STATUS_CANCELLING.equals(status)
+                || STATUS_CANCELLED.equals(status);
     }
 
     private void sleep(long millis) {
