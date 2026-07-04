@@ -1,5 +1,6 @@
 package com.yanban.api.agent;
 
+import com.yanban.core.agent.AgentTaskEvent;
 import com.yanban.core.agent.AgentTaskEventRecorder;
 import com.yanban.paper.domain.PaperTaskRepository;
 import com.yanban.paper.literature.LiteratureSearchTaskService;
@@ -40,7 +41,7 @@ public class AgentTaskEventService {
         String normalizedTaskType = normalizeTaskType(taskType);
         validateCursor(afterEventId, limit);
         validateTaskOwnership(userId, normalizedTaskType, taskId, taskType);
-        List<com.yanban.core.agent.AgentTaskEvent> taskEvents = afterEventId == null && limit == null
+        List<AgentTaskEvent> taskEvents = afterEventId == null && limit == null
                 ? events.listEvents(normalizedTaskType, taskId, userId)
                 : events.listEvents(normalizedTaskType, taskId, userId, afterEventId, normalizeLimit(limit));
         return taskEvents.stream()
