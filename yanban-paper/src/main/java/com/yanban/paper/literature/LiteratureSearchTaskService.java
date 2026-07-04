@@ -2,6 +2,8 @@ package com.yanban.paper.literature;
 
 import com.yanban.core.agent.AgentTaskEventCreateRequest;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskRegistry;
+import com.yanban.core.agent.AgentTaskUpsertRequest;
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import java.nio.charset.StandardCharsets;
@@ -12,6 +14,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -44,13 +47,23 @@ public class LiteratureSearchTaskService {
     private final LiteratureSearchTaskRepository tasks;
     private final LiteratureSearchTaskPublisher publisher;
     private final AgentTaskEventRecorder eventRecorder;
+    private final AgentTaskRegistry agentTaskRegistry;
 
     public LiteratureSearchTaskService(LiteratureSearchTaskRepository tasks,
                                        ObjectProvider<LiteratureSearchTaskPublisher> publisherProvider,
                                        ObjectProvider<AgentTaskEventRecorder> eventRecorderProvider) {
+        this(tasks, publisherProvider, eventRecorderProvider, null);
+    }
+
+    @Autowired
+    public LiteratureSearchTaskService(LiteratureSearchTaskRepository tasks,
+                                       ObjectProvider<LiteratureSearchTaskPublisher> publisherProvider,
+                                       ObjectProvider<AgentTaskEventRecorder> eventRecorderProvider,
+                                       ObjectProvider<AgentTaskRegistry> agentTaskRegistryProvider) {
         this.tasks = tasks;
         this.publisher = publisherProvider == null ? null : publisherProvider.getIfAvailable();
         this.eventRecorder = eventRecorderProvider == null ? null : eventRecorderProvider.getIfAvailable();
+        this.agentTaskRegistry = agentTaskRegistryProvider == null ? null : agentTaskRegistryProvider.getIfAvailable();
     }
 
     @Transactional
@@ -86,6 +99,7 @@ public class LiteratureSearchTaskService {
                             clientRequestId,
                             idempotencyKey
                     ));
+                    syncUnifiedTask(saved);
                     recordEvent(saved, "TASK_CREATED", "文献检索任务已创建", null);
                     publishAfterCommit(saved);
                     return new TaskStartResult(saved, false);
@@ -107,8 +121,26 @@ public class LiteratureSearchTaskService {
         task.setCurrentStage("CANCEL_REQUESTED");
         task.setCancelReason(trimToNull(cancelReason));
         LiteratureSearchTask saved = tasks.save(task);
+        syncUnifiedTask(saved);
         recordEvent(saved, "TASK_CANCEL_REQUESTED", "用户请求停止文献检索任务", null);
         return saved;
+    }
+
+    @Transactional
+    public DispatchRetryResult retryPendingDispatch(Long userId, Long taskId) {
+        LiteratureSearchTask task = ownedTask(userId, taskId);
+        if (publisher == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "文献检索任务分发器不可用");
+        }
+        if (!STATUS_PENDING.equals(task.getStatus())) {
+            return new DispatchRetryResult(task, false, true, messageForRetry(task.getStatus()));
+        }
+        task.setCurrentStage("RETRY_QUEUED");
+        LiteratureSearchTask saved = tasks.save(task);
+        syncUnifiedTask(saved);
+        recordEvent(saved, "TASK_MANUAL_REQUEUED", "用户手动重投文献检索唤醒消息", null);
+        publishAfterCommit(saved);
+        return new DispatchRetryResult(saved, true, false, "manual dispatch retry queued");
     }
 
     @Transactional
@@ -135,6 +167,7 @@ public class LiteratureSearchTaskService {
         task.setCurrentStage("COMPLETE");
         task.setFinishedAt(Instant.now());
         LiteratureSearchTask saved = tasks.save(task);
+        syncUnifiedTask(saved);
         recordEvent(saved, "TASK_COMPLETED", "文献检索任务已完成", null);
         return saved;
     }
@@ -153,6 +186,7 @@ public class LiteratureSearchTaskService {
                 PageRequest.of(0, limit))) {
             task.setCurrentStage("REQUEUED");
             LiteratureSearchTask saved = tasks.save(task);
+            syncUnifiedTask(saved);
             recordEvent(saved, "TASK_REQUEUED", "文献检索任务超时未领取，已重新投递唤醒消息", null);
             publishAfterCommit(saved);
             requeued++;
@@ -168,6 +202,7 @@ public class LiteratureSearchTaskService {
             task.setErrorMessage("文献检索任务运行超时，已停止等待并标记失败");
             task.setFinishedAt(now);
             LiteratureSearchTask saved = tasks.save(task);
+            syncUnifiedTask(saved);
             recordEvent(saved, "TASK_TIMED_OUT", "文献检索任务运行超时，已标记失败", null);
             timedOut++;
         }
@@ -190,15 +225,13 @@ public class LiteratureSearchTaskService {
             task.setCurrentStage("SEARCHING");
             task.setStartedAt(Instant.now());
             LiteratureSearchTask saved = tasks.save(task);
+            syncUnifiedTask(saved);
             recordEvent(saved, "TASK_RUNNING", "文献检索任务开始执行", null);
             return Optional.of(saved);
         }
         if (STATUS_CANCEL_REQUESTED.equals(task.getStatus()) || STATUS_CANCELLING.equals(task.getStatus())) {
-            task.setStatus(STATUS_CANCELLED);
-            task.setCurrentStage("CANCELLED");
-            task.setFinishedAt(Instant.now());
-            LiteratureSearchTask saved = tasks.save(task);
-            recordEvent(saved, "TASK_CANCELLED", "文献检索任务已取消", null);
+            LiteratureSearchTask cancelling = markCancelling(task.getUserId(), task.getId());
+            LiteratureSearchTask saved = completeCancelled(cancelling);
             return Optional.empty();
         }
         return Optional.empty();
@@ -212,14 +245,32 @@ public class LiteratureSearchTaskService {
     }
 
     @Transactional
+    public LiteratureSearchTask markCancelling(Long userId, Long taskId) {
+        LiteratureSearchTask task = ownedTask(userId, taskId);
+        if (TERMINAL_STATUSES.contains(task.getStatus()) || STATUS_CANCELLED.equals(task.getStatus())) {
+            return task;
+        }
+        if (!STATUS_CANCELLING.equals(task.getStatus())) {
+            task.setStatus(STATUS_CANCELLING);
+            task.setCurrentStage(StringUtils.hasText(task.getCurrentStage()) ? task.getCurrentStage() : "CANCELLING");
+            LiteratureSearchTask saved = tasks.save(task);
+            syncUnifiedTask(saved);
+            recordEvent(saved, "TASK_CANCELLING", "文献检索任务正在安全停止", null);
+            return saved;
+        }
+        return task;
+    }
+
+    @Transactional
     public LiteratureSearchTask markCancelled(Long userId, Long taskId) {
         LiteratureSearchTask task = ownedTask(userId, taskId);
-        task.setStatus(STATUS_CANCELLED);
-        task.setCurrentStage("CANCELLED");
-        task.setFinishedAt(Instant.now());
-        LiteratureSearchTask saved = tasks.save(task);
-        recordEvent(saved, "TASK_CANCELLED", "文献检索任务已取消", null);
-        return saved;
+        if (STATUS_CANCELLED.equals(task.getStatus())) {
+            return task;
+        }
+        if (!TERMINAL_STATUSES.contains(task.getStatus())) {
+            task = markCancelling(userId, taskId);
+        }
+        return completeCancelled(task);
     }
 
     @Transactional
@@ -233,6 +284,7 @@ public class LiteratureSearchTaskService {
         task.setErrorMessage(trimToLength(errorMessage, 1000));
         task.setFinishedAt(Instant.now());
         LiteratureSearchTask saved = tasks.save(task);
+        syncUnifiedTask(saved);
         recordEvent(saved, "TASK_FAILED", trimToLength(errorMessage, MAX_EVENT_MESSAGE_LENGTH), null);
         return saved;
     }
@@ -316,6 +368,43 @@ public class LiteratureSearchTaskService {
         ));
     }
 
+    private LiteratureSearchTask completeCancelled(LiteratureSearchTask task) {
+        task.setStatus(STATUS_CANCELLED);
+        task.setCurrentStage("CANCELLED");
+        task.setFinishedAt(Instant.now());
+        LiteratureSearchTask saved = tasks.save(task);
+        syncUnifiedTask(saved);
+        recordEvent(saved, "TASK_CANCELLED", "文献检索任务已取消", null);
+        return saved;
+    }
+
+    private void syncUnifiedTask(LiteratureSearchTask task) {
+        if (agentTaskRegistry == null || task == null) {
+            return;
+        }
+        agentTaskRegistry.upsertSafely(new AgentTaskUpsertRequest(
+                task.getUserId(),
+                task.getProjectId(),
+                AgentTaskEventRecorder.TASK_TYPE_LITERATURE_SEARCH,
+                AgentTaskRegistry.SOURCE_LITERATURE_SEARCH_TASK,
+                task.getId(),
+                task.getStatus(),
+                "LONG_RUNNING_TOOL_TASK",
+                task.getClientRequestId(),
+                task.getQuery(),
+                task.getQuery(),
+                STATUS_COMPLETED.equals(task.getStatus()) ? 100 : null,
+                task.getCurrentStage(),
+                null,
+                task.getErrorMessage(),
+                task.getCancelReason(),
+                0,
+                0,
+                task.getStartedAt(),
+                task.getFinishedAt()
+        ));
+    }
+
     private String trimToLength(String value, int maxLength) {
         if (!StringUtils.hasText(value)) {
             return null;
@@ -341,9 +430,25 @@ public class LiteratureSearchTaskService {
     public record TaskStartResult(LiteratureSearchTask task, boolean idempotent) {
     }
 
+    public record DispatchRetryResult(LiteratureSearchTask task, boolean retryAccepted, boolean idempotent, String message) {
+    }
+
     public record ScanResult(int requeuedPendingCount, int timedOutRunningCount) {
         public boolean hasWork() {
             return requeuedPendingCount > 0 || timedOutRunningCount > 0;
         }
+    }
+
+    private String messageForRetry(String status) {
+        if (STATUS_RUNNING.equals(status)) {
+            return "task already running";
+        }
+        if (TERMINAL_STATUSES.contains(status)) {
+            return "task already in terminal state";
+        }
+        if (STATUS_CANCEL_REQUESTED.equals(status) || STATUS_CANCELLING.equals(status)) {
+            return "task is cancelling";
+        }
+        return "task is not pending";
     }
 }

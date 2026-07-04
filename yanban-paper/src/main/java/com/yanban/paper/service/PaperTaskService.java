@@ -2,6 +2,8 @@ package com.yanban.paper.service;
 
 import com.yanban.core.agent.AgentTaskEventCreateRequest;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskRegistry;
+import com.yanban.core.agent.AgentTaskUpsertRequest;
 import com.yanban.core.user.UserAccountPolicy;
 import com.yanban.paper.domain.PaperTask;
 import com.yanban.paper.domain.PaperTaskArtifact;
@@ -37,19 +39,22 @@ public class PaperTaskService {
     private final PaperOrchestrator paperOrchestrator;
     private final ObjectProvider<UserAccountPolicy> accountPolicy;
     private final AgentTaskEventRecorder taskEvents;
+    private final AgentTaskRegistry agentTaskRegistry;
 
     public PaperTaskService(PaperTaskRepository paperTaskRepository,
                             PaperTaskArtifactRepository artifactRepository,
                             PaperStorageService paperStorageService,
                             PaperOrchestrator paperOrchestrator,
                             ObjectProvider<UserAccountPolicy> accountPolicy,
-                            AgentTaskEventRecorder taskEvents) {
+                            AgentTaskEventRecorder taskEvents,
+                            AgentTaskRegistry agentTaskRegistry) {
         this.paperTaskRepository = paperTaskRepository;
         this.artifactRepository = artifactRepository;
         this.paperStorageService = paperStorageService;
         this.paperOrchestrator = paperOrchestrator;
         this.accountPolicy = accountPolicy;
         this.taskEvents = taskEvents;
+        this.agentTaskRegistry = agentTaskRegistry;
     }
 
     @Transactional
@@ -109,6 +114,7 @@ public class PaperTaskService {
     }
 
     private void recordTaskCreated(PaperTask task) {
+        agentTaskRegistry.upsertSafely(toUnifiedTask(task));
         taskEvents.recordSafely(new AgentTaskEventCreateRequest(
                 AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
                 task.getId(),
@@ -119,6 +125,30 @@ public class PaperTaskService {
                 "论文润色任务已创建",
                 null
         ));
+    }
+
+    private AgentTaskUpsertRequest toUnifiedTask(PaperTask task) {
+        return new AgentTaskUpsertRequest(
+                task.getUserId(),
+                null,
+                AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
+                AgentTaskRegistry.SOURCE_PAPER_TASK,
+                task.getId(),
+                task.getStatus(),
+                "LONG_RUNNING_TOOL_TASK",
+                null,
+                task.getTitle(),
+                task.getSourceFilename(),
+                null,
+                task.getCurrentStage(),
+                null,
+                task.getErrorMessage(),
+                null,
+                0,
+                0,
+                null,
+                null
+        );
     }
 
     private Integer normalizeLiteratureCount(Integer literatureCount) {
@@ -243,6 +273,7 @@ public class PaperTaskService {
     private List<PaperTaskArtifact> downloadableArtifacts(Long taskId) {
         return artifactRepository.findByTaskIdOrderByCreatedAt(taskId).stream()
                 .filter(artifact -> downloadableArtifactTypes().contains(artifact.getType()))
+                .filter(artifact -> PaperTaskArtifact.STATUS_COMPLETED.equals(artifact.getArtifactStatus()))
                 .toList();
     }
 

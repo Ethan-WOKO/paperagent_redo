@@ -13,6 +13,10 @@ import org.hibernate.annotations.CreationTimestamp;
 @Table(name = "paper_task_artifacts")
 public class PaperTaskArtifact {
 
+    public static final String STATUS_COMPLETED = "COMPLETED";
+    public static final String STATUS_PARTIAL = "PARTIAL";
+    public static final String STATUS_CANCELLED = "CANCELLED";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -32,6 +36,9 @@ public class PaperTaskArtifact {
     @Column(name = "metadata_json", length = 10000)
     private String metadataJson;
 
+    @Column(name = "artifact_status", nullable = false, length = 32)
+    private String artifactStatus;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -44,6 +51,7 @@ public class PaperTaskArtifact {
         this.type = type;
         this.objectKey = objectKey;
         this.version = version;
+        this.artifactStatus = STATUS_COMPLETED;
     }
 
     public Long getId() { return id; }
@@ -52,7 +60,9 @@ public class PaperTaskArtifact {
     public String getObjectKey() { return objectKey; }
     public Integer getVersion() { return version; }
     public String getMetadataJson() { return metadataJson; }
+    public String getArtifactStatus() { return artifactStatus; }
     public Instant getCreatedAt() { return createdAt; }
 
     public void setMetadataJson(String metadataJson) { this.metadataJson = metadataJson; }
+    public void setArtifactStatus(String artifactStatus) { this.artifactStatus = artifactStatus; }
 }

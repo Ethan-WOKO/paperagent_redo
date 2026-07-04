@@ -2,6 +2,8 @@ package com.yanban.paper.service;
 
 import com.yanban.core.agent.AgentTaskEventCreateRequest;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskRegistry;
+import com.yanban.core.agent.AgentTaskUpsertRequest;
 import com.yanban.paper.domain.PaperSection;
 import com.yanban.paper.domain.PaperSectionRepository;
 import com.yanban.paper.domain.PaperTask;
@@ -30,6 +32,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -69,6 +72,7 @@ public class PaperOrchestrator {
     private final PaperAssembleService assembleService;
     private final Executor paperTaskExecutor;
     private final AgentTaskEventRecorder taskEvents;
+    private final AgentTaskRegistry agentTaskRegistry;
     private final Map<Long, ControlState> controlStates = new ConcurrentHashMap<>();
     private final java.util.Set<Long> runningTasks = ConcurrentHashMap.newKeySet();
 
@@ -90,6 +94,47 @@ public class PaperOrchestrator {
                              PaperAssembleService assembleService,
                              @Qualifier("paperTaskExecutor") Executor paperTaskExecutor,
                              AgentTaskEventRecorder taskEvents) {
+        this(tasks,
+                rounds,
+                sections,
+                artifacts,
+                clarifications,
+                eventStreamService,
+                paperStorageService,
+                latexParserService,
+                roleRecognitionService,
+                clarificationService,
+                researchProfileService,
+                introductionAnalysisService,
+                literatureService,
+                gapAnalysisService,
+                sectionPolishService,
+                assembleService,
+                paperTaskExecutor,
+                taskEvents,
+                null);
+    }
+
+    @Autowired
+    public PaperOrchestrator(PaperTaskRepository tasks,
+                             PaperTaskRoundRepository rounds,
+                             PaperSectionRepository sections,
+                             PaperTaskArtifactRepository artifacts,
+                             PaperTaskClarificationRepository clarifications,
+                             PaperEventStreamService eventStreamService,
+                             PaperStorageService paperStorageService,
+                             LatexParserService latexParserService,
+                             LatexRoleRecognitionService roleRecognitionService,
+                             PaperClarificationService clarificationService,
+                             PaperResearchProfileService researchProfileService,
+                             PaperIntroductionAnalysisService introductionAnalysisService,
+                             LiteratureService literatureService,
+                             PaperGapAnalysisService gapAnalysisService,
+                             PaperSectionPolishService sectionPolishService,
+                             PaperAssembleService assembleService,
+                             @Qualifier("paperTaskExecutor") Executor paperTaskExecutor,
+                             AgentTaskEventRecorder taskEvents,
+                             AgentTaskRegistry agentTaskRegistry) {
         this.tasks = tasks;
         this.rounds = rounds;
         this.sections = sections;
@@ -108,6 +153,7 @@ public class PaperOrchestrator {
         this.assembleService = assembleService;
         this.paperTaskExecutor = paperTaskExecutor;
         this.taskEvents = taskEvents;
+        this.agentTaskRegistry = agentTaskRegistry;
     }
 
     public void startTask(Long taskId) {
@@ -134,6 +180,7 @@ public class PaperOrchestrator {
         controlStates.computeIfAbsent(taskId, key -> new ControlState()).paused = true;
         task.setStatus(STATUS_PAUSED);
         task.setCurrentStage(task.getCurrentStage() == null ? STATUS_PAUSED : task.getCurrentStage());
+        syncUnifiedTask(task);
         eventStreamService.publish(PaperSseEvent.of("paused", taskId, "任务已暂停", task.getCurrentStage()));
         recordEvent(task, "TASK_PAUSED", task.getCurrentStage(), STATUS_PAUSED, "论文润色任务已暂停");
     }
@@ -147,6 +194,7 @@ public class PaperOrchestrator {
         ControlState state = controlStates.computeIfAbsent(taskId, key -> new ControlState());
         state.paused = false;
         task.setStatus(STATUS_RUNNING);
+        syncUnifiedTask(task);
         eventStreamService.publish(PaperSseEvent.of("log", taskId, "任务继续执行", task.getCurrentStage()));
         recordEvent(task, "TASK_RESUMED", task.getCurrentStage(), STATUS_RUNNING, "论文润色任务继续执行");
     }
@@ -167,10 +215,14 @@ public class PaperOrchestrator {
             task.setStatus(STATUS_CANCEL_REQUESTED);
             task.setCurrentStage(currentStage);
             task.setErrorMessage(null);
+            syncUnifiedTask(task);
             return;
         }
+        markGeneratedArtifactsPartial(task);
+        task.setFinalObjectKey(null);
         task.setStatus(STATUS_CANCELLED);
         task.setCurrentStage(STAGE_CANCELLED);
+        syncUnifiedTask(task);
         task.setErrorMessage("任务已取消");
         eventStreamService.publish(PaperSseEvent.of("cancelled", taskId, "任务已取消", STAGE_CANCELLED));
         recordEvent(task, "TASK_CANCELLED", STAGE_CANCELLED, STATUS_CANCELLED, "论文润色任务已取消");
@@ -415,6 +467,7 @@ public class PaperOrchestrator {
         task.setCurrentStage(stage);
         task.setErrorMessage(errorMessage);
         tasks.save(task);
+        syncUnifiedTask(task);
         String eventType = STATUS_FAILED.equals(status) ? "TASK_FAILED" : "STAGE_CHANGED";
         String message = STATUS_FAILED.equals(status) ? errorMessage : "论文润色任务进入阶段: " + stage;
         recordEvent(task, eventType, stage, status, message);
@@ -426,12 +479,40 @@ public class PaperOrchestrator {
         if (STATUS_COMPLETED.equals(task.getStatus())) {
             return;
         }
+        markGeneratedArtifactsPartial(task);
+        task.setFinalObjectKey(null);
         task.setStatus(STATUS_CANCELLED);
         task.setCurrentStage(STAGE_CANCELLED);
         task.setErrorMessage(message);
         tasks.save(task);
+        syncUnifiedTask(task);
         publish("cancelled", taskId, message, STAGE_CANCELLED);
         recordEvent(task, "TASK_CANCELLED", STAGE_CANCELLED, STATUS_CANCELLED, message);
+    }
+
+    private void markGeneratedArtifactsPartial(PaperTask task) {
+        List<PaperTaskArtifact> changedArtifacts = artifacts.findByTaskIdOrderByCreatedAt(task.getId()).stream()
+                .filter(this::isGeneratedArtifact)
+                .filter(artifact -> PaperTaskArtifact.STATUS_COMPLETED.equals(artifact.getArtifactStatus()))
+                .peek(artifact -> artifact.setArtifactStatus(PaperTaskArtifact.STATUS_PARTIAL))
+                .toList();
+        if (changedArtifacts.isEmpty()) {
+            return;
+        }
+        artifacts.saveAll(changedArtifacts);
+        for (PaperTaskArtifact artifact : changedArtifacts) {
+            recordEvent(
+                    task,
+                    "ARTIFACT_MARKED_PARTIAL",
+                    task.getCurrentStage(),
+                    task.getStatus(),
+                    "Artifact marked partial after cancellation: " + artifact.getType() + " v" + artifact.getVersion()
+            );
+        }
+    }
+
+    private boolean isGeneratedArtifact(PaperTaskArtifact artifact) {
+        return artifact.getType() != null && !artifact.getType().startsWith("source_");
     }
 
     @Transactional
@@ -454,6 +535,7 @@ public class PaperOrchestrator {
         task.setCurrentStage("COMPLETE");
         task.setErrorMessage(null);
         tasks.save(task);
+        syncUnifiedTask(task);
     }
 
     private void publish(String type, Long taskId, String message, String stage) {
@@ -515,10 +597,35 @@ public class PaperOrchestrator {
             task.setCurrentStage(task.getCurrentStage() == null ? STATUS_CANCELLING : task.getCurrentStage());
             task.setErrorMessage(null);
             tasks.save(task);
+            syncUnifiedTask(task);
             publish("cancelling", taskId, "任务正在安全停止", task.getCurrentStage());
             recordEvent(task, "TASK_CANCELLING", task.getCurrentStage(), STATUS_CANCELLING, "论文润色任务正在安全停止");
         }
         return true;
+    }
+
+    private void syncUnifiedTask(PaperTask task) {
+        agentTaskRegistry.upsertSafely(new AgentTaskUpsertRequest(
+                task.getUserId(),
+                null,
+                AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
+                AgentTaskRegistry.SOURCE_PAPER_TASK,
+                task.getId(),
+                task.getStatus(),
+                "LONG_RUNNING_TOOL_TASK",
+                null,
+                task.getTitle(),
+                task.getSourceFilename(),
+                STATUS_COMPLETED.equals(task.getStatus()) ? 100 : null,
+                task.getCurrentStage(),
+                null,
+                task.getErrorMessage(),
+                null,
+                0,
+                0,
+                STATUS_RUNNING.equals(task.getStatus()) || isCancellingStatus(task.getStatus()) ? task.getUpdatedAt() : null,
+                isTerminalStatus(task.getStatus()) ? task.getUpdatedAt() : null
+        ));
     }
 
     private boolean isCancellationRequested(Long taskId) {
