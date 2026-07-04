@@ -17,9 +17,6 @@ import com.yanban.core.agent.AgentSessionSummaryService;
 import com.yanban.core.agent.AgentSessionSummaryUpdate;
 import com.yanban.core.agent.AgentTurn;
 import com.yanban.core.agent.AgentTurnRepository;
-import com.yanban.core.harness.HarnessEngine;
-import com.yanban.core.harness.HarnessRequest;
-import com.yanban.core.harness.HarnessResult;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatRequest;
@@ -58,7 +55,7 @@ public class AgentService {
     private final AgentMessageRepository messages;
     private final AgentTurnRepository turns;
     private final AgentMessageCacheService messageCache;
-    private final HarnessEngine harnessEngine;
+    private final AgentRuntimeService agentRuntimeService;
     private final ObjectMapper objectMapper;
     private final UserSettingsService userSettingsService;
     private final ConversationIntentRouterService conversationIntentRouterService;
@@ -75,7 +72,7 @@ public class AgentService {
                         AgentMessageRepository messages,
                         AgentTurnRepository turns,
                         AgentMessageCacheService messageCache,
-                        HarnessEngine harnessEngine,
+                        AgentRuntimeService agentRuntimeService,
                         ObjectMapper objectMapper,
                         UserSettingsService userSettingsService,
                         ConversationIntentRouterService conversationIntentRouterService,
@@ -91,7 +88,7 @@ public class AgentService {
         this.messages = messages;
         this.turns = turns;
         this.messageCache = messageCache;
-        this.harnessEngine = harnessEngine;
+        this.agentRuntimeService = agentRuntimeService;
         this.objectMapper = objectMapper;
         this.userSettingsService = userSettingsService;
         this.conversationIntentRouterService = conversationIntentRouterService;
@@ -318,7 +315,8 @@ public class AgentService {
                 contextPackage.droppedItems());
         log.debug("Agent context sections sessionId={} sections={}", session.getId(), contextPackage.sections());
         try {
-            HarnessResult result = harnessEngine.run(new HarnessRequest(
+            AgentRuntimeResult result = agentRuntimeService.run(new AgentRuntimeRequest(
+                    resolveStrategy(toolPolicy),
                     effectiveHistory,
                     userId,
                     request.content(),
@@ -334,9 +332,9 @@ public class AgentService {
                     toolPolicy.allowedTools(),
                     toolPolicy.maxToolCalls(),
                     toolPolicy.maxDuplicateToolCalls(),
-                    null,
-                    null
-            ), tokenConsumer);
+                    MDC.get(TraceIdFilter.TRACE_ID_MDC_KEY),
+                    tokenConsumer
+            ));
 
             List<AgentMessage> harnessMessages = saveHarnessMessages(
                     session.getId(),
@@ -477,6 +475,13 @@ public class AgentService {
         if (tokenConsumer != null && StringUtils.hasText(content)) {
             tokenConsumer.accept(content);
         }
+    }
+
+    private AgentStrategy resolveStrategy(AgentToolPolicyEngine.Decision toolPolicy) {
+        if (toolPolicy == null || toolPolicy.allowedTools() == null || toolPolicy.allowedTools().isEmpty()) {
+            return AgentStrategy.DIRECT;
+        }
+        return AgentStrategy.SINGLE_STEP_REACT;
     }
 
     private int safeMessageLimit(Integer limit) {
