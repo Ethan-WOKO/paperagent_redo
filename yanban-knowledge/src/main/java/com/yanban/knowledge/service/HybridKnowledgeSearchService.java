@@ -57,7 +57,7 @@ public class HybridKnowledgeSearchService implements KnowledgeSearchService {
         try {
             int candidateLimit = Math.max(topK, Math.min(50, topK * 4));
             List<Double> queryVector = embeddingClient.embed(query.trim());
-            List<KnowledgeSearchIndexHit> hits = searchVariants(query, options.userId(), candidateLimit, queryVector);
+            List<KnowledgeSearchIndexHit> hits = searchVariants(query, options, candidateLimit, queryVector);
             if (hits.isEmpty()) {
                 return fallbackSearchService.search(query, options);
             }
@@ -69,12 +69,12 @@ public class HybridKnowledgeSearchService implements KnowledgeSearchService {
     }
 
     private List<KnowledgeSearchIndexHit> searchVariants(String query,
-                                                         Long userId,
+                                                         KnowledgeSearchOptions options,
                                                          int candidateLimit,
                                                          List<Double> queryVector) {
         Map<String, KnowledgeSearchIndexHit> deduped = new LinkedHashMap<>();
         for (String variant : KnowledgeQueryVariants.expand(query)) {
-            List<KnowledgeSearchIndexHit> variantHits = indexClient.search(variant, userId, candidateLimit, queryVector);
+            List<KnowledgeSearchIndexHit> variantHits = indexClient.search(variant, options, candidateLimit, queryVector);
             if (variantHits == null) {
                 continue;
             }
