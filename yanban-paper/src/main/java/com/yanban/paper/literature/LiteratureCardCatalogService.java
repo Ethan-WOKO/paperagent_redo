@@ -21,17 +21,23 @@ public class LiteratureCardCatalogService {
 
     private final LiteratureCardRepository cards;
     private final ObjectMapper objectMapper;
+    private final LiteratureCardIndexService indexService;
 
-    public LiteratureCardCatalogService(LiteratureCardRepository cards, ObjectMapper objectMapper) {
+    public LiteratureCardCatalogService(LiteratureCardRepository cards,
+                                        ObjectMapper objectMapper,
+                                        LiteratureCardIndexService indexService) {
         this.cards = cards;
         this.objectMapper = objectMapper;
+        this.indexService = indexService;
     }
 
     public LiteratureCard upsertCard(LiteratureCandidate candidate) {
         LiteratureCard card = findExisting(candidate)
                 .orElseGet(() -> new LiteratureCard(titleHash(candidate.title()), candidate.title()));
         enrich(card, candidate);
-        return cards.save(card);
+        LiteratureCard saved = cards.save(card);
+        indexService.index(saved);
+        return saved;
     }
 
     private Optional<LiteratureCard> findExisting(LiteratureCandidate candidate) {

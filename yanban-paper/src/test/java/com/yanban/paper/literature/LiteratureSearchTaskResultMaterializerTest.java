@@ -57,7 +57,7 @@ class LiteratureSearchTaskResultMaterializerTest {
     @BeforeEach
     void setUp() {
         taskService = new LiteratureSearchTaskService(tasks, provider(null), provider(null));
-        cardCatalogService = new LiteratureCardCatalogService(cards, objectMapper);
+        cardCatalogService = new LiteratureCardCatalogService(cards, objectMapper, new NoOpLiteratureCardIndexService());
         materializer = new LiteratureSearchTaskResultMaterializer(cardCatalogService, taskService, objectMapper);
     }
 
@@ -256,5 +256,15 @@ class LiteratureSearchTaskResultMaterializerTest {
                 return value;
             }
         };
+    }
+
+    private final class NoOpLiteratureCardIndexService extends LiteratureCardIndexService {
+        private NoOpLiteratureCardIndexService() {
+            super(provider(null), new com.yanban.paper.config.PaperLiteratureProperties(), objectMapper);
+        }
+
+        @Override
+        public void index(LiteratureCard card) {
+        }
     }
 }

@@ -46,8 +46,24 @@ class LiteratureServiceTest {
         }
 
         @Bean
-        LiteratureCardCatalogService literatureCardCatalogService(LiteratureCardRepository cards, ObjectMapper objectMapper) {
-            return new LiteratureCardCatalogService(cards, objectMapper);
+        LiteratureCardCatalogService literatureCardCatalogService(LiteratureCardRepository cards,
+                                                                  ObjectMapper objectMapper,
+                                                                  LiteratureCardIndexService literatureCardIndexService) {
+            return new LiteratureCardCatalogService(cards, objectMapper, literatureCardIndexService);
+        }
+
+        @Bean
+        LiteratureCardIndexService literatureCardIndexService(ObjectMapper objectMapper) {
+            return new LiteratureCardIndexService(new org.springframework.beans.factory.ObjectProvider<co.elastic.clients.elasticsearch.ElasticsearchClient>() {
+                @Override
+                public co.elastic.clients.elasticsearch.ElasticsearchClient getObject(Object... args) { return null; }
+                @Override
+                public co.elastic.clients.elasticsearch.ElasticsearchClient getIfAvailable() { return null; }
+                @Override
+                public co.elastic.clients.elasticsearch.ElasticsearchClient getIfUnique() { return null; }
+                @Override
+                public co.elastic.clients.elasticsearch.ElasticsearchClient getObject() { return null; }
+            }, new com.yanban.paper.config.PaperLiteratureProperties(), objectMapper);
         }
 
         @Bean
