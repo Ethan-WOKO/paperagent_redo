@@ -3,11 +3,13 @@ package com.yanban.paper.literature;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.paper.config.PaperLiteratureProperties;
 import com.yanban.paper.domain.LiteratureCard;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +47,41 @@ public class LiteratureCardIndexService {
                     .document(document(card))));
         } catch (Exception ex) {
             log.debug("Skip indexing literature card {} due to Elasticsearch error: {}", card.getId(), ex.getMessage());
+        }
+    }
+
+    public List<Long> searchCardIds(String query, int limit) {
+        if (!properties.isIndexEnabled() || query == null || query.isBlank() || limit <= 0) {
+            return List.of();
+        }
+        ElasticsearchClient client = elasticsearchClientProvider.getIfAvailable();
+        if (client == null) {
+            return List.of();
+        }
+        try {
+            ensureIndex(client);
+            SearchResponse<Map> response = client.search(request -> request
+                            .index(indexName())
+                            .size(limit)
+                            .query(q -> q
+                                    .multiMatch(mm -> mm
+                                            .query(query)
+                                            .fields(List.of("title^4", "abstractText^2", "analysisText^2", "domainTerms^3")))),
+                    Map.class);
+            List<Long> ids = new ArrayList<>();
+            response.hits().hits().forEach(hit -> {
+                try {
+                    if (hit.id() != null && !hit.id().isBlank()) {
+                        ids.add(Long.valueOf(hit.id()));
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Ignore malformed ids from the index and keep best-effort behavior.
+                }
+            });
+            return ids;
+        } catch (Exception ex) {
+            log.debug("Skip literature card index search due to Elasticsearch error: {}", ex.getMessage());
+            return List.of();
         }
     }
 

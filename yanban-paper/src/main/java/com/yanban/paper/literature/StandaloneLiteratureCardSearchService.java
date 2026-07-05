@@ -6,6 +6,7 @@ import com.yanban.paper.domain.LiteratureCard;
 import com.yanban.paper.domain.LiteratureCardRepository;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,10 +25,14 @@ public class StandaloneLiteratureCardSearchService {
 
     private final LiteratureCardRepository cards;
     private final ObjectMapper objectMapper;
+    private final LiteratureCardIndexService indexService;
 
-    public StandaloneLiteratureCardSearchService(LiteratureCardRepository cards, ObjectMapper objectMapper) {
+    public StandaloneLiteratureCardSearchService(LiteratureCardRepository cards,
+                                                 ObjectMapper objectMapper,
+                                                 LiteratureCardIndexService indexService) {
         this.cards = cards;
         this.objectMapper = objectMapper;
+        this.indexService = indexService;
     }
 
     public List<LiteratureCandidate> search(String query, int limit, Integer yearFrom) {
@@ -38,6 +43,10 @@ public class StandaloneLiteratureCardSearchService {
         List<String> keywords = queryKeywords(normalizedQuery);
         if (keywords.isEmpty()) {
             return List.of();
+        }
+        List<LiteratureCandidate> indexedHits = indexedHits(normalizedQuery, limit, yearFrom);
+        if (!indexedHits.isEmpty()) {
+            return indexedHits;
         }
         int perKeywordLimit = Math.max(3, Math.min(10, limit));
         Map<Long, LiteratureCandidate> unique = new LinkedHashMap<>();
@@ -58,6 +67,30 @@ public class StandaloneLiteratureCardSearchService {
                         .thenComparing(candidate -> candidate.year() == null ? 0 : candidate.year(), Comparator.reverseOrder()))
                 .limit(limit)
                 .toList();
+    }
+
+    private List<LiteratureCandidate> indexedHits(String normalizedQuery, int limit, Integer yearFrom) {
+        List<Long> ids = indexService.searchCardIds(normalizedQuery, limit);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, LiteratureCard> cardsById = new HashMap<>();
+        cards.findAllById(ids).forEach(card -> cardsById.put(card.getId(), card));
+        List<LiteratureCandidate> candidates = new ArrayList<>();
+        for (Long id : ids) {
+            LiteratureCard card = cardsById.get(id);
+            if (card == null) {
+                continue;
+            }
+            if (yearFrom != null && card.getPublicationYear() != null && card.getPublicationYear() < yearFrom) {
+                continue;
+            }
+            candidates.add(toCandidate(card, normalizedQuery));
+            if (candidates.size() >= limit) {
+                break;
+            }
+        }
+        return candidates;
     }
 
     private LiteratureCandidate toCandidate(LiteratureCard card, String sourceQuery) {
