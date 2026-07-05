@@ -21,9 +21,12 @@ public class AdHocLiteratureSearchService {
     private static final Pattern TOKEN_SPLIT = Pattern.compile("[^a-z0-9\\p{IsHan}]+", Pattern.CASE_INSENSITIVE);
 
     private final List<LiteratureSource> sources;
+    private final StandaloneLiteratureCardSearchService localCardSearchService;
 
-    public AdHocLiteratureSearchService(List<LiteratureSource> sources) {
+    public AdHocLiteratureSearchService(List<LiteratureSource> sources,
+                                        StandaloneLiteratureCardSearchService localCardSearchService) {
         this.sources = sources == null ? List.of() : List.copyOf(sources);
+        this.localCardSearchService = localCardSearchService;
     }
 
     public AdHocLiteratureSearchResult search(String query, int limit, Integer yearFrom) {
@@ -37,6 +40,11 @@ public class AdHocLiteratureSearchService {
         List<String> failures = new ArrayList<>();
         int rawCount = 0;
         int sourceAttempts = 0;
+        for (LiteratureCandidate candidate : localCardSearchService.search(normalizedQuery, selectionLimit, yearFrom)) {
+            if (!StringUtils.hasText(candidate.title())) continue;
+            unique.putIfAbsent(identityKey(candidate), candidate);
+            rawCount++;
+        }
         for (LiteratureSource source : sources) {
             sourceAttempts++;
             List<LiteratureCandidate> candidates;
