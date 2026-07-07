@@ -14,7 +14,7 @@ public class AgentRuntimeService {
 
     public AgentRuntimeResult run(AgentRuntimeRequest request) {
         RuntimeAdapter adapter = adapters.stream()
-                .filter(candidate -> candidate.supports(request.strategy()))
+                .filter(candidate -> candidate.supports(request))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         "No runtime adapter available for strategy " + request.strategy()));

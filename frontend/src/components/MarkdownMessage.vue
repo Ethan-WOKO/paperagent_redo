@@ -29,5 +29,14 @@ markdown.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   return defaultLinkOpen(tokens, idx, options, env, self);
 };
 
-const renderedHtml = computed(() => DOMPurify.sanitize(markdown.render(props.content || '')));
+function normalizeLooseMarkdown(content: string) {
+  return (content || '')
+    .replace(/\r\n/g, '\n')
+    // Some models emit "summary### 1 Title" without a line break; Markdown requires headings at line start.
+    .replace(/([^\n])([ \t]*)(#{2,6})(?=[ \t]*(?:\d|[\u4e00-\u9fa5A-Za-z]))/g, '$1\n\n$3')
+    // Also tolerate "###Title" once it has been moved to its own line.
+    .replace(/^(#{2,6})(?=\S)/gm, '$1 ');
+}
+
+const renderedHtml = computed(() => DOMPurify.sanitize(markdown.render(normalizeLooseMarkdown(props.content || ''))));
 </script>

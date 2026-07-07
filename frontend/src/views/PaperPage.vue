@@ -41,6 +41,48 @@
         </NSpace>
       </section>
 
+      <section class="paper-task-board">
+        <div class="paper-task-board__head">
+          <div>
+            <div class="section-title">运行中的润色任务</div>
+            <p>多个论文润色任务可以同时在后台运行；点选任务后，下方展示该任务的详细进度与确认项。</p>
+          </div>
+          <NButton size="small" secondary :loading="historyLoading" @click="refreshTaskBoard">刷新任务</NButton>
+        </div>
+
+        <div v-if="activeTaskCards.length > 0" class="paper-running-tasks">
+          <article
+            v-for="task in activeTaskCards"
+            :key="task.id"
+            class="paper-running-task"
+            :class="{
+              'paper-running-task--active': task.id === currentTaskId,
+              'paper-running-task--waiting': task.status === 'WAITING_INPUT',
+            }"
+          >
+            <button type="button" @click="openHistoryTask(task.id)">
+              <span>{{ taskCardTitle(task) }}</span>
+              <strong>{{ task.status === 'WAITING_INPUT' ? '待结构确认' : taskStatusLabel(task.status) }}</strong>
+            </button>
+            <div class="paper-running-task__meta">
+              <span>{{ taskStageLabel(task) }}</span>
+              <small>{{ formatDateTime(task.updatedAt) }}</small>
+            </div>
+            <div class="paper-running-task__flow" aria-label="论文润色任务进度">
+              <span
+                v-for="step in taskFlowSteps"
+                :key="step.stage"
+                :class="taskFlowStepClass(task, step.stage)"
+                :title="step.label"
+              >
+                {{ step.shortLabel }}
+              </span>
+            </div>
+          </article>
+        </div>
+        <NEmpty v-else description="暂无正在运行或等待确认的论文润色任务。" />
+      </section>
+
       <div class="paper-polish-shell">
         <main class="paper-polish-main">
           <NGrid :cols="24" :x-gap="14" :y-gap="14" responsive="screen" item-responsive>
@@ -141,6 +183,9 @@
 
                 <NAlert v-if="currentTask?.errorMessage" type="error" title="Task error">
                   {{ currentTask.errorMessage }}
+                </NAlert>
+                <NAlert v-if="currentTask?.status === 'WAITING_INPUT' || pendingClarifications.length > 0" type="warning" title="结构确认待处理">
+                  当前任务需要你确认论文结构。请在下方 Review Workspace 的 Clarifications 中提交选择，任务会继续后台执行。
                 </NAlert>
                 <div class="paper-status-actions">
                   <NButton secondary :disabled="!currentTaskId" @click="refreshTask">Refresh</NButton>
@@ -821,6 +866,7 @@ const route = useRoute();
 const router = useRouter();
 const PAPER_TASK_TYPE = 'paper_polish';
 const TERMINAL_TASK_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT']);
+const ACTIVE_TASK_STATUSES = new Set(['PENDING', 'RUNNING', 'PAUSED', 'WAITING_INPUT', 'CANCEL_REQUESTED', 'CANCELLING']);
 const texInputRef = ref<HTMLInputElement | null>(null);
 const bibInputRef = ref<HTMLInputElement | null>(null);
 const selectedTexFile = ref<File | null>(null);
@@ -845,6 +891,7 @@ const sseStatus = ref<'idle' | 'connecting' | 'connected' | 'closed' | 'error'>(
 const taskStatus = ref<TaskStatusResponse | null>(null);
 const lastTaskEventId = ref<number | null>(null);
 let abortController: AbortController | null = null;
+let taskBoardRefreshTimer: number | null = null;
 
 const form = reactive({
   targetLanguage: 'zh' as 'zh' | 'en',
@@ -923,6 +970,15 @@ const stageSteps = [
   { stage: 'ASSEMBLE', label: '组装' },
   { stage: 'COMPLETE', label: '完成' },
 ];
+const taskFlowSteps = [
+  { stage: 'UPLOAD', label: '上传', shortLabel: '1' },
+  { stage: 'PARSE', label: '解析', shortLabel: '2' },
+  { stage: 'STRUCTURE_CHECK', label: '结构确认', shortLabel: '3' },
+  { stage: 'RETRIEVE', label: '文献检索', shortLabel: '4' },
+  { stage: 'GAP_ANALYSIS', label: '批判', shortLabel: '5' },
+  { stage: 'POLISH', label: '改写', shortLabel: '6' },
+  { stage: 'ASSEMBLE', label: '导出', shortLabel: '7' },
+];
 const legacyStageAlias: Record<string, string> = {
   SUMMARY: 'PARSE',
   SECTIONS: 'POLISH',
@@ -955,6 +1011,20 @@ const citationSlots = computed(() => {
   return Array.isArray(concept.citationSlots) ? concept.citationSlots : [];
 });
 const rawEventLog = computed(() => JSON.stringify(events.value, null, 2));
+const activeTaskCards = computed<PaperTaskListItem[]>(() => {
+  const items = historyTasks.value
+    .filter((task) => ACTIVE_TASK_STATUSES.has(task.status))
+    .map((task) => (currentTask.value?.id === task.id ? toTaskListItem(currentTask.value) : toTaskListItem(task)));
+  if (currentTask.value && ACTIVE_TASK_STATUSES.has(currentTask.value.status) && !items.some((task) => task.id === currentTask.value?.id)) {
+    items.unshift(toTaskListItem(currentTask.value));
+  }
+  return items.sort((left, right) => {
+    const leftWaiting = left.status === 'WAITING_INPUT' ? 1 : 0;
+    const rightWaiting = right.status === 'WAITING_INPUT' ? 1 : 0;
+    if (leftWaiting !== rightWaiting) return rightWaiting - leftWaiting;
+    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+  });
+});
 const sseStatusText = computed(() => {
   if (sseStatus.value === 'connecting') return '连接中';
   if (sseStatus.value === 'connected') return '已连接';
@@ -965,9 +1035,14 @@ const sseStatusText = computed(() => {
 
 onMounted(async () => {
   await loadHistory();
+  taskBoardRefreshTimer = window.setInterval(() => {
+    void loadHistoryQuietly();
+  }, 15000);
   const taskId = Number(route.query.taskId);
   if (!Number.isNaN(taskId) && taskId > 0) {
     await loadTask(taskId, true);
+  } else {
+    await restoreInitialTaskSelection();
   }
 });
 
@@ -984,6 +1059,10 @@ watch(
 
 onBeforeUnmount(() => {
   abortController?.abort();
+  if (taskBoardRefreshTimer != null) {
+    window.clearInterval(taskBoardRefreshTimer);
+    taskBoardRefreshTimer = null;
+  }
 });
 
 async function startNewPaperTask() {
@@ -1081,9 +1160,35 @@ async function loadHistory() {
   }
 }
 
+async function loadHistoryQuietly() {
+  if (historyLoading.value) return;
+  try {
+    const { data } = await getPaperTasks();
+    historyTasks.value = data;
+  } catch {
+    // Background refresh should not interrupt the user's current paper review work.
+  }
+}
+
+async function refreshTaskBoard() {
+  await loadHistory();
+  if (currentTaskId.value) {
+    await loadTask(currentTaskId.value, false);
+  } else {
+    await restoreInitialTaskSelection();
+  }
+}
+
+async function restoreInitialTaskSelection() {
+  const preferredTask = pickPreferredTask(historyTasks.value.map(toTaskListItem));
+  if (!preferredTask) return;
+  await router.replace({ path: '/paper', query: { taskId: String(preferredTask.id) } });
+  await loadTask(preferredTask.id, ACTIVE_TASK_STATUSES.has(preferredTask.status));
+}
+
 async function openHistoryTask(taskId: number) {
   await router.replace({ path: '/paper', query: { taskId: String(taskId) } });
-  await loadTask(taskId, ['PENDING', 'RUNNING', 'PAUSED', 'WAITING_INPUT'].includes(historyTasks.value.find((item) => item.id === taskId)?.status || ''));
+  await loadTask(taskId, ACTIVE_TASK_STATUSES.has(historyTasks.value.find((item) => item.id === taskId)?.status || ''));
 }
 
 async function downloadHistoryTask(taskId: number) {
@@ -1351,6 +1456,80 @@ function statusTagType(status: string) {
   return 'default';
 }
 
+function taskCardTitle(task: PaperTaskListItem) {
+  return task.title || task.sourceFilename || `论文任务 #${task.id}`;
+}
+
+function taskStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    PENDING: '等待中',
+    RUNNING: '运行中',
+    PAUSED: '已暂停',
+    WAITING_INPUT: '等待确认',
+    CANCEL_REQUESTED: '等待停止',
+    CANCELLING: '停止中',
+    COMPLETED: '已完成',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+    TIMED_OUT: '已超时',
+  };
+  return labels[status] || status;
+}
+
+function taskStageLabel(task: PaperTaskListItem) {
+  if (task.status === 'WAITING_INPUT') return '结构确认等待处理';
+  if (task.status === 'COMPLETED') return '结果已生成';
+  if (task.status === 'FAILED') return '任务执行失败';
+  return stageLabel(task.currentStage || task.status);
+}
+
+function toTaskListItem(task: PaperTaskHistoryResponse | PaperTaskResponse): PaperTaskListItem {
+  return {
+    id: task.id,
+    title: task.title,
+    sourceFilename: task.sourceFilename,
+    status: task.status,
+    currentStage: task.currentStage,
+    updatedAt: task.updatedAt,
+  };
+}
+
+function pickPreferredTask(tasks: PaperTaskListItem[]) {
+  const activeTasks = tasks.filter((task) => ACTIVE_TASK_STATUSES.has(task.status));
+  if (activeTasks.length === 0) return null;
+  return [...activeTasks].sort((left, right) => {
+    const leftWaiting = left.status === 'WAITING_INPUT' ? 1 : 0;
+    const rightWaiting = right.status === 'WAITING_INPUT' ? 1 : 0;
+    if (leftWaiting !== rightWaiting) return rightWaiting - leftWaiting;
+    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+  })[0];
+}
+
+function taskFlowStepClass(task: PaperTaskListItem, stage: string) {
+  const currentIndex = taskFlowIndex(task);
+  const index = taskFlowSteps.findIndex((step) => step.stage === stage);
+  const terminalComplete = task.status === 'COMPLETED';
+  return {
+    'paper-running-task__step--done': terminalComplete || (currentIndex >= 0 && index < currentIndex),
+    'paper-running-task__step--active': !terminalComplete && currentIndex >= 0 && index === currentIndex,
+    'paper-running-task__step--waiting': task.status === 'WAITING_INPUT' && stage === 'STRUCTURE_CHECK',
+  };
+}
+
+function taskFlowIndex(task: PaperTaskListItem) {
+  if (task.status === 'COMPLETED') return taskFlowSteps.length - 1;
+  if (task.status === 'WAITING_INPUT') return taskFlowSteps.findIndex((step) => step.stage === 'STRUCTURE_CHECK');
+  const normalizedStage = normalizeStage(task.currentStage || null);
+  if (!normalizedStage) return taskFlowSteps.findIndex((step) => step.stage === 'UPLOAD');
+  if (normalizedStage === 'RESEARCH_PROFILE') {
+    return taskFlowSteps.findIndex((step) => step.stage === 'RETRIEVE');
+  }
+  if (normalizedStage === 'COMPLETE') {
+    return taskFlowSteps.findIndex((step) => step.stage === 'ASSEMBLE');
+  }
+  return taskFlowSteps.findIndex((step) => step.stage === normalizedStage);
+}
+
 async function submitClarification(item: PaperClarificationResponse) {
   if (!currentTaskId.value) return;
   const option = clarificationAnswers[item.id] || clarificationOptions(item).defaultOption || '保持原样';
@@ -1481,6 +1660,7 @@ function normalizeStage(stage: string | null) {
 function stageLabel(stage: string | null) {
   const normalized = normalizeStage(stage);
   const labels: Record<string, string> = {
+    UPLOAD: '上传',
     PARSE: '解析 LaTeX',
     STRUCTURE_CHECK: '结构确认',
     RESEARCH_PROFILE: '研究画像',
@@ -1496,6 +1676,9 @@ function stageLabel(stage: string | null) {
     FAILED: '失败',
     PENDING: '等待中',
     RUNNING: '运行中',
+    PAUSED: '已暂停',
+    WAITING_INPUT: '等待确认',
+    TIMED_OUT: '已超时',
   };
   return normalized ? labels[normalized] || normalized : '-';
 }
@@ -1569,6 +1752,15 @@ type PaperTimelineEvent = {
   maxAttempts: number | null;
 };
 
+type PaperTaskListItem = {
+  id: number;
+  title: string;
+  sourceFilename: string | null;
+  status: string;
+  currentStage: string | null;
+  updatedAt: string;
+};
+
 async function loadTaskEventHistory(taskId: number) {
   try {
     const { data } = await listTaskEvents(taskId, PAPER_TASK_TYPE);
@@ -1598,7 +1790,7 @@ function appendTaskEvents(incoming: PaperTimelineEvent[]) {
     }
   }
   events.value = Array.from(merged.values()).sort((left, right) => left.id - right.id);
-  lastTaskEventId.value = events.value.at(-1)?.id ?? null;
+  lastTaskEventId.value = events.value.length > 0 ? events.value[events.value.length - 1].id : null;
 }
 
 function applyTaskEventToTaskState(event: PaperTimelineEvent) {

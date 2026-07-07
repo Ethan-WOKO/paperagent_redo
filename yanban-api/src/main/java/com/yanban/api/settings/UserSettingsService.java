@@ -53,19 +53,22 @@ public class UserSettingsService {
     private final ModelDiscoveryService modelDiscoveryService;
     private final ObjectMapper objectMapper;
     private final UserAccountPolicy accountPolicy;
+    private final UserSettingsInitializer initializer;
 
     public UserSettingsService(SysUserSettingsRepository repository,
                                UserModelRepository userModelRepository,
                                SettingsCryptoService cryptoService,
                                ModelDiscoveryService modelDiscoveryService,
                                ObjectMapper objectMapper,
-                               UserAccountPolicy accountPolicy) {
+                               UserAccountPolicy accountPolicy,
+                               UserSettingsInitializer initializer) {
         this.repository = repository;
         this.userModelRepository = userModelRepository;
         this.cryptoService = cryptoService;
         this.modelDiscoveryService = modelDiscoveryService;
         this.objectMapper = objectMapper;
         this.accountPolicy = accountPolicy;
+        this.initializer = initializer;
     }
 
     @Transactional
@@ -148,12 +151,11 @@ public class UserSettingsService {
     public SysUserSettings getOrCreate(Long userId) {
         return repository.findById(userId)
                 .orElseGet(() -> {
+                    SysUserSettings defaults = defaultSettings(userId);
                     try {
-                        SysUserSettings created = repository.saveAndFlush(defaultSettings(userId));
-                        seedBuiltinCustomModels(userId);
-                        return created;
+                        return initializer.createDefaultSettings(userId, defaults);
                     } catch (org.springframework.dao.DataIntegrityViolationException ex) {
-                        // Concurrent request already inserted the row; fall back to re-query.
+                        // A concurrent request won the insert race in a separate transaction.
                         return repository.findById(userId)
                                 .orElseThrow(() -> ex);
                     }
@@ -327,25 +329,6 @@ public class UserSettingsService {
                 parseDeepseekModels(settings),
                 parseGlmModels(settings),
                 customModels);
-    }
-
-    private void seedBuiltinCustomModels(Long userId) {
-        if (!userModelRepository.findByUserIdOrderBySortOrderAscIdAsc(userId).isEmpty()) {
-            return;
-        }
-        List<UserModel> builtins = List.of(
-                new UserModel(userId, "deepseek", "DeepSeek", "deepseek-v4-flash", null, null, true, 1),
-                new UserModel(userId, "deepseek", "DeepSeek", "deepseek-v4-pro", null, null, true, 2),
-                new UserModel(userId, "deepseek", "DeepSeek", "deepseek-chat", null, null, true, 3),
-                new UserModel(userId, "deepseek", "DeepSeek", "deepseek-reasoner", null, null, true, 4),
-                new UserModel(userId, "glm", "Zhipu GLM", "glm-5.2", null, null, true, 5),
-                new UserModel(userId, "glm", "Zhipu GLM", "glm-5.1", null, null, true, 6),
-                new UserModel(userId, "glm", "Zhipu GLM", "glm-5", null, null, true, 7),
-                new UserModel(userId, "glm", "Zhipu GLM", "glm-4.7", null, null, true, 8),
-                new UserModel(userId, "glm", "Zhipu GLM", "glm-4.6", null, null, true, 9),
-                new UserModel(userId, "glm", "Zhipu GLM", "glm-4.5-air", null, null, true, 10)
-        );
-        userModelRepository.saveAllAndFlush(builtins);
     }
 
     private SysUserSettings defaultSettings(Long userId) {

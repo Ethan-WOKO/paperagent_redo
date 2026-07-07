@@ -46,6 +46,7 @@ public class KnowledgeUploadService {
     private final KbChunkUploadRepository chunkUploads;
     private final KbDocumentRepository documents;
     private final MinioClient minioClient;
+    private final KnowledgeBucketProvisioner bucketProvisioner;
     private final KnowledgeStorageProperties storageProperties;
     private final KnowledgeUploadProperties uploadProperties;
     private final KafkaTemplate<String, String> kafkaTemplate;
@@ -55,6 +56,7 @@ public class KnowledgeUploadService {
     public KnowledgeUploadService(KbChunkUploadRepository chunkUploads,
                                   KbDocumentRepository documents,
                                   MinioClient minioClient,
+                                  KnowledgeBucketProvisioner bucketProvisioner,
                                   KnowledgeStorageProperties storageProperties,
                                   KnowledgeUploadProperties uploadProperties,
                                   KafkaTemplate<String, String> kafkaTemplate,
@@ -63,6 +65,7 @@ public class KnowledgeUploadService {
         this.chunkUploads = chunkUploads;
         this.documents = documents;
         this.minioClient = minioClient;
+        this.bucketProvisioner = bucketProvisioner;
         this.storageProperties = storageProperties;
         this.uploadProperties = uploadProperties;
         this.kafkaTemplate = kafkaTemplate;
@@ -75,6 +78,7 @@ public class KnowledgeUploadService {
         validateChunkRequest(request);
         try {
             byte[] bytes = request.file().getBytes();
+            bucketProvisioner.ensureBucketExists();
             UserAccountPolicy policy = accountPolicy.getIfAvailable();
             if (policy != null) {
                 policy.assertCanUploadKnowledge(userId, bytes.length);
@@ -139,6 +143,7 @@ public class KnowledgeUploadService {
 
         Path mergedFile = null;
         try {
+            bucketProvisioner.ensureBucketExists();
             mergedFile = Files.createTempFile("yanban-kb-merge-", ".bin");
             try (OutputStream out = Files.newOutputStream(mergedFile)) {
                 for (KbChunkUpload upload : uploadedChunks) {

@@ -109,13 +109,24 @@ public class KnowledgeReranker {
     }
 
     private List<String> tokenize(String query) {
+        Set<String> terms = new LinkedHashSet<>();
+        for (String term : KnowledgeQueryVariants.expand(query)) {
+            if (term.length() < 2) {
+                continue;
+            }
+            if (term.matches("[a-z0-9_]+") && STOP_WORDS.contains(term)) {
+                continue;
+            }
+            if (terms.add(term) && terms.size() >= MAX_REASON_TERMS) {
+                break;
+            }
+        }
         String normalized = normalize(query);
         if (!StringUtils.hasText(normalized)) {
-            return List.of();
+            return List.copyOf(terms);
         }
-        Set<String> terms = new LinkedHashSet<>();
-        for (String term : normalized.split("[^a-z0-9_]+")) {
-            if (term.length() >= 2 && !STOP_WORDS.contains(term)) {
+        for (String term : normalized.split("[^\\p{L}\\p{N}_]+")) {
+            if (term.length() >= 2 && !(term.matches("[a-z0-9_]+") && STOP_WORDS.contains(term))) {
                 terms.add(term);
             }
         }

@@ -4,7 +4,8 @@ public enum ChatRole {
     SYSTEM("system"),
     USER("user"),
     ASSISTANT("assistant"),
-    TOOL("tool");
+    TOOL("tool"),
+    PROCESS("process");
 
     private final String value;
 

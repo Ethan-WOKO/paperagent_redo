@@ -49,7 +49,10 @@ public class AgentService {
     private static final int MAX_VISIBLE_MESSAGE_LIMIT = 100;
     private static final int SESSION_SUMMARY_MAX_CHARACTERS = 4_000;
     private static final int SUMMARY_TURN_SNIPPET_MAX_CHARACTERS = 1_200;
+    private static final int SESSION_FACT_MAX_COUNT = 24;
+    private static final int SESSION_FACT_MAX_CHARACTERS = 320;
     private static final List<String> CHAT_VISIBLE_ROLES = List.of("user", "assistant");
+    private static final int PROCESS_SUMMARY_MAX_LINES = 8;
 
     private final AgentSessionRepository sessions;
     private final AgentMessageRepository messages;
@@ -62,12 +65,16 @@ public class AgentService {
     private final SkillsService skillsService;
     private final AgentToolPolicyEngine toolPolicyEngine;
     private final AgentStrategySelector agentStrategySelector;
+    private final AgentExperimentService agentExperimentService;
+    private final AgentMemoryExperimentService agentMemoryExperimentService;
+    private final AgentExperimentRecordService agentExperimentRecordService;
     private final AgentContextBuilder agentContextBuilder;
     private final AgentContextSnapshotService contextSnapshotService;
     private final AgentSessionSummaryService sessionSummaryService;
     private final LongTermMemoryRetrievalService longTermMemoryRetrievalService;
     private final ChatModelProvider titleModelProvider;
     private final UserAccountPolicy accountPolicy;
+    private final AgentRequestDedupService requestDedupService;
 
     public AgentService(AgentSessionRepository sessions,
                         AgentMessageRepository messages,
@@ -80,12 +87,16 @@ public class AgentService {
                         SkillsService skillsService,
                         AgentToolPolicyEngine toolPolicyEngine,
                         AgentStrategySelector agentStrategySelector,
+                        AgentExperimentService agentExperimentService,
+                        AgentMemoryExperimentService agentMemoryExperimentService,
+                        AgentExperimentRecordService agentExperimentRecordService,
                         AgentContextBuilder agentContextBuilder,
                         AgentContextSnapshotService contextSnapshotService,
                         AgentSessionSummaryService sessionSummaryService,
                         LongTermMemoryRetrievalService longTermMemoryRetrievalService,
                         @Qualifier("chatModelProvider") ChatModelProvider titleModelProvider,
-                        UserAccountPolicy accountPolicy) {
+                        UserAccountPolicy accountPolicy,
+                        AgentRequestDedupService requestDedupService) {
         this.sessions = sessions;
         this.messages = messages;
         this.turns = turns;
@@ -97,12 +108,16 @@ public class AgentService {
         this.skillsService = skillsService;
         this.toolPolicyEngine = toolPolicyEngine;
         this.agentStrategySelector = agentStrategySelector;
+        this.agentExperimentService = agentExperimentService;
+        this.agentMemoryExperimentService = agentMemoryExperimentService;
+        this.agentExperimentRecordService = agentExperimentRecordService;
         this.agentContextBuilder = agentContextBuilder;
         this.contextSnapshotService = contextSnapshotService;
         this.sessionSummaryService = sessionSummaryService;
         this.longTermMemoryRetrievalService = longTermMemoryRetrievalService;
         this.titleModelProvider = titleModelProvider;
         this.accountPolicy = accountPolicy;
+        this.requestDedupService = requestDedupService;
     }
 
     @Transactional
@@ -194,6 +209,7 @@ public class AgentService {
         }
         Collections.reverse(rows);
         List<AgentMessageResponse> response = rows.stream()
+                .filter(message -> !chatView || isChatVisibleMessage(message))
                 .map(AgentMessageResponse::from)
                 .toList();
         if (chatView && beforeId == null) {
@@ -203,36 +219,63 @@ public class AgentService {
     }
 
     public SendMessageResponse sendMessage(Long userId, Long sessionId, SendMessageRequest request) {
-        return sendMessageInternal(userId, sessionId, request, null);
+        return requestDedupService.execute(
+                userId,
+                sessionId,
+                request.clientRequestId(),
+                () -> sendMessageInternal(userId, sessionId, request, null, null)
+        );
     }
 
     public SendMessageResponse sendMessageStreaming(Long userId,
                                                     Long sessionId,
                                                     SendMessageRequest request,
                                                     Consumer<String> tokenConsumer) {
-        return sendMessageInternal(userId, sessionId, request, tokenConsumer);
+        return sendMessageStreaming(userId, sessionId, request, tokenConsumer, null);
+    }
+
+    public SendMessageResponse sendMessageStreaming(Long userId,
+                                                    Long sessionId,
+                                                    SendMessageRequest request,
+                                                    Consumer<String> tokenConsumer,
+                                                    Consumer<String> processConsumer) {
+        return requestDedupService.execute(
+                userId,
+                sessionId,
+                request.clientRequestId(),
+                () -> sendMessageInternal(userId, sessionId, request, tokenConsumer, processConsumer)
+        );
     }
 
     private SendMessageResponse sendMessageInternal(Long userId,
                                                     Long sessionId,
                                                     SendMessageRequest request,
-                                                    Consumer<String> tokenConsumer) {
+                                                    Consumer<String> tokenConsumer,
+                                                    Consumer<String> processConsumer) {
+        long startedAtNanos = System.nanoTime();
         accountPolicy.assertCanSendChatMessage(userId);
         AgentSession session = getOwnedSession(userId, sessionId);
         UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
                 userId, session.getModelProviderSnapshot(), session.getModelSnapshot());
-        AgentContextPackage contextPackage = agentContextBuilder.build(new AgentContextBuildRequest(
+        AgentExperimentContext experimentContext = agentExperimentService.prepare(
+                userId,
+                request.content(),
+                request.experiment()
+        );
+        AgentContextBuildRequest contextBuildRequest = new AgentContextBuildRequest(
                 session.getId(),
                 userId,
                 endpoint.providerKey(),
                 endpoint.modelName(),
                 loadSessionSummaryText(session.getId(), userId),
                 loadLongTermMemoryContext(userId, request.content()),
-                null,
+                experimentContext.ragResult() == null ? null : experimentContext.ragResult().ragContext(),
                 null,
                 null,
                 null
-        ));
+        );
+        AgentMemoryExperimentResult memoryExperiment = agentMemoryExperimentService.buildContext(experimentContext, contextBuildRequest);
+        AgentContextPackage contextPackage = memoryExperiment.contextPackage();
         boolean shouldAutoGenerateTitle = shouldAutoGenerateTitle(session, contextPackage.rawMessageCount());
 
         List<AgentMessage> saved = new ArrayList<>();
@@ -243,6 +286,14 @@ public class AgentService {
 
         if (isRuntimeIdentityQuestion(request.content())) {
             String assistantContent = buildRuntimeIdentityAnswer(endpoint);
+            AgentMessage processMessage = saveProcessMessageIfNeeded(
+                    session.getId(),
+                    userId,
+                    "已分析问题，直接生成回答。"
+            );
+            if (processMessage != null) {
+                saved.add(processMessage);
+            }
             AgentMessage assistantMessage = saveAndCacheMessage(session.getId(), userId, ChatMessage.assistant(assistantContent));
             saved.add(assistantMessage);
             completeTurn(turn, assistantMessage.getId());
@@ -257,18 +308,40 @@ public class AgentService {
                     saved.size()
             );
             touchAndMaybeGenerateTitle(session, userId, request.content(), shouldAutoGenerateTitle);
+            AgentDebugPayload debugPayload = finalizeDebugPayload(
+                    userId,
+                    session.getId(),
+                    request.clientRequestId(),
+                    experimentContext,
+                    memoryExperiment,
+                    null,
+                    contextPackage.messages(),
+                    assistantContent,
+                    true,
+                    null,
+                    elapsedMillis(startedAtNanos)
+            );
             return new SendMessageResponse(
                     true,
                     assistantContent,
                     0,
                     null,
                     null,
-                    saved.stream().map(AgentMessageResponse::from).toList()
+                    saved.stream().map(AgentMessageResponse::from).toList(),
+                    debugPayload
             );
         }
 
         ConversationIntentRouterService.IntentAction intentAction = conversationIntentRouterService.route(request.content());
         if (intentAction != null) {
+            AgentMessage processMessage = saveProcessMessageIfNeeded(
+                    session.getId(),
+                    userId,
+                    buildIntentProcessSummary(intentAction)
+            );
+            if (processMessage != null) {
+                saved.add(processMessage);
+            }
             AgentMessage assistantMessage = saveAndCacheMessage(session.getId(), userId, ChatMessage.assistant(intentAction.assistantMessage()));
             saved.add(assistantMessage);
             completeTurn(turn, assistantMessage.getId());
@@ -283,23 +356,38 @@ public class AgentService {
                     saved.size()
             );
             touchAndMaybeGenerateTitle(session, userId, request.content(), shouldAutoGenerateTitle);
+            AgentDebugPayload debugPayload = finalizeDebugPayload(
+                    userId,
+                    session.getId(),
+                    request.clientRequestId(),
+                    experimentContext,
+                    memoryExperiment,
+                    null,
+                    contextPackage.messages(),
+                    intentAction.assistantMessage(),
+                    true,
+                    null,
+                    elapsedMillis(startedAtNanos)
+            );
             return new SendMessageResponse(
                     true,
                     intentAction.assistantMessage(),
                     0,
                     null,
                     intentAction.navigationUrl(),
-                    saved.stream().map(AgentMessageResponse::from).toList()
+                    saved.stream().map(AgentMessageResponse::from).toList(),
+                    debugPayload
             );
         }
 
         boolean ragDisabled = request.ragDisabled() != null ? request.ragDisabled() : Boolean.TRUE.equals(session.getRagDisabled());
+        boolean runtimeRagDisabled = ragDisabled || experimentContext.overridesRag();
         ResolvedSkill resolvedSkill = request.skillId() == null || request.skillId().isBlank()
                 ? null
                 : skillsService.resolveEnabledSkill(userId, request.skillId());
         AgentToolPolicyEngine.Decision toolPolicy = toolPolicyEngine.decide(
                 request.content(),
-                ragDisabled,
+                runtimeRagDisabled,
                 resolvedSkill == null ? null : resolvedSkill.allowedTools()
         );
         log.info("Agent tool policy sessionId={} provider={} model={} allowedTools={} reason={}",
@@ -329,28 +417,46 @@ public class AgentService {
                     null,
                     null,
                     session.getMaxSteps(),
-                    ragDisabled,
+                    runtimeRagDisabled,
                     request.skillId(),
                     endpoint.apiKey(),
                     endpoint.apiUrl(),
                     resolvedSkill == null ? null : resolvedSkill.prompt(),
+                    experimentContext.selectedModes().runtimeMode(),
+                    experimentContext.selectedModes().toolCallingMode(),
                     toolPolicy.allowedTools(),
                     toolPolicy.maxToolCalls(),
                     toolPolicy.maxDuplicateToolCalls(),
                     MDC.get(TraceIdFilter.TRACE_ID_MDC_KEY),
-                    tokenConsumer
+                    tokenConsumer,
+                    processConsumer
             ));
 
-            List<AgentMessage> harnessMessages = saveHarnessMessages(
+            AgentMessage processMessage = saveProcessSummaryIfNeeded(session.getId(), userId, result, experimentContext);
+            if (processMessage != null) {
+                saved.add(processMessage);
+            }
+            List<AgentMessage> runtimeMessages = saveRuntimeMessages(
                     session.getId(),
                     userId,
                     result.messages(),
                     effectiveHistory.size()
             );
-            saved.addAll(harnessMessages);
+            saved.addAll(runtimeMessages);
+            log.info("Agent runtime completed sessionId={} userId={} success={} steps={} assistantPreview={} toolTrace={} fallbacks={} promptTokens={} completionTokens={} totalTokens={}",
+                    session.getId(),
+                    userId,
+                    result.success(),
+                    result.steps(),
+                    abbreviateForLog(result.assistantContent()),
+                    result.toolTrace(),
+                    result.fallbacks(),
+                    result.promptTokens(),
+                    result.completionTokens(),
+                    result.totalTokens());
 
             if (result.success()) {
-                Long assistantMessageId = lastAssistantMessageId(harnessMessages);
+                Long assistantMessageId = lastAssistantMessageId(runtimeMessages);
                 completeTurn(turn, assistantMessageId);
                 updateSessionSummaryAfterSuccess(
                         session,
@@ -359,16 +465,30 @@ public class AgentService {
                         request.content(),
                         result.assistantContent(),
                         assistantMessageId,
-                        1 + harnessMessages.size()
+                        1 + runtimeMessages.size()
                 );
                 touchAndMaybeGenerateTitle(session, userId, request.content(), shouldAutoGenerateTitle);
+                AgentDebugPayload debugPayload = finalizeDebugPayload(
+                        userId,
+                        session.getId(),
+                        request.clientRequestId(),
+                        experimentContext,
+                    memoryExperiment,
+                    result,
+                    effectiveHistory,
+                    result.assistantContent(),
+                    true,
+                    null,
+                    elapsedMillis(startedAtNanos)
+                );
                 return new SendMessageResponse(
                         true,
                         result.assistantContent(),
                         result.steps(),
                         null,
                         null,
-                        saved.stream().map(AgentMessageResponse::from).toList()
+                        saved.stream().map(AgentMessageResponse::from).toList(),
+                        debugPayload
                 );
             }
 
@@ -378,11 +498,30 @@ public class AgentService {
                     turn,
                     saved,
                     result.errorMessage(),
-                    result.steps()
+                    result.steps(),
+                    experimentContext,
+                    memoryExperiment,
+                    result,
+                    effectiveHistory,
+                    request.clientRequestId(),
+                    elapsedMillis(startedAtNanos)
             );
         } catch (Exception ex) {
             log.warn("Agent send failed sessionId={} userId={}", session.getId(), userId, ex);
-            return failTurn(session, userId, turn, saved, extractErrorMessage(ex), 0);
+            return failTurn(
+                    session,
+                    userId,
+                    turn,
+                    saved,
+                    extractErrorMessage(ex),
+                    0,
+                    experimentContext,
+                    memoryExperiment,
+                    null,
+                    effectiveHistory,
+                    request.clientRequestId(),
+                    elapsedMillis(startedAtNanos)
+            );
         }
     }
 
@@ -399,12 +538,7 @@ public class AgentService {
     }
 
     private AgentLongTermMemoryContext loadLongTermMemoryContext(Long userId, String content) {
-        try {
-            return longTermMemoryRetrievalService.retrieve(userId, content);
-        } catch (Exception ex) {
-            log.warn("Failed to retrieve long-term memory context userId={}", userId, ex);
-            return AgentLongTermMemoryContext.empty();
-        }
+        return AgentLongTermMemoryContext.empty();
     }
 
     private void saveContextSnapshot(AgentTurn turn, AgentContextPackage contextPackage) {
@@ -450,16 +584,122 @@ public class AgentService {
     }
 
     private String buildNextSessionSummary(String existingSummary, String userContent, String assistantContent) {
-        StringBuilder summary = new StringBuilder();
-        if (StringUtils.hasText(existingSummary)) {
-            summary.append(existingSummary.trim()).append("\n\n");
+        List<String> facts = extractDurableFacts(existingSummary);
+        String latestFact = latestDurableFact(userContent);
+        if (StringUtils.hasText(latestFact) && facts.stream().noneMatch(fact -> fact.equalsIgnoreCase(latestFact))) {
+            facts.add(latestFact);
         }
-        summary.append("Latest successful turn:\n")
-                .append("User: ")
+        if (facts.size() > SESSION_FACT_MAX_COUNT) {
+            facts = new ArrayList<>(facts.subList(facts.size() - SESSION_FACT_MAX_COUNT, facts.size()));
+        }
+
+        StringBuilder summary = new StringBuilder("""
+                User goals:
+                - Continue the current conversation using the latest user request and saved session facts.
+
+                Confirmed facts and constraints:
+                """);
+        if (facts.isEmpty()) {
+            summary.append("- No durable facts recorded yet.\n");
+        } else {
+            for (String fact : facts) {
+                summary.append("- ").append(fact).append("\n");
+            }
+        }
+        summary.append("\nCurrent task progress:\n")
+                .append("- Latest user message: ")
                 .append(summarizeForSessionMemory(userContent))
-                .append("\nAssistant: ")
-                .append(summarizeForSessionMemory(assistantContent));
+                .append("\n")
+                .append("- Latest assistant response: ")
+                .append(summarizeForSessionMemory(assistantContent))
+                .append("\n\nOpen questions:\n")
+                .append("- None recorded unless the latest turn explicitly raised one.");
         return trimToMax(summary.toString(), SESSION_SUMMARY_MAX_CHARACTERS);
+    }
+
+    private List<String> extractDurableFacts(String existingSummary) {
+        if (!StringUtils.hasText(existingSummary)) {
+            return new ArrayList<>();
+        }
+        List<String> facts = new ArrayList<>();
+        boolean inFacts = false;
+        for (String rawLine : existingSummary.split("\\R")) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (line.equalsIgnoreCase("Confirmed facts and constraints:")) {
+                inFacts = true;
+                continue;
+            }
+            if (inFacts && (line.equalsIgnoreCase("Current task progress:")
+                    || line.equalsIgnoreCase("Open questions:")
+                    || line.equalsIgnoreCase("User goals:"))) {
+                inFacts = false;
+            }
+            if (!line.startsWith("- ")) {
+                continue;
+            }
+            String fact = normalizeFactLine(line.substring(2));
+            if (!StringUtils.hasText(fact) || fact.equalsIgnoreCase("No durable facts recorded yet.")
+                    || fact.equalsIgnoreCase("No previous session summary.")) {
+                continue;
+            }
+            if (inFacts || isLikelyDurableFact(fact)) {
+                addUniqueFact(facts, fact);
+            }
+        }
+        return facts;
+    }
+
+    private String latestDurableFact(String userContent) {
+        if (!isLikelyDurableFact(userContent)) {
+            return null;
+        }
+        return normalizeFactLine(userContent);
+    }
+
+    private boolean isLikelyDurableFact(String content) {
+        if (!StringUtils.hasText(content)) {
+            return false;
+        }
+        String normalized = content.trim().toLowerCase();
+        return normalized.contains("记住")
+                || normalized.contains("正式名称")
+                || normalized.contains("英文代号")
+                || normalized.contains("项目名称")
+                || normalized.contains("我的项目")
+                || normalized.contains("我叫")
+                || normalized.contains("叫“")
+                || normalized.contains("叫\"")
+                || normalized.contains("偏好")
+                || normalized.contains("习惯")
+                || normalized.contains("remember")
+                || normalized.contains("my name")
+                || normalized.contains("project name")
+                || normalized.contains("official name")
+                || normalized.contains("codename")
+                || normalized.contains("prefer");
+    }
+
+    private void addUniqueFact(List<String> facts, String fact) {
+        if (!StringUtils.hasText(fact)) {
+            return;
+        }
+        for (String existing : facts) {
+            if (existing.equalsIgnoreCase(fact)) {
+                return;
+            }
+        }
+        facts.add(fact);
+    }
+
+    private String normalizeFactLine(String content) {
+        if (!StringUtils.hasText(content)) {
+            return "";
+        }
+        String normalized = content.trim()
+                .replaceFirst("(?i)^latest user message:\\s*", "")
+                .replaceFirst("(?i)^user:\\s*", "")
+                .replaceAll("\\s+", " ");
+        return trimToMax(normalized, SESSION_FACT_MAX_CHARACTERS);
     }
 
     private String summarizeForSessionMemory(String content) {
@@ -473,7 +713,15 @@ public class AgentService {
         if (content == null || content.length() <= maxCharacters) {
             return content;
         }
-        return content.substring(content.length() - maxCharacters).trim();
+        int markerLength = "\n...[truncated]...\n".length();
+        if (maxCharacters <= markerLength + 2) {
+            return content.substring(0, maxCharacters).trim();
+        }
+        int headLength = Math.max(1, (maxCharacters - markerLength) / 2);
+        int tailLength = Math.max(1, maxCharacters - markerLength - headLength);
+        return (content.substring(0, headLength).trim()
+                + "\n...[truncated]...\n"
+                + content.substring(content.length() - tailLength).trim()).trim();
     }
 
     private void emitToken(Consumer<String> tokenConsumer, String content) {
@@ -509,7 +757,13 @@ public class AgentService {
                                          AgentTurn turn,
                                          List<AgentMessage> saved,
                                          String errorMessage,
-                                         int steps) {
+                                         int steps,
+                                         AgentExperimentContext experimentContext,
+                                         AgentMemoryExperimentResult memoryExperiment,
+                                         AgentRuntimeResult runtimeResult,
+                                         List<ChatMessage> effectiveHistory,
+                                         String clientRequestId,
+                                         long latencyMs) {
         String safeError = StringUtils.hasText(errorMessage) ? errorMessage.trim() : "对话处理失败";
         AgentMessage assistantMessage = saveAndCacheMessage(
                 session.getId(),
@@ -517,6 +771,16 @@ public class AgentService {
                 ChatMessage.assistant("这次回复失败了：" + safeError)
         );
         saved.add(assistantMessage);
+        if (runtimeResult != null) {
+            log.warn("Agent runtime failed sessionId={} userId={} steps={} error={} toolTrace={} fallbacks={} assistantPreview={}",
+                    session.getId(),
+                    userId,
+                    runtimeResult.steps(),
+                    safeError,
+                    runtimeResult.toolTrace(),
+                    runtimeResult.fallbacks(),
+                    abbreviateForLog(runtimeResult.assistantContent()));
+        }
         if (turn != null) {
             turn.fail(assistantMessage.getId(), safeError);
             turns.saveAndFlush(turn);
@@ -524,17 +788,296 @@ public class AgentService {
         }
         session.touch();
         sessions.saveAndFlush(session);
+        AgentDebugPayload debugPayload = finalizeDebugPayload(
+                userId,
+                session.getId(),
+                clientRequestId,
+                experimentContext,
+                memoryExperiment,
+                runtimeResult,
+                effectiveHistory,
+                assistantMessage.getContent(),
+                false,
+                safeError,
+                latencyMs
+        );
         return new SendMessageResponse(
                 false,
                 assistantMessage.getContent(),
                 steps,
                 safeError,
                 null,
-                saved.stream().map(AgentMessageResponse::from).toList()
+                saved.stream().map(AgentMessageResponse::from).toList(),
+                debugPayload
         );
     }
 
-    private List<AgentMessage> saveHarnessMessages(Long sessionId,
+    private AgentDebugPayload finalizeDebugPayload(Long userId,
+                                                   Long sessionId,
+                                                   String clientRequestId,
+                                                   AgentExperimentContext experimentContext,
+                                                   AgentMemoryExperimentResult memoryExperiment,
+                                                   AgentRuntimeResult runtimeResult,
+                                                   List<ChatMessage> effectiveHistory,
+                                                   String assistantContent,
+                                                   boolean success,
+                                                   String errorMessage,
+                                                   long latencyMs) {
+        AgentDebugPayload basePayload = agentExperimentService.toDebugPayload(experimentContext);
+        boolean showMemoryWindow = experimentContext != null && experimentContext.hasFlag(AgentDebugFlag.SHOW_MEMORY_WINDOW);
+        boolean showRawPrompt = experimentContext != null && experimentContext.hasFlag(AgentDebugFlag.SHOW_RAW_PROMPT);
+        boolean showToolTrace = experimentContext != null && experimentContext.hasFlag(AgentDebugFlag.SHOW_TOOL_TRACE);
+        AgentMemoryWindowDebug memoryWindow = showMemoryWindow
+                ? memoryExperiment.memoryWindow()
+                : null;
+        List<String> fallbacks = new ArrayList<>();
+        if (runtimeResult != null && runtimeResult.fallbacks() != null) {
+            fallbacks.addAll(runtimeResult.fallbacks());
+        }
+        if (errorMessage != null) {
+            fallbacks.add(errorMessage);
+        }
+        AgentExperimentMetricsDebug metrics = new AgentExperimentMetricsDebug(
+                clientRequestId,
+                sessionId,
+                latencyMs,
+                basePayload == null ? 0 : basePayload.retrievedChunks().size(),
+                memoryWindow == null ? 0 : memoryWindow.entries().size(),
+                runtimeResult == null ? null : runtimeResult.promptTokens(),
+                runtimeResult == null ? null : runtimeResult.completionTokens(),
+                runtimeResult == null ? null : runtimeResult.totalTokens(),
+                runtimeResult == null || runtimeResult.toolTrace() == null ? 0 : runtimeResult.toolTrace().size(),
+                runtimeResult == null ? null : runtimeResult.steps(),
+                null
+        );
+        if (basePayload == null) {
+            return new AgentDebugPayload(
+                    experimentContext == null ? null : experimentContext.selectedModes(),
+                    List.of(),
+                    null,
+                    null,
+                    List.of(),
+                    runtimeResult == null ? List.of() : runtimeResult.toolTrace(),
+                    List.of(),
+                    metrics,
+                    null,
+                    fallbacks
+            );
+        }
+        List<String> finalCitations = extractFinalCitations(assistantContent, basePayload.retrievedChunks());
+        String rawPrompt = showRawPrompt ? buildRawPromptPreview(effectiveHistory) : null;
+        AgentDebugPayload debugPayload = new AgentDebugPayload(
+                basePayload.selectedModes(),
+                basePayload.retrievedChunks(),
+                basePayload.injectedContext(),
+                rawPrompt,
+                basePayload.debugFlags(),
+                runtimeResult == null || !showToolTrace
+                        ? basePayload.toolTrace()
+                        : runtimeResult.toolTrace(),
+                finalCitations,
+                metrics,
+                memoryWindow,
+                fallbacks
+        );
+        Long evalRecordId = agentExperimentRecordService.persistIfEnabled(
+                userId,
+                sessionId,
+                clientRequestId,
+                experimentContext,
+                debugPayload,
+                assistantContent,
+                success,
+                errorMessage,
+                latencyMs
+        );
+        AgentExperimentMetricsDebug updatedMetrics = new AgentExperimentMetricsDebug(
+                metrics.clientRequestId(),
+                metrics.sessionId(),
+                metrics.latencyMs(),
+                metrics.retrievedChunkCount(),
+                metrics.memoryWindowSize(),
+                metrics.promptTokens(),
+                metrics.completionTokens(),
+                metrics.totalTokens(),
+                metrics.toolCallCount(),
+                metrics.steps(),
+                evalRecordId
+        );
+        return new AgentDebugPayload(
+                debugPayload.selectedModes(),
+                debugPayload.retrievedChunks(),
+                debugPayload.injectedContext(),
+                debugPayload.rawPrompt(),
+                debugPayload.debugFlags(),
+                debugPayload.toolTrace(),
+                debugPayload.finalCitations(),
+                updatedMetrics,
+                debugPayload.memoryWindow(),
+                debugPayload.fallbacks()
+        );
+    }
+
+    private String buildRawPromptPreview(List<ChatMessage> effectiveHistory) {
+        if (effectiveHistory == null || effectiveHistory.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ChatMessage message : effectiveHistory) {
+            if (message == null) {
+                continue;
+            }
+            sb.append("[").append(message.role()).append("]\n");
+            if (message.content() != null) {
+                sb.append(message.content());
+            }
+            if (message.toolCalls() != null && !message.toolCalls().isEmpty()) {
+                sb.append("\n# toolCalls=").append(message.toolCalls().size());
+            }
+            sb.append("\n\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private List<String> extractFinalCitations(String assistantContent, List<AgentRetrievedChunkDebug> chunks) {
+        if (!StringUtils.hasText(assistantContent) || chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        List<String> citations = new ArrayList<>();
+        for (AgentRetrievedChunkDebug chunk : chunks) {
+            if (chunk == null || !StringUtils.hasText(chunk.citationId())) {
+                continue;
+            }
+            if (assistantContent.contains(chunk.citationId())) {
+                citations.add(chunk.citationId());
+            }
+        }
+        return citations;
+    }
+
+    private long elapsedMillis(long startedAtNanos) {
+        return Math.max(0L, (System.nanoTime() - startedAtNanos) / 1_000_000L);
+    }
+
+    private String abbreviateForLog(String content) {
+        if (!StringUtils.hasText(content)) {
+            return "";
+        }
+        String normalized = content.trim().replaceAll("\\s+", " ");
+        return normalized.length() <= 300 ? normalized : normalized.substring(0, 300) + "...";
+    }
+
+    private AgentMessage saveProcessSummaryIfNeeded(Long sessionId,
+                                                    Long userId,
+                                                    AgentRuntimeResult result,
+                                                    AgentExperimentContext experimentContext) {
+        String summary = buildProcessSummary(result, experimentContext);
+        return saveProcessMessageIfNeeded(sessionId, userId, summary);
+    }
+
+    private AgentMessage saveProcessMessageIfNeeded(Long sessionId, Long userId, String summary) {
+        if (!StringUtils.hasText(summary)) {
+            return null;
+        }
+        return saveAndCacheMessage(sessionId, userId, ChatMessage.process(summary));
+    }
+
+    private String buildProcessSummary(AgentRuntimeResult result, AgentExperimentContext experimentContext) {
+        if (result == null) {
+            return null;
+        }
+        List<String> lines = new ArrayList<>();
+        appendRagProcessLines(lines, experimentContext);
+        if (result.toolTrace() != null && !result.toolTrace().isEmpty()) {
+            for (String trace : result.toolTrace()) {
+                String toolName = extractToolName(trace);
+                lines.add(processStartLabel(toolName));
+                lines.add(processDoneLabel(toolName, trace != null && trace.contains("success=true")));
+                if (lines.size() >= PROCESS_SUMMARY_MAX_LINES) {
+                    break;
+                }
+            }
+        } else if (lines.isEmpty() && result.steps() > 0) {
+            lines.add("已分析问题，直接生成回答。");
+        }
+        if (result.fallbacks() != null && !result.fallbacks().isEmpty() && lines.size() < PROCESS_SUMMARY_MAX_LINES) {
+            lines.add("部分步骤未完成，已尝试降级处理。");
+        }
+        return String.join("\n", lines.stream()
+                .filter(StringUtils::hasText)
+                .limit(PROCESS_SUMMARY_MAX_LINES)
+                .toList());
+    }
+
+    private void appendRagProcessLines(List<String> lines, AgentExperimentContext experimentContext) {
+        if (lines == null || experimentContext == null || experimentContext.ragResult() == null) {
+            return;
+        }
+        int retrieved = experimentContext.ragResult().retrievedChunks().size();
+        lines.add("正在检索知识库。");
+        lines.add(retrieved > 0
+                ? "知识库检索完成，找到 " + retrieved + " 个相关片段。"
+                : "知识库检索完成，未找到明显相关片段。");
+    }
+
+    private String buildIntentProcessSummary(ConversationIntentRouterService.IntentAction action) {
+        if (action == null || !StringUtils.hasText(action.intent())) {
+            return "已分析问题，直接生成回答。";
+        }
+        return switch (action.intent()) {
+            case "PAPER_REVISION" -> "正在识别论文润色任务。\n已准备跳转到论文修改页。";
+            case "LITERATURE_SEARCH" -> "正在检索论文资料。\n文献检索完成。";
+            case "LITERATURE_SEARCH_CLARIFY", "LITERATURE_SEARCH_CONFIRM" -> "已分析文献检索需求，需要补充信息。";
+            default -> "已分析问题，直接生成回答。";
+        };
+    }
+
+    private String extractToolName(String trace) {
+        if (!StringUtils.hasText(trace)) {
+            return null;
+        }
+        String marker = "tool=";
+        int start = trace.indexOf(marker);
+        if (start < 0) {
+            return null;
+        }
+        int nameStart = start + marker.length();
+        int nameEnd = trace.indexOf(' ', nameStart);
+        return nameEnd < 0 ? trace.substring(nameStart).trim() : trace.substring(nameStart, nameEnd).trim();
+    }
+
+    private String processStartLabel(String toolName) {
+        return switch (toolName == null ? "" : toolName) {
+            case "search_knowledge" -> "正在检索知识库。";
+            case "search_web" -> "正在联网搜索资料。";
+            case "search_literature" -> "正在检索论文资料。";
+            case "literature_search_start" -> "正在创建文献检索任务。";
+            case "literature_search_status" -> "正在查看文献检索进度。";
+            case "literature_search_result" -> "正在读取文献检索结果。";
+            case "literature_search_cancel", "paper_task_cancel" -> "正在取消后台任务。";
+            case "paper_polish_status" -> "正在查看论文润色进度。";
+            case "paper_polish_result" -> "正在读取论文润色结果。";
+            default -> "正在调用辅助工具。";
+        };
+    }
+
+    private String processDoneLabel(String toolName, boolean success) {
+        if (!success) {
+            return "工具调用未完成，已尝试继续处理。";
+        }
+        return switch (toolName == null ? "" : toolName) {
+            case "search_knowledge" -> "知识库检索完成。";
+            case "search_web" -> "联网搜索完成。";
+            case "search_literature", "literature_search_result" -> "文献检索完成。";
+            case "literature_search_start" -> "文献检索任务已创建。";
+            case "literature_search_status", "paper_polish_status" -> "后台任务状态已更新。";
+            case "literature_search_cancel", "paper_task_cancel" -> "后台任务已取消。";
+            case "paper_polish_result" -> "论文润色结果已读取。";
+            default -> "工具调用完成。";
+        };
+    }
+
+    private List<AgentMessage> saveRuntimeMessages(Long sessionId,
                                                    Long userId,
                                                    List<ChatMessage> allMessages,
                                                    int persistedHistorySize) {
@@ -543,7 +1086,7 @@ public class AgentService {
         }
         List<AgentMessage> saved = new ArrayList<>();
         for (ChatMessage chatMessage : allMessages.subList(persistedHistorySize, allMessages.size())) {
-            if (!shouldPersistHarnessMessage(chatMessage)) {
+            if (!shouldPersistRuntimeMessage(chatMessage)) {
                 continue;
             }
             saved.add(saveAndCacheMessage(sessionId, userId, chatMessage));
@@ -551,12 +1094,20 @@ public class AgentService {
         return saved;
     }
 
-    private boolean shouldPersistHarnessMessage(ChatMessage chatMessage) {
+    private boolean shouldPersistRuntimeMessage(ChatMessage chatMessage) {
         if (chatMessage == null || chatMessage.role() == null) {
             return false;
         }
         String role = chatMessage.role().trim().toLowerCase();
         return "assistant".equals(role) || "tool".equals(role);
+    }
+
+    private boolean isChatVisibleMessage(AgentMessage message) {
+        if (message == null || message.getRole() == null) {
+            return false;
+        }
+        String role = message.getRole().trim().toLowerCase();
+        return "user".equals(role) || ("assistant".equals(role) && !StringUtils.hasText(message.getToolCallsJson()));
     }
 
     private Long lastAssistantMessageId(List<AgentMessage> messages) {

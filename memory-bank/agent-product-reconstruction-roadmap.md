@@ -1073,6 +1073,10 @@ UserTurn
 
 验证 LangChain4j 在本项目中的 RAG 和 memory 适配价值，先做对照实验，不替换主链路。
 
+落地设计参考：
+
+1. `docs/design/langchain4j-ab-evaluation-console.md`
+
 步骤：
 
 1. 新建隔离实验模块或实验 package。

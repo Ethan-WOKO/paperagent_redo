@@ -23,4 +23,8 @@ public record ChatMessage(
     public static ChatMessage tool(String toolCallId, String content) {
         return new ChatMessage(ChatRole.TOOL.value(), content, null, toolCallId);
     }
+
+    public static ChatMessage process(String content) {
+        return new ChatMessage(ChatRole.PROCESS.value(), content, null, null);
+    }
 }

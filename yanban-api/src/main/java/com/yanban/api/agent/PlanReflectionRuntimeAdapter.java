@@ -48,6 +48,11 @@ public class PlanReflectionRuntimeAdapter implements RuntimeAdapter {
                 summary,
                 messages,
                 1,
+                null,
+                List.of(),
+                List.of(),
+                null,
+                null,
                 null
         );
     }

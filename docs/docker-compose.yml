@@ -1,9 +1,8 @@
-name: yanban-agent
+name: yanban-agent-redo
 
 services:
   mysql:
     image: mysql:8.0
-    container_name: yanban-mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-yanban_root_password}
@@ -27,7 +26,6 @@ services:
 
   redis:
     image: redis:7
-    container_name: yanban-redis
     restart: unless-stopped
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -52,7 +50,6 @@ services:
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.10.4
-    container_name: yanban-elasticsearch
     hostname: yanban-elasticsearch
     restart: unless-stopped
     extra_hosts:
@@ -75,7 +72,6 @@ services:
 
   kafka:
     image: apache/kafka:3.8.1
-    container_name: yanban-kafka
     hostname: yanban-kafka
     restart: unless-stopped
     extra_hosts:
@@ -83,7 +79,7 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@yanban-kafka:9093
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
@@ -107,7 +103,6 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: yanban-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -124,6 +119,19 @@ services:
       interval: 15s
       timeout: 10s
       retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local http://minio:9000 yanbanminio yanban_minio_password
+        mc mb --ignore-existing local/yanban-agent
+        mc anonymous set public local/yanban-agent
 
 volumes:
   yanban_mysql_data:

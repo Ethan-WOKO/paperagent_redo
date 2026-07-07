@@ -8,6 +8,7 @@ public record SendMessageResponse(
         int steps,
         String errorMessage,
         String navigationUrl,
-        List<AgentMessageResponse> messages
+        List<AgentMessageResponse> messages,
+        AgentDebugPayload debug
 ) {
 }

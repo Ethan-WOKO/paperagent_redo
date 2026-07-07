@@ -123,7 +123,11 @@ public class AgentMessageCacheService {
             return false;
         }
         String role = message.role().trim().toLowerCase();
-        return "user".equals(role) || "assistant".equals(role);
+        return "user".equals(role) || ("assistant".equals(role) && !hasText(message.toolCallsJson()));
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private List<AgentMessageResponse> tail(List<AgentMessageResponse> values, int limit) {

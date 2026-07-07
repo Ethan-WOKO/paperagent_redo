@@ -6,6 +6,8 @@ import jakarta.validation.constraints.Size;
 public record SendMessageRequest(
         @NotBlank @Size(max = 20000) String content,
         Boolean ragDisabled,
-        String skillId
+        String skillId,
+        String clientRequestId,
+        AgentExperimentRequest experiment
 ) {
 }

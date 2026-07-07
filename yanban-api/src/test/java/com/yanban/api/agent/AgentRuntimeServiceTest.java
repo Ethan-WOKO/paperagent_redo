@@ -23,10 +23,15 @@ class AgentRuntimeServiceTest {
                 "ok",
                 List.of(ChatMessage.assistant("ok")),
                 1,
+                null,
+                List.of(),
+                List.of(),
+                null,
+                null,
                 null
         );
-        when(directAdapter.supports(AgentStrategy.DIRECT)).thenReturn(true);
-        when(planAdapter.supports(AgentStrategy.DIRECT)).thenReturn(false);
+        when(directAdapter.supports(request)).thenReturn(true);
+        when(planAdapter.supports(request)).thenReturn(false);
         when(directAdapter.run(request)).thenReturn(expected);
 
         AgentRuntimeService service = new AgentRuntimeService(List.of(planAdapter, directAdapter));
@@ -40,10 +45,11 @@ class AgentRuntimeServiceTest {
     @Test
     void runFailsWhenNoAdapterSupportsStrategy() {
         RuntimeAdapter adapter = mock(RuntimeAdapter.class);
-        when(adapter.supports(AgentStrategy.PLAN_EXECUTE_WITH_REFLECTION)).thenReturn(false);
+        AgentRuntimeRequest request = request(AgentStrategy.PLAN_EXECUTE_WITH_REFLECTION);
+        when(adapter.supports(request)).thenReturn(false);
         AgentRuntimeService service = new AgentRuntimeService(List.of(adapter));
 
-        assertThatThrownBy(() -> service.run(request(AgentStrategy.PLAN_EXECUTE_WITH_REFLECTION)))
+        assertThatThrownBy(() -> service.run(request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("PLAN_EXECUTE_WITH_REFLECTION");
     }
@@ -65,10 +71,13 @@ class AgentRuntimeServiceTest {
                 null,
                 null,
                 null,
+                AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
                 List.of(),
                 0,
                 1,
                 "trace-test",
+                null,
                 null
         );
     }

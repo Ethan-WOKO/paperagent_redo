@@ -232,10 +232,6 @@
             </div>
           </NCard>
 
-          <NAlert type="warning" class="settings-security-note" title="Security Notes">
-            Do not expose API keys in prompts, client-side code, screenshots, or generated reports. Rotate credentials regularly.
-          </NAlert>
-
           <div class="settings-footer-bar">
             <span class="chat-hint">Changes are saved to the backend settings store. Blank secret fields keep existing values.</span>
             <NButton type="primary" :loading="saving" @click="handleSave">Save settings</NButton>

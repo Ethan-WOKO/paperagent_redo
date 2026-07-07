@@ -22,7 +22,7 @@ public class EchoToolExecutor implements ToolExecutor {
                 .put("type", "string")
                 .put("description", "需要原样返回的消息");
         parameters.putArray("required").add("message");
-        this.definition = new ToolDefinition("echo", "原样返回输入 message，用于 Harness 与 ToolRegistry 测试", parameters);
+        this.definition = new ToolDefinition("echo", "原样返回输入 message，用于 ToolRegistry 测试", parameters);
     }
 
     @Override

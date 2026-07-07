@@ -16,113 +16,46 @@ class AgentToolPolicyEngineTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void stableCommonKnowledgeUsesNoTools() {
+    void exposesGeneralAgentToolsWithoutKeywordFiltering() {
         AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
 
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u897f\u74dc\u7684\u529f\u6548", false, null);
+        AgentToolPolicyEngine.Decision decision = engine.decide("西瓜的功效", false, null);
 
-        assertThat(decision.allowedTools()).isEmpty();
-        assertThat(decision.reason()).isEqualTo("direct_answer_no_tools");
+        assertThat(decision.allowedTools()).containsExactly(
+                "search_web",
+                "search_literature",
+                "search_knowledge",
+                "literature_search_start",
+                "literature_search_status",
+                "literature_search_result",
+                "literature_search_cancel",
+                "paper_polish_status",
+                "paper_polish_result",
+                "paper_task_cancel"
+        );
+        assertThat(decision.reason()).isEqualTo("llm_native_tool_routing");
+        assertThat(decision.maxToolCalls()).isEqualTo(4);
     }
 
     @Test
-    void explicitSearchEnablesOneWebSearch() {
+    void honorsRagDisabledForKnowledgeTool() {
         AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
 
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u5e2e\u6211\u641c\u7d22\u4e00\u4e0b DeepSeek \u6700\u65b0\u6a21\u578b", false, null);
+        AgentToolPolicyEngine.Decision decision = engine.decide("根据我上传的文档总结要点", true, null);
 
-        assertThat(decision.allowedTools()).containsExactly("search_web");
-        assertThat(decision.maxToolCalls()).isEqualTo(1);
+        assertThat(decision.allowedTools()).doesNotContain("search_knowledge");
+        assertThat(decision.reason()).isEqualTo("llm_native_tool_routing_rag_disabled");
     }
 
     @Test
-    void healthQuestionsUseOneWebSearchForAuthoritativeEvidence() {
+    void selectedSkillAllowlistStillRestrictsVisibleTools() {
         AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
 
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u767d\u8840\u75c5\u662f\u5982\u4f55\u5f62\u6210\u7684\uff1f", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("search_web");
-        assertThat(decision.maxToolCalls()).isEqualTo(1);
-        assertThat(decision.reason()).isEqualTo("health_or_medical");
-    }
-
-    @Test
-    void literatureRequestStartsLiteratureSearchTask() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u627e 5 \u7bc7 RAG \u76f8\u5173\u8bba\u6587\uff0c\u5e26 DOI", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("literature_search_start");
-        assertThat(decision.allowedTools()).doesNotContain("search_literature");
-    }
-
-    @Test
-    void literatureTaskStatusRequestUsesLiteratureStatusToolOnly() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u67e5\u4e00\u4e0b\u6587\u732e\u68c0\u7d22\u4efb\u52a1 101 \u7684\u8fdb\u5ea6", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("literature_search_status");
-        assertThat(decision.reason()).contains("literature_task_intent");
-    }
-
-    @Test
-    void literatureTaskCancelRequestUsesStatusAndCancelWithoutSyncSearch() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u5e2e\u6211\u53d6\u6d88\u6587\u732e\u68c0\u7d22\u4efb\u52a1 101", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("literature_search_status", "literature_search_cancel");
-        assertThat(decision.allowedTools()).doesNotContain("search_literature");
-    }
-
-    @Test
-    void knowledgeRequestUsesKnowledgeSearchWhenRagEnabled() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u6839\u636e\u6211\u4e0a\u4f20\u7684\u6587\u6863\u603b\u7ed3\u8981\u70b9", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("search_knowledge");
-    }
-
-    @Test
-    void lookupTokenUsesKnowledgeSearchWhenRagEnabled() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("mentor_lookup_deepseek-20260702233836", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("search_knowledge");
-        assertThat(decision.reason()).isEqualTo("knowledge_intent");
-    }
-
-    @Test
-    void selectedSkillAllowlistWins() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u897f\u74dc\u7684\u529f\u6548", false, Set.of("search_web"));
+        AgentToolPolicyEngine.Decision decision = engine.decide("西瓜的功效", false, Set.of("search_web", "missing_tool"));
 
         assertThat(decision.allowedTools()).containsExactly("search_web");
         assertThat(decision.reason()).isEqualTo("skill_allowlist");
-    }
-
-    @Test
-    void paperTaskStatusRequestUsesPaperStatusToolOnly() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u67e5\u4e00\u4e0b\u8bba\u6587\u4efb\u52a1 101 \u7684\u8fdb\u5ea6", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("paper_polish_status");
-        assertThat(decision.reason()).contains("paper_task_intent");
-    }
-
-    @Test
-    void paperTaskCancelRequestUsesStatusAndCancelToolsWithoutLiteratureSearch() {
-        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry());
-
-        AgentToolPolicyEngine.Decision decision = engine.decide("\u5e2e\u6211\u53d6\u6d88\u8bba\u6587\u4efb\u52a1 101", false, null);
-
-        assertThat(decision.allowedTools()).containsExactly("paper_polish_status", "paper_task_cancel");
-        assertThat(decision.allowedTools()).doesNotContain("search_literature");
+        assertThat(decision.maxToolCalls()).isEqualTo(1);
     }
 
     private ToolRegistry registry() {
@@ -136,7 +69,9 @@ class AgentToolPolicyEngineTest {
                 .register(new StubTool("literature_search_cancel"))
                 .register(new StubTool("paper_polish_status"))
                 .register(new StubTool("paper_polish_result"))
-                .register(new StubTool("paper_task_cancel"));
+                .register(new StubTool("paper_task_cancel"))
+                .register(new StubTool("echo"))
+                .register(new StubTool("mcp_private"));
     }
 
     private class StubTool implements ToolExecutor {

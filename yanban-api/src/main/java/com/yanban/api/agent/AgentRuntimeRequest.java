@@ -20,11 +20,14 @@ public record AgentRuntimeRequest(
         String apiKey,
         String apiUrl,
         String skillPrompt,
+        AgentRuntimeMode runtimeMode,
+        AgentToolCallingMode toolCallingMode,
         List<String> allowedToolNames,
         Integer maxToolCalls,
         Integer maxDuplicateToolCalls,
         String traceId,
-        Consumer<String> tokenConsumer
+        Consumer<String> tokenConsumer,
+        Consumer<String> processConsumer
 ) {
     public AgentRuntimeRequest {
         if (strategy == null) {
@@ -36,6 +39,8 @@ public record AgentRuntimeRequest(
         if (maxSteps <= 0) {
             throw new IllegalArgumentException("maxSteps must be positive");
         }
+        runtimeMode = AgentRuntimeMode.LANGCHAIN4J;
+        toolCallingMode = AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING;
         history = history == null ? List.of() : List.copyOf(history);
     }
 }

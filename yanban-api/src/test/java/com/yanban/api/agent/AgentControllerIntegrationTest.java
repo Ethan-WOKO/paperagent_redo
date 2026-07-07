@@ -26,6 +26,8 @@ import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatResponse;
 import com.yanban.core.model.ToolCall;
+import com.yanban.knowledge.service.KnowledgeSearchResult;
+import com.yanban.knowledge.service.KnowledgeSearchService;
 import com.yanban.paper.literature.AdHocLiteratureSearchService;
 import com.yanban.paper.literature.AdHocLiteratureSearchService.AdHocLiteratureItem;
 import com.yanban.paper.literature.AdHocLiteratureSearchService.AdHocLiteratureSearchResult;
@@ -77,6 +79,9 @@ class AgentControllerIntegrationTest {
 
     @MockBean
     AdHocLiteratureSearchService adHocLiteratureSearchService;
+
+    @MockBean
+    KnowledgeSearchService knowledgeSearchService;
 
     @Test
     void createSessionSendMessageAndListPersistedMessages() throws Exception {
@@ -642,6 +647,63 @@ class AgentControllerIntegrationTest {
                 .andExpect(jsonPath("$.assistantContent").value(org.hamcrest.Matchers.containsString("Evidence/completeness judgment")))
                 .andExpect(jsonPath("$.assistantContent").value(org.hamcrest.Matchers.containsString("Limitations")))
                 .andExpect(jsonPath("$.messages.length()").value(2));
+    }
+
+    @Test
+    void experimentModeReturnsDebugPayloadForRuntimeAndRagComparison() throws Exception {
+        when(chatModelProvider.providerName()).thenReturn("mock");
+        when(chatModelProvider.chat(any()))
+                .thenReturn(new ChatResponse(
+                        ChatMessage.assistant("Use citation note-a.md#chunk-0 in the answer."),
+                        "stop",
+                        new ChatResponse.Usage(12, 8, 20)
+                ));
+        when(knowledgeSearchService.search(eq("Explain the draft"), any(), eq(6)))
+                .thenReturn(List.of(new KnowledgeSearchResult(
+                        41L,
+                        "note-a.md",
+                        0,
+                        "This is the retrieved chunk for experiment debug.",
+                        1.6,
+                        false
+                )));
+        String token = registerAndGetToken("agent_user_experiment_debug");
+        long sessionId = createSession(token, "Experiment Debug");
+
+        mockMvc.perform(post("/api/v1/agent/sessions/{id}/messages", sessionId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "content":"Explain the draft",
+                                  "clientRequestId":"exp-req-1",
+                                  "experiment":{
+                                    "enabled":true,
+                                    "runtimeMode":"LANGCHAIN4J",
+                                    "ragMode":"LANGCHAIN4J_AUGMENTOR",
+                                    "memoryMode":"CONTEXT_PACKER",
+                                    "toolCallingMode":"LANGCHAIN4J_TOOL_BINDING",
+                                    "persistEvalRecord":true,
+                                    "debugFlags":[
+                                      "SHOW_RETRIEVED_CHUNKS",
+                                      "SHOW_INJECTED_CONTEXT",
+                                      "SHOW_MEMORY_WINDOW",
+                                      "SHOW_RAW_PROMPT"
+                                    ]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.debug.selectedModes.runtimeMode").value("LANGCHAIN4J"))
+                .andExpect(jsonPath("$.debug.selectedModes.memoryMode").value("CONTEXT_PACKER"))
+                .andExpect(jsonPath("$.debug.retrievedChunks.length()").value(1))
+                .andExpect(jsonPath("$.debug.injectedContext").value(org.hamcrest.Matchers.containsString("note-a.md")))
+                .andExpect(jsonPath("$.debug.rawPrompt").value(org.hamcrest.Matchers.containsString("[system]")))
+                .andExpect(jsonPath("$.debug.metrics.clientRequestId").value("exp-req-1"))
+                .andExpect(jsonPath("$.debug.metrics.totalTokens").value(20))
+                .andExpect(jsonPath("$.debug.metrics.evalRecordId").isNumber())
+                .andExpect(jsonPath("$.debug.finalCitations[0]").value("note-a.md#chunk-0"));
     }
 
     @Test

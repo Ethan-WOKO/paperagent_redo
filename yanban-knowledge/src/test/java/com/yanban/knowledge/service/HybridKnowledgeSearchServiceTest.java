@@ -107,6 +107,31 @@ class HybridKnowledgeSearchServiceTest {
     }
 
     @Test
+    void fallbackSearchUsesChineseVariantsWhenEmbeddingFails() {
+        EmbeddingClient embeddingClient = Mockito.mock(EmbeddingClient.class);
+        KnowledgeSearchIndexClient indexClient = Mockito.mock(KnowledgeSearchIndexClient.class);
+        KbDocumentRepository documents = Mockito.mock(KbDocumentRepository.class);
+        KbChunkRepository chunks = Mockito.mock(KbChunkRepository.class);
+        SimpleKnowledgeSearchService fallback = new SimpleKnowledgeSearchService(chunks, documents);
+        HybridKnowledgeSearchService service = new HybridKnowledgeSearchService(embeddingClient, indexClient, documents, fallback);
+
+        String query = "项目名称";
+        when(embeddingClient.embed(query)).thenThrow(new IllegalStateException("embedding down"));
+        com.yanban.knowledge.domain.KbChunk chunk = new com.yanban.knowledge.domain.KbChunk(5L, 0, "项目正式名称是青岚知识助手");
+        when(chunks.searchAccessibleVersionedChunks("项目名称", 2002L, null, false, PageRequest.of(0, 8))).thenReturn(List.of());
+        when(chunks.searchAccessibleVersionedChunks("项目", 2002L, null, false, PageRequest.of(0, 8))).thenReturn(List.of(chunk));
+        when(chunks.searchAccessibleVersionedChunks("目名", 2002L, null, false, PageRequest.of(0, 8))).thenReturn(List.of());
+        when(chunks.searchAccessibleVersionedChunks("名称", 2002L, null, false, PageRequest.of(0, 8))).thenReturn(List.of(chunk));
+        when(documents.findById(5L)).thenReturn(java.util.Optional.of(new KbDocument(2002L, "notes.md", "READY", false)));
+
+        List<KnowledgeSearchResult> results = service.search(query, 2002L, 2);
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).chunkText()).contains("青岚知识助手");
+        assertThat(results.get(0).rerankReason()).contains("项目");
+    }
+
+    @Test
     void hybridHydrationFiltersDeletedDocumentsAndFallsBack() {
         EmbeddingClient embeddingClient = Mockito.mock(EmbeddingClient.class);
         KnowledgeSearchIndexClient indexClient = Mockito.mock(KnowledgeSearchIndexClient.class);

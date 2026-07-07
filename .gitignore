@@ -44,5 +44,9 @@ coverage/
 .jacoco/
 docs/evaluation/runs/
 
+# Local paper-polish test cases and downloaded artifacts
+reference/
+IEEE_TAES_regular_template_latex_v6-artifacts*/
+
 # Local MCP workspace
 workspace/

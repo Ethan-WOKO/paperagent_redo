@@ -1,10 +1,12 @@
 package com.yanban.api.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import com.yanban.paper.literature.AdHocLiteratureSearchService;
 import com.yanban.paper.literature.LiteratureCandidate;
 import com.yanban.paper.literature.LiteratureSource;
+import com.yanban.paper.literature.StandaloneLiteratureCardSearchService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -14,7 +16,7 @@ class ConversationIntentRouterServiceTest {
     void explicitLiteratureCommandTriggersSearch() {
         ConversationIntentRouterService router = new ConversationIntentRouterService(
                 new PaperRevisionIntentService(),
-                new AdHocLiteratureSearchService(List.of(fakeSource()))
+                new AdHocLiteratureSearchService(List.of(fakeSource()), mock(StandaloneLiteratureCardSearchService.class))
         );
 
         ConversationIntentRouterService.IntentAction action = router.route("/literature polarimetric FDA-MIMO self-protection jamming 1篇 bibtex");
@@ -29,7 +31,7 @@ class ConversationIntentRouterServiceTest {
     void semanticLiteratureHintAsksConfirmationInsteadOfSearching() {
         ConversationIntentRouterService router = new ConversationIntentRouterService(
                 new PaperRevisionIntentService(),
-                new AdHocLiteratureSearchService(List.of(fakeSource()))
+                new AdHocLiteratureSearchService(List.of(fakeSource()), mock(StandaloneLiteratureCardSearchService.class))
         );
 
         ConversationIntentRouterService.IntentAction action = router.route("这个方向最近有什么工作 FDA-MIMO jamming");
@@ -44,7 +46,7 @@ class ConversationIntentRouterServiceTest {
     void genericReferencesQuestionDoesNotTriggerLiteratureSearch() {
         ConversationIntentRouterService router = new ConversationIntentRouterService(
                 new PaperRevisionIntentService(),
-                new AdHocLiteratureSearchService(List.of(fakeSource()))
+                new AdHocLiteratureSearchService(List.of(fakeSource()), mock(StandaloneLiteratureCardSearchService.class))
         );
 
         assertThat(router.route("Java references 是什么意思")).isNull();
@@ -54,7 +56,7 @@ class ConversationIntentRouterServiceTest {
     void paperRevisionIntentStillReturnsPaperNavigation() {
         ConversationIntentRouterService router = new ConversationIntentRouterService(
                 new PaperRevisionIntentService(),
-                new AdHocLiteratureSearchService(List.of(fakeSource()))
+                new AdHocLiteratureSearchService(List.of(fakeSource()), mock(StandaloneLiteratureCardSearchService.class))
         );
 
         ConversationIntentRouterService.IntentAction action = router.route("帮我润色论文");

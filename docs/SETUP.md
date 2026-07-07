@@ -31,6 +31,12 @@
 
 - 项目根目录 `.env.example`
 
+与工具路由相关的可选配置：
+
+- `YANBAN_AGENT_LLM_NATIVE_TOOL_ROUTING_ENABLED=true`
+  - 开启后，系统不再按关键词预判本轮要开放哪些 Agent 工具，而是默认暴露常规 Agent 工具给 LLM，由模型自行决定是否调用。
+  - 仍保留硬约束：`ragDisabled=true` 时隐藏 `search_knowledge`；skill allowlist 仍然生效；MCP 工具不会默认暴露给普通对话。
+
 ## 3. 中间件清单
 
 | 组件 | 默认地址 | 用途 |
@@ -73,6 +79,12 @@ curl http://localhost:9200/_cluster/health
 - Kafka topic：`file-processing`
 - MinIO bucket：`yanban-agent`
 - Elasticsearch 索引模板：`yanban-kb-chunks-v1`
+
+说明：
+
+- `docs/docker-compose.yml` 现在会通过 `minio-init` 服务自动创建 `yanban-agent` bucket，并设置为 `public`。
+- 当前后端也会在首次知识库上传时尝试自动创建 `yanban-agent` bucket，作为额外兜底。
+- 如果 MinIO 使用了受限凭证而不是 root 凭证，需要确保该账号有创建 bucket 的权限。
 
 ## 5. 启动顺序
 

@@ -1,177 +1,67 @@
 package com.yanban.api.agent;
 
 import com.yanban.core.tool.ToolRegistry;
-import java.util.ArrayList;
+import dev.langchain4j.agent.tool.ToolSpecifications;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 
 @Component
 public class AgentToolPolicyEngine {
 
-    private static final String SEARCH_WEB = "search_web";
-    private static final String SEARCH_LITERATURE = "search_literature";
     private static final String SEARCH_KNOWLEDGE = "search_knowledge";
-    private static final String LITERATURE_SEARCH_START = "literature_search_start";
-    private static final String LITERATURE_SEARCH_STATUS = "literature_search_status";
-    private static final String LITERATURE_SEARCH_RESULT = "literature_search_result";
-    private static final String LITERATURE_SEARCH_CANCEL = "literature_search_cancel";
-    private static final String PAPER_POLISH_STATUS = "paper_polish_status";
-    private static final String PAPER_POLISH_RESULT = "paper_polish_result";
-    private static final String PAPER_TASK_CANCEL = "paper_task_cancel";
+    private static final String ECHO = "echo";
+    private static final String MCP_PREFIX = "mcp_";
 
     private final ToolRegistry toolRegistry;
+    private final AgentLangChain4jTools langChain4jTools;
 
-    public AgentToolPolicyEngine(ToolRegistry toolRegistry) {
+    @Autowired
+    public AgentToolPolicyEngine(ToolRegistry toolRegistry,
+                                 AgentLangChain4jTools langChain4jTools) {
         this.toolRegistry = toolRegistry;
+        this.langChain4jTools = langChain4jTools;
+    }
+
+    AgentToolPolicyEngine(ToolRegistry toolRegistry) {
+        this(toolRegistry, null);
     }
 
     public Decision decide(String userMessage, boolean ragDisabled, Set<String> skillAllowedTools) {
-        Set<String> registeredTools = toolRegistry.listToolNames();
+        Set<String> registeredTools = registeredToolNames();
         if (skillAllowedTools != null && !skillAllowedTools.isEmpty()) {
             List<String> allowed = skillAllowedTools.stream()
                     .filter(registeredTools::contains)
+                    .filter(toolName -> !ragDisabled || !SEARCH_KNOWLEDGE.equals(toolName))
                     .distinct()
                     .toList();
-            return new Decision(allowed, Math.max(1, Math.min(3, allowed.size())), 1, "skill_allowlist");
+            return new Decision(allowed, allowed.isEmpty() ? 0 : Math.min(3, allowed.size()), 1, "skill_allowlist");
         }
-
-        String normalized = normalize(userMessage);
-        LinkedHashSet<String> allowed = new LinkedHashSet<>();
-        boolean literatureIntent = containsAny(normalized,
-                "\u8bba\u6587", "\u6587\u732e", "\u671f\u520a", "doi", "arxiv", "bibtex", "openalex", "scholar",
-                "paper", "literature", "citation", "bibliography");
-        boolean literatureTaskIntent = containsAny(normalized,
-                "\u6587\u732e\u4efb\u52a1", "\u6587\u732e\u68c0\u7d22\u4efb\u52a1", "\u68c0\u7d22\u4efb\u52a1",
-                "\u6587\u732e\u68c0\u7d22\u8fdb\u5ea6", "\u6587\u732e\u8fdb\u5ea6", "\u6587\u732e\u7ed3\u679c",
-                "\u68c0\u7d22\u7ed3\u679c", "\u6587\u732e\u68c0\u7d22\u7ed3\u679c",
-                "literature task", "literature search task", "literature status", "literature result");
-        boolean literatureCancelIntent = literatureTaskIntent && containsAny(normalized,
-                "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u4e0d\u8981\u7ee7\u7eed",
-                "cancel", "stop", "abort");
-        boolean literatureResultIntent = literatureTaskIntent && containsAny(normalized,
-                "\u7ed3\u679c", "\u4ea7\u7269", "\u5019\u9009", "\u4e0b\u8f7d", "\u5bfc\u51fa", "\u62a5\u544a",
-                "result", "artifact", "candidate", "download", "export", "report");
-        boolean literatureStatusIntent = literatureTaskIntent && !literatureCancelIntent && !literatureResultIntent;
-        boolean lookupTokenIntent = !ragDisabled && containsAny(normalized,
-                "_lookup", "lookup_", "mentor_lookup", "weekly_meeting", "lab_location", "weekly_deadline",
-                "file_type_lookup", "paper_final_step", "rag_quality_metric", "rag_architecture", "rerank_policy");
-        boolean knowledgeIntent = !ragDisabled && (lookupTokenIntent || containsAny(normalized,
-                "\u77e5\u8bc6\u5e93", "\u4e0a\u4f20", "\u4e0a\u4f20\u7684", "\u6587\u6863",
-                "\u6211\u7684\u8d44\u6599", "\u79c1\u6709\u8d44\u6599", "\u9879\u76ee\u8d44\u6599",
-                "\u6839\u636e\u8d44\u6599", "\u6839\u636e\u6587\u6863", "\u5bfc\u5e08", "\u7ec4\u4f1a",
-                "\u5b9e\u9a8c\u5ba4", "knowledge base", "uploaded", "my document"));
-        boolean explicitSearch = containsAny(normalized,
-                "\u641c\u7d22", "\u68c0\u7d22", "\u67e5\u4e00\u4e0b", "\u67e5\u627e", "\u627e\u4e00\u4e0b",
-                "\u8054\u7f51", "\u6d4f\u89c8\u7f51\u9875", "\u7f51\u4e0a", "\u6765\u6e90", "\u5f15\u7528",
-                "\u94fe\u63a5", "\u7f51\u5740", "\u5b98\u7f51", "\u5b98\u65b9", "\u6838\u5b9e", "\u9a8c\u8bc1",
-                "search", "browse", "look up", "verify", "cite", "source", "url", "official");
-        boolean currentIntent = containsAny(normalized,
-                "\u6700\u65b0", "\u5f53\u524d", "\u73b0\u5728", "\u6700\u8fd1", "\u4eca\u65e5", "\u4eca\u5929",
-                "\u5b9e\u65f6", "\u65b0\u95fb", "\u53d1\u5e03", "\u4ef7\u683c", "\u653f\u7b56", "\u6cd5\u89c4",
-                "\u7248\u672c", "\u6a21\u578b\u5217\u8868",
-                "latest", "current", "recent", "today", "now", "news", "released", "price", "pricing");
-        boolean healthIntent = containsAny(normalized,
-                "\u533b\u5b66", "\u533b\u7597", "\u5065\u5eb7", "\u75be\u75c5", "\u75c5\u56e0", "\u53d1\u75c5",
-                "\u53d1\u75c5\u673a\u5236", "\u75c7\u72b6", "\u8bca\u65ad", "\u6cbb\u7597",
-                "\u836f\u7269", "\u764c", "\u8840\u764c", "\u767d\u8840\u75c5", "\u7cd6\u5c3f\u75c5",
-                "medical", "medicine", "health", "disease", "symptom", "diagnosis", "treatment",
-                "diabetes", "leukemia", "cancer", "pathogenesis", "mechanism");
-        boolean paperTaskIntent = containsAny(normalized,
-                "\u8bba\u6587\u4efb\u52a1", "\u6da6\u8272\u4efb\u52a1", "\u8bba\u6587\u6da6\u8272\u8fdb\u5ea6",
-                "\u6da6\u8272\u8fdb\u5ea6", "\u8bba\u6587\u8fdb\u5ea6", "\u4efb\u52a1\u72b6\u6001",
-                "\u8bba\u6587\u7ed3\u679c", "\u6da6\u8272\u7ed3\u679c", "\u5bfc\u51fa\u8bba\u6587",
-                "paper task", "polish task", "paper polish", "polish status", "polish result");
-        boolean paperCancelIntent = paperTaskIntent && containsAny(normalized,
-                "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u4e0d\u8981\u7ee7\u7eed",
-                "cancel", "stop", "abort");
-        boolean paperResultIntent = paperTaskIntent && containsAny(normalized,
-                "\u7ed3\u679c", "\u4ea7\u7269", "\u4e0b\u8f7d", "\u5bfc\u51fa", "\u62a5\u544a",
-                "result", "artifact", "download", "export", "report");
-        if (paperTaskIntent) {
-            literatureIntent = false;
-        }
-
-        boolean literatureTaskToolsAvailable = registeredTools.contains(LITERATURE_SEARCH_START);
-        addIfRegistered(allowed, registeredTools, knowledgeIntent, SEARCH_KNOWLEDGE);
-        addIfRegistered(allowed, registeredTools, literatureIntent && !literatureTaskToolsAvailable, SEARCH_LITERATURE);
-        addIfRegistered(allowed, registeredTools, literatureIntent && literatureTaskToolsAvailable && !literatureTaskIntent, LITERATURE_SEARCH_START);
-        addIfRegistered(allowed, registeredTools, literatureStatusIntent, LITERATURE_SEARCH_STATUS);
-        addIfRegistered(allowed, registeredTools, literatureResultIntent, LITERATURE_SEARCH_STATUS);
-        addIfRegistered(allowed, registeredTools, literatureResultIntent, LITERATURE_SEARCH_RESULT);
-        addIfRegistered(allowed, registeredTools, literatureCancelIntent, LITERATURE_SEARCH_STATUS);
-        addIfRegistered(allowed, registeredTools, literatureCancelIntent, LITERATURE_SEARCH_CANCEL);
-        addIfRegistered(allowed, registeredTools, (explicitSearch || currentIntent || healthIntent) && !literatureIntent && !paperTaskIntent, SEARCH_WEB);
-        addIfRegistered(allowed, registeredTools, paperTaskIntent, PAPER_POLISH_STATUS);
-        addIfRegistered(allowed, registeredTools, paperResultIntent, PAPER_POLISH_RESULT);
-        addIfRegistered(allowed, registeredTools, paperCancelIntent, PAPER_TASK_CANCEL);
-
-        int maxToolCalls = allowed.isEmpty()
-                ? 0
-                : allowed.stream().anyMatch(tool -> tool.startsWith("paper_") || tool.startsWith("literature_search_")) ? Math.min(3, allowed.size())
-                : allowed.contains(SEARCH_WEB) && allowed.size() == 1 ? 1 : 2;
-        return new Decision(List.copyOf(allowed), maxToolCalls, 1, reason(allowed, explicitSearch, currentIntent, literatureIntent, knowledgeIntent, healthIntent, paperTaskIntent, literatureTaskIntent));
+        List<String> allowed = registeredTools.stream()
+                .filter(this::isGeneralAgentVisibleTool)
+                .filter(toolName -> !ragDisabled || !SEARCH_KNOWLEDGE.equals(toolName))
+                .toList();
+        return new Decision(allowed, allowed.isEmpty() ? 0 : Math.min(4, allowed.size()), 1,
+                ragDisabled ? "llm_native_tool_routing_rag_disabled" : "llm_native_tool_routing");
     }
 
-    private void addIfRegistered(Set<String> allowed, Set<String> registeredTools, boolean condition, String toolName) {
-        if (condition && registeredTools.contains(toolName)) {
-            allowed.add(toolName);
-        }
+    private boolean isGeneralAgentVisibleTool(String toolName) {
+        return toolName != null
+                && !toolName.isBlank()
+                && !ECHO.equals(toolName)
+                && !toolName.startsWith(MCP_PREFIX);
     }
 
-    private String reason(Set<String> allowed,
-                          boolean explicitSearch,
-                          boolean currentIntent,
-                          boolean literatureIntent,
-                          boolean knowledgeIntent,
-                          boolean healthIntent,
-                          boolean paperTaskIntent,
-                          boolean literatureTaskIntent) {
-        if (allowed.isEmpty()) {
-            return "direct_answer_no_tools";
+    private Set<String> registeredToolNames() {
+        Set<String> names = new LinkedHashSet<>();
+        toolRegistry.listDefinitions().forEach(definition -> names.add(definition.name()));
+        if (langChain4jTools != null) {
+            ToolSpecifications.toolSpecificationsFrom(langChain4jTools)
+                    .forEach(specification -> names.add(specification.name()));
         }
-        List<String> reasons = new ArrayList<>();
-        if (explicitSearch) {
-            reasons.add("explicit_search");
-        }
-        if (currentIntent) {
-            reasons.add("current_or_time_sensitive");
-        }
-        if (literatureIntent) {
-            reasons.add("literature_intent");
-        }
-        if (knowledgeIntent) {
-            reasons.add("knowledge_intent");
-        }
-        if (healthIntent) {
-            reasons.add("health_or_medical");
-        }
-        if (paperTaskIntent) {
-            reasons.add("paper_task_intent");
-        }
-        if (literatureTaskIntent) {
-            reasons.add("literature_task_intent");
-        }
-        return String.join("+", reasons);
-    }
-
-    private String normalize(String text) {
-        return StringUtils.hasText(text) ? text.trim().toLowerCase(Locale.ROOT) : "";
-    }
-
-    private boolean containsAny(String text, String... needles) {
-        if (!StringUtils.hasText(text)) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (text.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
+        return names;
     }
 
     public record Decision(

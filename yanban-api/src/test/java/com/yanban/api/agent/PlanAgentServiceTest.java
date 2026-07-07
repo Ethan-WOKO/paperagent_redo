@@ -22,9 +22,6 @@ import com.yanban.core.agent.AgentPlanStep;
 import com.yanban.core.agent.AgentPlanStepRepository;
 import com.yanban.core.agent.AgentPlanStepStatus;
 import com.yanban.core.agent.AgentSession;
-import com.yanban.core.harness.HarnessEngine;
-import com.yanban.core.harness.HarnessRequest;
-import com.yanban.core.harness.HarnessResult;
 import com.yanban.core.model.ChatMessage;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -70,7 +67,7 @@ class PlanAgentServiceTest {
     PlanStepVerifier stepVerifier;
 
     @Mock
-    HarnessEngine harnessEngine;
+    AgentRuntimeService agentRuntimeService;
 
     @Mock
     UserSettingsService userSettingsService;
@@ -90,9 +87,9 @@ class PlanAgentServiceTest {
                 steps,
                 events,
                 agentService,
+                agentRuntimeService,
                 planner,
                 stepVerifier,
-                harnessEngine,
                 userSettingsService,
                 skillsService,
                 objectMapper
@@ -115,9 +112,9 @@ class PlanAgentServiceTest {
         AgentPlanStep second = newStep("step_2", 2, List.of("step_1"));
         List<AgentPlanStep> orderedSteps = List.of(first, second);
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(orderedSteps);
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.success("analysis result", List.of(ChatMessage.assistant("analysis result")), 1))
-                .thenReturn(HarnessResult.success("final result", List.of(ChatMessage.assistant("final result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(success("analysis result"))
+                .thenReturn(success("final result"));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
@@ -128,8 +125,8 @@ class PlanAgentServiceTest {
         assertThat(first.getResult()).isEqualTo("analysis result");
         assertThat(second.getResult()).isEqualTo("final result");
 
-        ArgumentCaptor<HarnessRequest> requestCaptor = ArgumentCaptor.forClass(HarnessRequest.class);
-        verify(harnessEngine, times(2)).run(requestCaptor.capture());
+        ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, times(2)).run(requestCaptor.capture());
         assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
                 .contains("analysis result");
         verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
@@ -139,14 +136,14 @@ class PlanAgentServiceTest {
     void executePlanTreatsPersistedEmptyAllowedToolsAsUnrestrictedRuntimeTools() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.success("tool-free synthesis", List.of(ChatMessage.assistant("tool-free synthesis")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(success("tool-free synthesis"));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
         service.executePlan(USER_ID, PLAN_ID);
 
-        ArgumentCaptor<HarnessRequest> requestCaptor = ArgumentCaptor.forClass(HarnessRequest.class);
-        verify(harnessEngine).run(requestCaptor.capture());
+        ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService).run(requestCaptor.capture());
         assertThat(requestCaptor.getValue().allowedToolNames()).isNull();
     }
 
@@ -161,9 +158,9 @@ class PlanAgentServiceTest {
         CyclicBarrier firstBatchBarrier = new CyclicBarrier(2);
         AtomicInteger activeWorkers = new AtomicInteger();
         AtomicInteger maxActiveWorkers = new AtomicInteger();
-        ConcurrentLinkedQueue<HarnessRequest> requests = new ConcurrentLinkedQueue<>();
-        when(harnessEngine.run(any(HarnessRequest.class))).thenAnswer(invocation -> {
-            HarnessRequest request = invocation.getArgument(0);
+        ConcurrentLinkedQueue<AgentRuntimeRequest> requests = new ConcurrentLinkedQueue<>();
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenAnswer(invocation -> {
+            AgentRuntimeRequest request = invocation.getArgument(0);
             requests.add(request);
             String userMessage = request.userMessage();
             if (userMessage.contains("Description step_1") || userMessage.contains("Description step_2")) {
@@ -175,9 +172,9 @@ class PlanAgentServiceTest {
                     activeWorkers.decrementAndGet();
                 }
                 String stepKey = userMessage.contains("Description step_1") ? "step_1" : "step_2";
-                return HarnessResult.success("result for " + stepKey, List.of(ChatMessage.assistant("result for " + stepKey)), 1);
+                return success("result for " + stepKey);
             }
-            return HarnessResult.success("combined final result", List.of(ChatMessage.assistant("combined final result")), 1);
+            return success("combined final result");
         });
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
@@ -192,7 +189,7 @@ class PlanAgentServiceTest {
                 );
         assertThat(maxActiveWorkers.get()).isEqualTo(2);
 
-        HarnessRequest dependentRequest = requests.stream()
+        AgentRuntimeRequest dependentRequest = requests.stream()
                 .filter(request -> request.userMessage().contains("Description step_3"))
                 .findFirst()
                 .orElseThrow();
@@ -204,7 +201,7 @@ class PlanAgentServiceTest {
         verify(events, atLeast(1)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_batch_started", "step_batch_completed", "plan_completed");
-        verify(harnessEngine, times(3)).run(any(HarnessRequest.class));
+        verify(agentRuntimeService, times(3)).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier, times(3)).verify(any(PlanStepVerifier.VerificationRequest.class));
     }
 
@@ -212,9 +209,9 @@ class PlanAgentServiceTest {
     void executePlanRetriesWithPreviousErrorInStepPrompt() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.failure("missing source file", List.of(ChatMessage.assistant("failed")), 1))
-                .thenReturn(HarnessResult.success("recovered result", List.of(ChatMessage.assistant("recovered result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(failure("missing source file"))
+                .thenReturn(success("recovered result"));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
@@ -224,8 +221,8 @@ class PlanAgentServiceTest {
         assertThat(step.getAttemptCount()).isEqualTo(2);
         assertThat(step.getResult()).isEqualTo("recovered result");
 
-        ArgumentCaptor<HarnessRequest> requestCaptor = ArgumentCaptor.forClass(HarnessRequest.class);
-        verify(harnessEngine, times(2)).run(requestCaptor.capture());
+        ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, times(2)).run(requestCaptor.capture());
         assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
                 .contains("Previous attempt error")
                 .contains("missing source file");
@@ -236,9 +233,9 @@ class PlanAgentServiceTest {
     void executePlanRetriesWhenVerificationRejectsCandidateResult() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.success("too vague", List.of(ChatMessage.assistant("too vague")), 1))
-                .thenReturn(HarnessResult.success("complete evidence-backed result", List.of(ChatMessage.assistant("complete evidence-backed result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(success("too vague"))
+                .thenReturn(success("complete evidence-backed result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("missing reusable evidence"))
                 .thenReturn(PlanStepVerifier.VerificationResult.passed("evidence is present"));
@@ -250,8 +247,8 @@ class PlanAgentServiceTest {
         assertThat(step.getAttemptCount()).isEqualTo(2);
         assertThat(step.getResult()).isEqualTo("complete evidence-backed result");
 
-        ArgumentCaptor<HarnessRequest> requestCaptor = ArgumentCaptor.forClass(HarnessRequest.class);
-        verify(harnessEngine, times(2)).run(requestCaptor.capture());
+        ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, times(2)).run(requestCaptor.capture());
         assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
                 .contains("Previous attempt error")
                 .contains("Step result did not satisfy success criteria")
@@ -268,8 +265,8 @@ class PlanAgentServiceTest {
     void executePlanCompletesWhenVerificationIsInconclusive() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.success("usable result", List.of(ChatMessage.assistant("usable result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(success("usable result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.inconclusive("verifier returned malformed JSON"));
 
@@ -279,7 +276,7 @@ class PlanAgentServiceTest {
         assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
         assertThat(step.getAttemptCount()).isEqualTo(1);
         assertThat(step.getResult()).isEqualTo("usable result");
-        verify(harnessEngine).run(any(HarnessRequest.class));
+        verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier).verify(any(PlanStepVerifier.VerificationRequest.class));
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
@@ -321,11 +318,11 @@ class PlanAgentServiceTest {
                         )),
                         "{}"
                 ));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.failure("source unavailable", List.of(ChatMessage.assistant("failed")), 1))
-                .thenReturn(HarnessResult.failure("still unavailable", List.of(ChatMessage.assistant("failed")), 1))
-                .thenReturn(HarnessResult.success("recovered evidence", List.of(ChatMessage.assistant("recovered evidence")), 1))
-                .thenReturn(HarnessResult.success("downstream result", List.of(ChatMessage.assistant("downstream result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(failure("source unavailable"))
+                .thenReturn(failure("still unavailable"))
+                .thenReturn(success("recovered evidence"))
+                .thenReturn(success("downstream result"));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
@@ -351,7 +348,7 @@ class PlanAgentServiceTest {
         assertThat(repairStep.result()).isEqualTo("recovered evidence");
         assertThat(downstreamStep.dependencies()).containsExactly(repairStep.stepKey());
         assertThat(downstreamStep.result()).isEqualTo("downstream result");
-        verify(harnessEngine, times(4)).run(any(HarnessRequest.class));
+        verify(agentRuntimeService, times(4)).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
     }
 
@@ -388,11 +385,11 @@ class PlanAgentServiceTest {
                         )),
                         "{}"
                 ));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.success("vague first answer", List.of(ChatMessage.assistant("vague first answer")), 1))
-                .thenReturn(HarnessResult.success("vague second answer", List.of(ChatMessage.assistant("vague second answer")), 1))
-                .thenReturn(HarnessResult.success("verified recovery", List.of(ChatMessage.assistant("verified recovery")), 1))
-                .thenReturn(HarnessResult.success("downstream result", List.of(ChatMessage.assistant("downstream result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(success("vague first answer"))
+                .thenReturn(success("vague second answer"))
+                .thenReturn(success("verified recovery"))
+                .thenReturn(success("downstream result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("missing concrete evidence"))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("still missing concrete evidence"))
@@ -421,7 +418,7 @@ class PlanAgentServiceTest {
         assertThat(repairStep.result()).isEqualTo("verified recovery");
         assertThat(downstreamStep.dependencies()).containsExactly(repairStep.stepKey());
         verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
-        verify(harnessEngine, times(4)).run(any(HarnessRequest.class));
+        verify(agentRuntimeService, times(4)).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier, times(4)).verify(any(PlanStepVerifier.VerificationRequest.class));
     }
 
@@ -433,10 +430,10 @@ class PlanAgentServiceTest {
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(orderedSteps);
         when(planner.createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(null);
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.success("partial first answer", List.of(ChatMessage.assistant("partial first answer")), 1))
-                .thenReturn(HarnessResult.success("better but incomplete first answer", List.of(ChatMessage.assistant("better but incomplete first answer")), 1))
-                .thenReturn(HarnessResult.success("downstream result", List.of(ChatMessage.assistant("downstream result")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(success("partial first answer"))
+                .thenReturn(success("better but incomplete first answer"))
+                .thenReturn(success("downstream result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("missing architecture details"))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("still missing architecture details"))
@@ -454,7 +451,7 @@ class PlanAgentServiceTest {
         assertThat(first.getErrorMessage()).contains("Degraded after verification failure");
         assertThat(second.getResult()).isEqualTo("downstream result");
         verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
-        verify(harnessEngine, times(3)).run(any(HarnessRequest.class));
+        verify(agentRuntimeService, times(3)).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier, times(3)).verify(any(PlanStepVerifier.VerificationRequest.class));
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
@@ -471,9 +468,9 @@ class PlanAgentServiceTest {
         List<AgentPlanStep> orderedSteps = List.of(first, second, third);
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(orderedSteps);
         when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(harnessEngine.run(any(HarnessRequest.class)))
-                .thenReturn(HarnessResult.failure("first attempt failed", List.of(ChatMessage.assistant("failed")), 1))
-                .thenReturn(HarnessResult.failure("second attempt failed", List.of(ChatMessage.assistant("failed")), 1));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(failure("first attempt failed"))
+                .thenReturn(failure("second attempt failed"));
 
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
 
@@ -487,12 +484,42 @@ class PlanAgentServiceTest {
                 );
         assertThat(second.getErrorMessage()).contains("step_1");
         assertThat(third.getErrorMessage()).contains("step_2");
-        verify(harnessEngine, times(2)).run(any(HarnessRequest.class));
+        verify(agentRuntimeService, times(2)).run(any(AgentRuntimeRequest.class));
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
         verify(events, times(9)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_failed", "step_repair_started", "step_repair_unavailable", "step_skipped", "plan_failed");
+    }
+
+    private AgentRuntimeResult success(String content) {
+        return new AgentRuntimeResult(
+                true,
+                content,
+                List.of(ChatMessage.assistant(content)),
+                1,
+                null,
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null
+        );
+    }
+
+    private AgentRuntimeResult failure(String error) {
+        return new AgentRuntimeResult(
+                false,
+                null,
+                List.of(ChatMessage.assistant("failed")),
+                1,
+                error,
+                List.of(),
+                List.of(error),
+                null,
+                null,
+                null
+        );
     }
 
     private AgentPlan newPlan() {

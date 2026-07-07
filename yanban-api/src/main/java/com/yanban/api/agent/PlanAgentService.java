@@ -17,9 +17,6 @@ import com.yanban.core.agent.AgentPlanStep;
 import com.yanban.core.agent.AgentPlanStepRepository;
 import com.yanban.core.agent.AgentPlanStepStatus;
 import com.yanban.core.agent.AgentSession;
-import com.yanban.core.harness.HarnessEngine;
-import com.yanban.core.harness.HarnessRequest;
-import com.yanban.core.harness.HarnessResult;
 import com.yanban.core.model.ChatMessage;
 import jakarta.annotation.PreDestroy;
 import java.time.LocalDateTime;
@@ -50,7 +47,7 @@ public class PlanAgentService {
     private static final int MAX_STEP_ATTEMPTS = 2;
     private static final int MAX_REPAIR_STEPS = 3;
     private static final int MAX_PARALLEL_STEPS = 3;
-    private static final int MAX_HARNESS_STEPS_PER_PLAN_STEP = 3;
+    private static final int MAX_RUNTIME_STEPS_PER_PLAN_STEP = 3;
     private static final int MAX_TOOL_CALLS_PER_PLAN_STEP = 3;
     private static final int MAX_DUPLICATE_TOOL_CALLS_PER_PLAN_STEP = 1;
     private static final int PLAN_EXECUTOR_THREADS = 2;
@@ -61,9 +58,9 @@ public class PlanAgentService {
     private final AgentPlanStepRepository steps;
     private final AgentPlanEventRepository events;
     private final AgentService agentService;
+    private final AgentRuntimeService agentRuntimeService;
     private final PlanningAgentPlanner planner;
     private final PlanStepVerifier stepVerifier;
-    private final HarnessEngine harnessEngine;
     private final UserSettingsService userSettingsService;
     private final SkillsService skillsService;
     private final ObjectMapper objectMapper;
@@ -73,9 +70,9 @@ public class PlanAgentService {
                             AgentPlanStepRepository steps,
                             AgentPlanEventRepository events,
                             AgentService agentService,
+                            AgentRuntimeService agentRuntimeService,
                             PlanningAgentPlanner planner,
                             PlanStepVerifier stepVerifier,
-                            HarnessEngine harnessEngine,
                             UserSettingsService userSettingsService,
                             SkillsService skillsService,
                             ObjectMapper objectMapper) {
@@ -83,9 +80,9 @@ public class PlanAgentService {
         this.steps = steps;
         this.events = events;
         this.agentService = agentService;
+        this.agentRuntimeService = agentRuntimeService;
         this.planner = planner;
         this.stepVerifier = stepVerifier;
-        this.harnessEngine = harnessEngine;
         this.userSettingsService = userSettingsService;
         this.skillsService = skillsService;
         this.objectMapper = objectMapper;
@@ -435,7 +432,9 @@ public class PlanAgentService {
             steps.saveAndFlush(step);
             UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
                     plan.getUserId(), session.getModelProviderSnapshot(), session.getModelSnapshot());
-            HarnessRequest harnessRequest = new HarnessRequest(
+            AgentRuntimeRequest runtimeRequest = new AgentRuntimeRequest(
+                    AgentStrategy.SINGLE_STEP_REACT,
+                    session.getId(),
                     List.of(ChatMessage.system(buildStepSystemPrompt(plan, allSteps, step, previousError))),
                     plan.getUserId(),
                     buildStepUserMessage(step),
@@ -443,26 +442,41 @@ public class PlanAgentService {
                     endpoint.modelName(),
                     null,
                     null,
-                    maxHarnessStepsForPlanStep(session),
+                    maxRuntimeStepsForPlanStep(session),
                     Boolean.TRUE.equals(plan.getRagDisabled()),
+                    skill == null ? null : skill.id(),
                     endpoint.apiKey(),
                     endpoint.apiUrl(),
                     skill == null ? null : skill.prompt(),
+                    AgentRuntimeMode.LANGCHAIN4J,
+                    AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
                     resolveRuntimeAllowedTools(step, skill),
                     MAX_TOOL_CALLS_PER_PLAN_STEP,
                     MAX_DUPLICATE_TOOL_CALLS_PER_PLAN_STEP,
-                    deadlineAt,
-                    traceId
+                    traceId,
+                    null,
+                    null
             );
-            HarnessResult result;
+            AgentRuntimeResult result;
             try {
-                result = harnessEngine.run(harnessRequest);
+                result = agentRuntimeService.run(runtimeRequest);
             } catch (Exception ex) {
                 String error = "Step worker execution crashed: "
                         + abbreviate(blankToDefault(ex.getMessage(), ex.getClass().getSimpleName()), 1200);
                 log.warn("Plan step worker crashed planId={} stepKey={} traceId={}",
                         plan.getId(), step.getStepKey(), traceId, ex);
-                result = HarnessResult.failure(error, List.of(), attempt + 1);
+                result = new AgentRuntimeResult(
+                        false,
+                        null,
+                        List.of(),
+                        attempt + 1,
+                        error,
+                        List.of(),
+                        List.of(error),
+                        null,
+                        null,
+                        null
+                );
             }
             if (result.success()) {
                 String content = StringUtils.hasText(result.assistantContent())
@@ -527,7 +541,7 @@ public class PlanAgentService {
 
             String error = StringUtils.hasText(result.errorMessage()) ? result.errorMessage() : "Step execution failed.";
             previousError = error;
-            recordHarnessGuardrailEvent(plan, step, error, traceId);
+            recordRuntimeGuardrailEvent(plan, step, error, traceId);
             if (attempt + 1 >= MAX_STEP_ATTEMPTS) {
                 step.markFailed(error);
                 recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
@@ -655,9 +669,9 @@ public class PlanAgentService {
         }
     }
 
-    private int maxHarnessStepsForPlanStep(AgentSession session) {
-        int configured = session.getMaxSteps() == null ? MAX_HARNESS_STEPS_PER_PLAN_STEP : session.getMaxSteps();
-        return Math.max(1, Math.min(configured, MAX_HARNESS_STEPS_PER_PLAN_STEP));
+    private int maxRuntimeStepsForPlanStep(AgentSession session) {
+        int configured = session.getMaxSteps() == null ? MAX_RUNTIME_STEPS_PER_PLAN_STEP : session.getMaxSteps();
+        return Math.max(1, Math.min(configured, MAX_RUNTIME_STEPS_PER_PLAN_STEP));
     }
 
     private String buildVerificationFailureMessage(PlanStepVerifier.VerificationResult verification) {
@@ -1087,7 +1101,7 @@ public class PlanAgentService {
         }
     }
 
-    private void recordHarnessGuardrailEvent(AgentPlan plan, AgentPlanStep step, String error, String traceId) {
+    private void recordRuntimeGuardrailEvent(AgentPlan plan, AgentPlanStep step, String error, String traceId) {
         if (!StringUtils.hasText(error)) {
             return;
         }

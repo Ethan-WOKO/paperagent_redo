@@ -54,10 +54,13 @@ class PlanReflectionRuntimeAdapterTest {
                 null,
                 null,
                 null,
+                AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
                 List.of(),
                 0,
                 1,
                 "trace-reflect",
+                null,
                 null
         ));
 

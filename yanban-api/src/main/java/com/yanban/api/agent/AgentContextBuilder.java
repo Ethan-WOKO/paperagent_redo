@@ -23,6 +23,8 @@ public class AgentContextBuilder {
     private static final int MIN_MAX_CONTEXT_CHARACTERS = 1_024;
     private static final int TRUNCATION_SUFFIX_LENGTH = 24;
     private static final String TRUNCATION_SUFFIX = "\n[truncated]";
+    private static final String EMPTY_SESSION_SUMMARY = "No session summary has been created yet.";
+    private static final String EMPTY_LONG_TERM_MEMORY = "Long-term memory is not enabled yet.";
 
     private final AgentMessageRepository messages;
     private final ObjectMapper objectMapper;
@@ -37,13 +39,43 @@ public class AgentContextBuilder {
                 .map(this::toChatMessage)
                 .toList();
         List<ChatMessage> normalizedMessages = normalizeHistoryForModel(request.sessionId(), rawMessages);
+        return build(request, rawMessages, normalizedMessages);
+    }
 
+    public AgentContextPackage build(AgentContextBuildRequest request, List<ChatMessage> normalizedMessagesOverride) {
+        List<ChatMessage> rawMessages = messages.findBySessionIdOrderByCreatedAtAsc(request.sessionId()).stream()
+                .map(this::toChatMessage)
+                .toList();
+        List<ChatMessage> normalizedMessages = normalizedMessagesOverride == null
+                ? normalizeHistoryForModel(request.sessionId(), rawMessages)
+                : List.copyOf(normalizedMessagesOverride);
+        return build(request, rawMessages, normalizedMessages);
+    }
+
+    public List<ChatMessage> loadNormalizedHistory(Long sessionId) {
+        List<ChatMessage> rawMessages = messages.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
+                .map(this::toChatMessage)
+                .toList();
+        return normalizeHistoryForModel(sessionId, rawMessages);
+    }
+
+    private AgentContextPackage build(AgentContextBuildRequest request,
+                                      List<ChatMessage> rawMessages,
+                                      List<ChatMessage> normalizedMessages) {
         List<AgentContextSection> sections = new ArrayList<>();
         List<AgentContextDroppedItem> droppedItems = new ArrayList<>();
         List<ChatMessage> contextMessages = new ArrayList<>();
 
-        ChatMessage summaryMessage = buildContextMessage("Session summary", request.sessionSummary());
-        ChatMessage longTermMemoryMessage = buildContextMessage("Long-term memory", contextContent(request.longTermMemoryContext()));
+        ChatMessage summaryMessage = buildRequiredContextMessage(
+                "Session summary",
+                request.sessionSummary(),
+                EMPTY_SESSION_SUMMARY
+        );
+        ChatMessage longTermMemoryMessage = buildRequiredContextMessage(
+                "Long-term memory",
+                contextContent(request.longTermMemoryContext()),
+                EMPTY_LONG_TERM_MEMORY
+        );
         ChatMessage ragMessage = buildContextMessage("RAG context", request.ragContext());
         ChatMessage toolTraceMessage = buildContextMessage("Tool trace context", request.toolTraceContext());
         ChatMessage identityGuard = ChatMessage.system(buildRuntimeIdentityPrompt(request.providerKey(), request.modelName()));
@@ -55,23 +87,20 @@ public class AgentContextBuilder {
                 + estimateCharacters(identityGuard);
         int historyBudget = Math.max(0, maxCharacters - reservedCharacters);
 
-        if (summaryMessage != null) {
-            contextMessages.add(summaryMessage);
-            sections.add(section("session_summary", 1, estimateCharacters(summaryMessage), "Optional rolling session summary."));
-        }
-        if (longTermMemoryMessage != null) {
-            AgentLongTermMemoryContext memoryContext = request.longTermMemoryContext();
-            contextMessages.add(longTermMemoryMessage);
-            sections.add(section("long_term_memory",
-                    memoryContext == null ? 1 : Math.max(0, memoryContext.hitCount()),
-                    estimateCharacters(longTermMemoryMessage),
-                    memoryContext == null || !StringUtils.hasText(memoryContext.note())
-                            ? "Relevant long-term memory prepared outside the builder."
-                            : memoryContext.note()));
-            if (memoryContext != null && memoryContext.omittedCount() > 0) {
-                droppedItems.add(new AgentContextDroppedItem("long_term_memory", memoryContext.omittedCount(),
-                        "Dropped by long-term memory context budget or relevance threshold."));
-            }
+        contextMessages.add(summaryMessage);
+        sections.add(section("session_summary", StringUtils.hasText(request.sessionSummary()) ? 1 : 0,
+                estimateCharacters(summaryMessage), "Rolling session summary stored in the database."));
+        AgentLongTermMemoryContext memoryContext = request.longTermMemoryContext();
+        contextMessages.add(longTermMemoryMessage);
+        sections.add(section("long_term_memory",
+                memoryContext == null ? 0 : Math.max(0, memoryContext.hitCount()),
+                estimateCharacters(longTermMemoryMessage),
+                memoryContext == null || !StringUtils.hasText(memoryContext.note())
+                        ? "Long-term memory is currently disabled."
+                        : memoryContext.note()));
+        if (memoryContext != null && memoryContext.omittedCount() > 0) {
+            droppedItems.add(new AgentContextDroppedItem("long_term_memory", memoryContext.omittedCount(),
+                    "Dropped by long-term memory context budget or relevance threshold."));
         }
         if (ragMessage != null) {
             contextMessages.add(ragMessage);
@@ -197,6 +226,10 @@ public class AgentContextBuilder {
         return ChatMessage.system(label + ":\n" + content.trim());
     }
 
+    private ChatMessage buildRequiredContextMessage(String label, String content, String fallback) {
+        return ChatMessage.system(label + ":\n" + (StringUtils.hasText(content) ? content.trim() : fallback));
+    }
+
     private String contextContent(AgentLongTermMemoryContext context) {
         return context == null ? null : context.content();
     }
@@ -210,6 +243,9 @@ public class AgentContextBuilder {
         for (int i = 0; i < history.size(); i++) {
             ChatMessage message = history.get(i);
             if (message == null) {
+                continue;
+            }
+            if (isProcessMessage(message)) {
                 continue;
             }
             if (isAssistantToolCallMessage(message)) {
@@ -254,6 +290,10 @@ public class AgentContextBuilder {
 
     private boolean isToolMessage(ChatMessage message) {
         return message != null && "tool".equals(message.role());
+    }
+
+    private boolean isProcessMessage(ChatMessage message) {
+        return message != null && "process".equals(message.role());
     }
 
     private int matchingFollowingToolCount(List<ChatMessage> history, int assistantIndex, List<ToolCall> toolCalls) {

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div
     class="app-frame"
     :class="{
@@ -20,9 +20,9 @@
       </div>
 
       <div class="app-sidebar__search">
-        <span>⌕</span>
+        <span>S</span>
         <span>Search workspace</span>
-        <kbd>⌘K</kbd>
+        <kbd>Ctrl+K</kbd>
       </div>
 
       <nav class="app-sidebar__nav" aria-label="主导航">
@@ -34,24 +34,10 @@
           :class="{ 'app-sidebar__nav-item--active': isActiveNav(item.path) }"
           @click="router.push(item.path)"
         >
-          <span class="app-sidebar__nav-icon">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
         </button>
       </nav>
 
-      <div class="app-sidebar__section">
-        <div class="app-sidebar__section-title">
-          <span>Quick Actions</span>
-        </div>
-        <button type="button" class="app-sidebar__mini-card" @click="router.push('/paper')">
-          <strong>Polish Paper</strong>
-          <small>LaTeX workflow & review</small>
-        </button>
-        <button type="button" class="app-sidebar__mini-card" @click="router.push('/chat')">
-          <strong>Search Literature</strong>
-          <small>/literature topic bibtex</small>
-        </button>
-      </div>
 
       <div class="app-sidebar__spacer" />
 
@@ -69,7 +55,7 @@
           <strong>{{ authStore.currentUser?.username || '未登录' }}</strong>
           <span>Researcher</span>
         </div>
-        <button type="button" class="app-sidebar__logout" @click="logout">Sign out ↗</button>
+        <button type="button" class="app-sidebar__logout" @click="logout">Sign out</button>
       </div>
     </aside>
 
@@ -92,12 +78,12 @@
           <NButton secondary round @click="router.push('/chat')">+ New Task</NButton>
           <NButton secondary round @click="router.push('/paper')">Upload Paper</NButton>
           <NButton secondary round @click="router.push('/chat')">Search Literature</NButton>
-          <NButton type="primary" round class="agent-mode-button">Agent Mode · Live</NButton>
+          <NButton type="primary" round class="agent-mode-button">Agent Mode Live</NButton>
           <NButton quaternary circle class="theme-toggle-button" @click="toggleTheme">
-            {{ isDark ? '☀' : '☾' }}
+            {{ isDark ? 'Light' : 'Dark' }}
           </NButton>
         </NSpace>
-        <button type="button" class="app-topbar__collapse" title="Hide header" @click="setTopbarCollapsed(true)">⌃</button>
+        <button type="button" class="app-topbar__collapse" title="Hide header" @click="setTopbarCollapsed(true)">-</button>
       </header>
 
       <button
@@ -107,7 +93,7 @@
         title="Show header"
         @click="setTopbarCollapsed(false)"
       >
-        ⌄
+        +
       </button>
 
       <section class="app-content-shell">
@@ -132,12 +118,12 @@ const TOPBAR_COLLAPSED_KEY = 'yanban.app.topbarCollapsed';
 const topbarCollapsed = ref(readStoredBoolean(TOPBAR_COLLAPSED_KEY, false));
 
 const navItems = [
-  { label: 'Workspace', path: '/chat', icon: '⌂' },
-  { label: 'Paper Polish', path: '/paper', icon: '✎' },
-  { label: 'Project Preview', path: '/projects', icon: '◫' },
-  { label: 'Knowledge Base', path: '/knowledge-base', icon: '▣' },
-  { label: 'Search Debug', path: '/knowledge-base/search-debug', icon: '⌕' },
-  { label: 'Settings', path: '/settings', icon: '⚙' },
+  { label: 'Workspace', path: '/chat' },
+  { label: 'Paper Polish', path: '/paper' },
+  { label: 'Project Preview', path: '/projects' },
+  { label: 'Knowledge Base', path: '/knowledge-base' },
+  { label: 'Search Debug', path: '/knowledge-base/search-debug' },
+  { label: 'Settings', path: '/settings' },
 ];
 
 const userInitial = computed(() => (authStore.currentUser?.username || 'U').slice(0, 1).toUpperCase());

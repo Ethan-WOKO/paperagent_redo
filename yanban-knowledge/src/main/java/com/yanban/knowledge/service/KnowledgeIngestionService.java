@@ -4,10 +4,8 @@ import com.yanban.knowledge.domain.KbChunk;
 import com.yanban.knowledge.domain.KbChunkRepository;
 import com.yanban.knowledge.domain.KbDocument;
 import com.yanban.knowledge.domain.KbDocumentRepository;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import org.apache.tika.Tika;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -19,7 +17,6 @@ public class KnowledgeIngestionService {
     private final KbChunkRepository chunks;
     private final FileProcessingService fileProcessingService;
     private final VectorizationService vectorizationService;
-    private final Tika tika = new Tika();
 
     public KnowledgeIngestionService(KbDocumentRepository documents,
                                      KbChunkRepository chunks,
@@ -40,13 +37,14 @@ public class KnowledgeIngestionService {
                     "PROCESSING",
                     isPublic
             ));
-            String text;
-            try (InputStream in = file.getInputStream()) {
-                text = tika.parseToString(in);
-            }
+            byte[] bytes = file.getBytes();
+            document.setMimeType(file.getContentType());
+            document.setFileSize((long) bytes.length);
+            String text = fileProcessingService.extractText(document, bytes);
             List<KbChunk> createdChunks = fileProcessingService.splitText(document.getId(), text);
             chunks.saveAll(createdChunks);
             document.setStatus("READY");
+            document.setErrorMessage(null);
             return documents.save(document);
         } catch (Exception ex) {
             throw new IllegalStateException("文件解析失败", ex);
