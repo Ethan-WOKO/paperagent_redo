@@ -96,7 +96,27 @@ class PaperTaskToolExecutorTest {
         assertThat(result.output().path("status").asText()).isEqualTo("RUNNING");
         assertThat(result.output().path("downloadAvailable").asBoolean()).isTrue();
         assertThat(result.output().path("artifacts").get(0).path("filename").asText()).isEqualTo("review-report.md");
+        assertThat(result.output().path("artifacts").get(0).path("artifactStatus").asText()).isEqualTo(PaperTaskArtifact.STATUS_COMPLETED);
         assertThat(result.output().path("artifacts").get(0).has("objectKey")).isFalse();
+    }
+
+    @Test
+    void partialArtifactsAreNotReportedDownloadable() {
+        ToolExecutionContext.setCurrentUserId(USER_ID);
+        PaperTask task = task("CANCELLED", "CANCELLED");
+        PaperTaskArtifact artifact = artifact("polished_tex", "polished.tex");
+        artifact.setArtifactStatus(PaperTaskArtifact.STATUS_PARTIAL);
+        when(tasks.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(Optional.of(task));
+        when(artifacts.findByTaskIdOrderByCreatedAt(TASK_ID)).thenReturn(List.of(artifact));
+        when(paperTaskService.hasDownloadableResult(USER_ID, TASK_ID)).thenReturn(false);
+
+        ToolResult result = new PaperPolishStatusToolExecutor(support, objectMapper)
+                .execute(new ToolCall("call-partial", "paper_polish_status", args(TASK_ID)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output().path("downloadAvailable").asBoolean()).isFalse();
+        assertThat(result.output().path("artifacts").get(0).path("artifactStatus").asText()).isEqualTo(PaperTaskArtifact.STATUS_PARTIAL);
+        assertThat(result.output().path("artifacts").get(0).path("downloadable").asBoolean()).isFalse();
     }
 
     @Test
@@ -129,13 +149,15 @@ class PaperTaskToolExecutorTest {
         when(tasks.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(Optional.of(task));
         when(artifacts.findByTaskIdOrderByCreatedAt(TASK_ID)).thenReturn(List.of());
 
+        ObjectNode args = args(TASK_ID);
+        args.put("cancelReason", "user changed mind");
         ToolResult result = new PaperTaskCancelToolExecutor(support, objectMapper)
-                .execute(new ToolCall("call-3", "paper_task_cancel", args(TASK_ID)));
+                .execute(new ToolCall("call-3", "paper_task_cancel", args));
 
         assertThat(result.success()).isTrue();
         assertThat(result.output().path("cancelAccepted").asBoolean()).isTrue();
         assertThat(result.output().path("idempotent").asBoolean()).isFalse();
-        verify(paperOrchestrator).stop(USER_ID, TASK_ID);
+        verify(paperOrchestrator).stop(USER_ID, TASK_ID, "user changed mind");
     }
 
     @Test
@@ -151,7 +173,7 @@ class PaperTaskToolExecutorTest {
         assertThat(result.success()).isTrue();
         assertThat(result.output().path("cancelAccepted").asBoolean()).isFalse();
         assertThat(result.output().path("idempotent").asBoolean()).isTrue();
-        verify(paperOrchestrator).stop(USER_ID, TASK_ID);
+        verify(paperOrchestrator).stop(USER_ID, TASK_ID, null);
     }
 
     @Test

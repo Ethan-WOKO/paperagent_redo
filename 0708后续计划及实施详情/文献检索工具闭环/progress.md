@@ -321,3 +321,23 @@ Evaluation:
 Scope boundary:
 - This baseline does not make live external paper sources the only mandatory gate.
 - This baseline does not implement a full Agent eval or broader literature workflow changes.
+## 2026-07-09 Issue #90 统一任务状态和事件体验
+
+目标：
+- 将文献检索任务接入第一版统一任务状态和事件约定。
+
+本次完成：
+- 复用现有 `literature_search_tasks`、`agent_tasks`、`agent_task_events`，未新增数据库迁移。
+- 文献检索任务状态常量收口到统一 `AgentTaskStatus`，事件类型收口到 `AgentTaskEventTypes`。
+- 统一任务状态接口在有 `resultJson` 且存在 `sourceFailuresJson` 时标记 `partialResultAvailable=true`。
+- 文献检索工具结果同步输出 `partialResultAvailable`，避免部分来源失败的结果被误读成完整最终结果。
+
+测试：
+- 已执行统一任务/事件目标测试命令。
+- 结果：通过，44 tests, 0 failures, 0 errors。
+
+风险：
+- 本次改变了公共状态响应字段和任务状态机常量引用，但未改变已有状态值。
+
+下一步：
+- 后续 UI 可按 `partialResultAvailable` 展示部分结果提示；本 issue 不改 UI。

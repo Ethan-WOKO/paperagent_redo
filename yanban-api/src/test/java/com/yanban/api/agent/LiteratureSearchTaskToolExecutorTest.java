@@ -97,6 +97,7 @@ class LiteratureSearchTaskToolExecutorTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.output().path("resultAvailable").asBoolean()).isTrue();
+        assertThat(result.output().path("partialResultAvailable").asBoolean()).isTrue();
         assertThat(result.output().path("items").get(0).path("title").asText()).isEqualTo("Hybrid Retrieval for RAG");
         assertThat(result.output().path("sourceFailures").get(0).asText()).contains("timeout");
     }

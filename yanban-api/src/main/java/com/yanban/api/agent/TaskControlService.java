@@ -1,5 +1,6 @@
 package com.yanban.api.agent;
 
+import com.yanban.core.agent.AgentTaskStatus;
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import com.yanban.paper.domain.PaperTask;
@@ -7,7 +8,6 @@ import com.yanban.paper.domain.PaperTaskRepository;
 import com.yanban.paper.literature.LiteratureSearchTaskService;
 import com.yanban.paper.service.PaperOrchestrator;
 import java.util.Locale;
-import java.util.Set;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -15,9 +15,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class TaskControlService {
-
-    private static final Set<String> PAPER_TERMINAL_STATUSES = Set.of("COMPLETED", "FAILED", "CANCELLED", "STOPPED");
-    private static final Set<String> CANCELLING_STATUSES = Set.of("CANCEL_REQUESTED", "CANCELLING");
 
     private final PaperTaskRepository paperTasks;
     private final PaperOrchestrator paperOrchestrator;
@@ -106,7 +103,7 @@ public class TaskControlService {
         String beforeStatus = task.getStatus();
         boolean cancelAccepted = canCancel(beforeStatus);
         if (cancelAccepted) {
-            paperOrchestrator.stop(userId, taskId);
+            paperOrchestrator.stop(userId, taskId, cancelReason);
         }
         PaperTask currentTask = paperTasks.findByIdAndUserId(taskId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "paper task disappeared"));
@@ -159,11 +156,11 @@ public class TaskControlService {
     }
 
     private boolean isPaperTerminal(String status) {
-        return PAPER_TERMINAL_STATUSES.contains(status);
+        return AgentTaskStatus.isTerminal(status);
     }
 
     private boolean canCancel(String status) {
-        return !isTerminal(status) && !isCancelling(status);
+        return AgentTaskStatus.canCancel(status);
     }
 
     private boolean isTerminal(String status) {
@@ -171,7 +168,7 @@ public class TaskControlService {
     }
 
     private boolean isCancelling(String status) {
-        return CANCELLING_STATUSES.contains(status);
+        return AgentTaskStatus.isCancelling(status);
     }
 
     private String messageForCancel(String status, boolean cancelAccepted, String taskTypeName) {

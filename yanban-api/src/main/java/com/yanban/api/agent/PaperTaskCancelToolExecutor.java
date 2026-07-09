@@ -38,10 +38,14 @@ public class PaperTaskCancelToolExecutor implements ToolExecutor {
 
     @Override
     public ToolResult execute(ToolCall call) {
-        return support.cancel(call.id(), definition.name(), taskId(call));
+        return support.cancel(call.id(), definition.name(), taskId(call), cancelReason(call));
     }
 
     private Long taskId(ToolCall call) {
         return call.arguments() == null || !call.arguments().has("taskId") ? null : call.arguments().path("taskId").asLong();
+    }
+
+    private String cancelReason(ToolCall call) {
+        return call.arguments() == null ? null : call.arguments().path("cancelReason").asText(null);
     }
 }

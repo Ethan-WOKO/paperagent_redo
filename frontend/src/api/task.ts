@@ -7,6 +7,19 @@ export interface TaskStatusResponse {
   currentStage: string | null;
   createdAt: string;
   updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  progressPercent: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  cancellationReason: string | null;
+  partialResultAvailable: boolean;
+  completedArtifactCount: number;
+  partialArtifactCount: number;
+  lastEventId: number | null;
+  lastEventType: string | null;
+  lastEventMessage: string | null;
+  lastEventAt: string | null;
   terminal: boolean;
   cancellable: boolean;
 }
@@ -58,4 +71,3 @@ export function listTaskEvents(taskId: number, taskType: string, afterEventId?: 
     },
   });
 }
-

@@ -7,6 +7,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.yanban.core.agent.AgentTask;
+import com.yanban.core.agent.AgentTaskEvent;
+import com.yanban.core.agent.AgentTaskEventRepository;
 import com.yanban.core.agent.AgentTaskEventRecorder;
 import com.yanban.core.agent.AgentTaskRegistry;
 import com.yanban.core.agent.AgentTaskRepository;
@@ -30,6 +32,7 @@ class AgentTaskServiceTest {
     private static final Long TASK_ID = 42L;
 
     private AgentTaskRepository agentTasks;
+    private AgentTaskEventRepository taskEvents;
     private PaperTaskRepository paperTasks;
     private PaperTaskArtifactRepository paperArtifacts;
     private LiteratureSearchTaskRepository literatureTasks;
@@ -38,10 +41,11 @@ class AgentTaskServiceTest {
     @BeforeEach
     void setUp() {
         agentTasks = mock(AgentTaskRepository.class);
+        taskEvents = mock(AgentTaskEventRepository.class);
         paperTasks = mock(PaperTaskRepository.class);
         paperArtifacts = mock(PaperTaskArtifactRepository.class);
         literatureTasks = mock(LiteratureSearchTaskRepository.class);
-        service = new AgentTaskService(agentTasks, paperTasks, paperArtifacts, literatureTasks);
+        service = new AgentTaskService(agentTasks, taskEvents, paperTasks, paperArtifacts, literatureTasks);
     }
 
     @Test
@@ -67,6 +71,23 @@ class AgentTaskServiceTest {
                 artifact(PaperTaskArtifact.STATUS_PARTIAL),
                 artifact(PaperTaskArtifact.STATUS_COMPLETED)
         ));
+        AgentTaskEvent latest = new AgentTaskEvent(
+                AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
+                TASK_ID,
+                USER_ID,
+                "TASK_CANCELLED",
+                "CANCELLED",
+                "CANCELLED",
+                "paper task cancelled",
+                null
+        );
+        ReflectionTestUtils.setField(latest, "id", 900L);
+        ReflectionTestUtils.setField(latest, "createdAt", Instant.parse("2026-07-05T00:05:01Z"));
+        when(taskEvents.findTopByTaskTypeAndTaskIdAndUserIdOrderByIdDesc(
+                AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
+                TASK_ID,
+                USER_ID
+        )).thenReturn(Optional.of(latest));
 
         TaskStatusResponse response = service.getStatus(USER_ID, TASK_ID, "paper_polish");
 
@@ -77,6 +98,10 @@ class AgentTaskServiceTest {
         assertThat(response.partialResultAvailable()).isTrue();
         assertThat(response.completedArtifactCount()).isEqualTo(1);
         assertThat(response.partialArtifactCount()).isEqualTo(1);
+        assertThat(response.lastEventId()).isEqualTo(900L);
+        assertThat(response.lastEventType()).isEqualTo("TASK_CANCELLED");
+        assertThat(response.lastEventMessage()).isEqualTo("paper task cancelled");
+        assertThat(response.lastEventAt()).isEqualTo(Instant.parse("2026-07-05T00:05:01Z"));
     }
 
     @Test
@@ -171,6 +196,37 @@ class AgentTaskServiceTest {
         assertThat(response.progressPercent()).isEqualTo(100);
         assertThat(response.startedAt()).isEqualTo(Instant.parse("2026-07-05T01:00:00Z"));
         assertThat(response.finishedAt()).isEqualTo(Instant.parse("2026-07-05T01:02:00Z"));
+    }
+
+    @Test
+    void getStatusMarksLiteratureResultPartialWhenSourceFailuresExist() {
+        LiteratureSearchTask task = new LiteratureSearchTask(
+                USER_ID,
+                9L,
+                "query",
+                "query",
+                5,
+                null,
+                true,
+                "COMPLETED",
+                "COMPLETE",
+                "req-1",
+                "idem-1"
+        );
+        task.setResultJson("{\"items\":[{\"title\":\"A\"}]}");
+        task.setSourceFailuresJson("[\"openalex: timeout\"]");
+        ReflectionTestUtils.setField(task, "id", TASK_ID);
+        when(agentTasks.findByTaskTypeAndSourceAndSourceIdAndUserId(
+                AgentTaskEventRecorder.TASK_TYPE_LITERATURE_SEARCH,
+                AgentTaskRegistry.SOURCE_LITERATURE_SEARCH_TASK,
+                TASK_ID,
+                USER_ID
+        )).thenReturn(Optional.empty());
+        when(literatureTasks.findByIdAndUserId(TASK_ID, USER_ID)).thenReturn(Optional.of(task));
+
+        TaskStatusResponse response = service.getStatus(USER_ID, TASK_ID, "literature_search");
+
+        assertThat(response.partialResultAvailable()).isTrue();
     }
 
     private PaperTask paperTask(String status, String stage) {

@@ -2,7 +2,9 @@ package com.yanban.paper.literature;
 
 import com.yanban.core.agent.AgentTaskEventCreateRequest;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskEventTypes;
 import com.yanban.core.agent.AgentTaskRegistry;
+import com.yanban.core.agent.AgentTaskStatus;
 import com.yanban.core.agent.AgentTaskUpsertRequest;
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
@@ -28,13 +30,13 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class LiteratureSearchTaskService {
 
-    public static final String STATUS_PENDING = "PENDING";
-    public static final String STATUS_RUNNING = "RUNNING";
-    public static final String STATUS_CANCEL_REQUESTED = "CANCEL_REQUESTED";
-    public static final String STATUS_CANCELLING = "CANCELLING";
-    public static final String STATUS_COMPLETED = "COMPLETED";
-    public static final String STATUS_FAILED = "FAILED";
-    public static final String STATUS_CANCELLED = "CANCELLED";
+    public static final String STATUS_PENDING = AgentTaskStatus.PENDING.value();
+    public static final String STATUS_RUNNING = AgentTaskStatus.RUNNING.value();
+    public static final String STATUS_CANCEL_REQUESTED = AgentTaskStatus.CANCEL_REQUESTED.value();
+    public static final String STATUS_CANCELLING = AgentTaskStatus.CANCELLING.value();
+    public static final String STATUS_COMPLETED = AgentTaskStatus.COMPLETED.value();
+    public static final String STATUS_FAILED = AgentTaskStatus.FAILED.value();
+    public static final String STATUS_CANCELLED = AgentTaskStatus.CANCELLED.value();
 
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED);
     private static final Set<String> CANCEL_STATUSES = Set.of(STATUS_CANCEL_REQUESTED, STATUS_CANCELLING, STATUS_CANCELLED);
@@ -100,7 +102,7 @@ public class LiteratureSearchTaskService {
                             idempotencyKey
                     ));
                     syncUnifiedTask(saved);
-                    recordEvent(saved, "TASK_CREATED", "文献检索任务已创建", null);
+                    recordEvent(saved, AgentTaskEventTypes.TASK_CREATED, "文献检索任务已创建", null);
                     publishAfterCommit(saved);
                     return new TaskStartResult(saved, false);
                 });
@@ -122,7 +124,7 @@ public class LiteratureSearchTaskService {
         task.setCancelReason(trimToNull(cancelReason));
         LiteratureSearchTask saved = tasks.save(task);
         syncUnifiedTask(saved);
-        recordEvent(saved, "TASK_CANCEL_REQUESTED", "用户请求停止文献检索任务", null);
+        recordEvent(saved, AgentTaskEventTypes.TASK_CANCEL_REQUESTED, "用户请求停止文献检索任务", null);
         return saved;
     }
 
@@ -138,7 +140,7 @@ public class LiteratureSearchTaskService {
         task.setCurrentStage("RETRY_QUEUED");
         LiteratureSearchTask saved = tasks.save(task);
         syncUnifiedTask(saved);
-        recordEvent(saved, "TASK_MANUAL_REQUEUED", "用户手动重投文献检索唤醒消息", null);
+        recordEvent(saved, AgentTaskEventTypes.TASK_MANUAL_REQUEUED, "用户手动重投文献检索唤醒消息", null);
         publishAfterCommit(saved);
         return new DispatchRetryResult(saved, true, false, "manual dispatch retry queued");
     }
@@ -168,7 +170,7 @@ public class LiteratureSearchTaskService {
         task.setFinishedAt(Instant.now());
         LiteratureSearchTask saved = tasks.save(task);
         syncUnifiedTask(saved);
-        recordEvent(saved, "TASK_COMPLETED", "文献检索任务已完成", null);
+        recordEvent(saved, AgentTaskEventTypes.TASK_COMPLETED, "文献检索任务已完成", null);
         return saved;
     }
 
@@ -187,7 +189,7 @@ public class LiteratureSearchTaskService {
             task.setCurrentStage("REQUEUED");
             LiteratureSearchTask saved = tasks.save(task);
             syncUnifiedTask(saved);
-            recordEvent(saved, "TASK_REQUEUED", "文献检索任务超时未领取，已重新投递唤醒消息", null);
+            recordEvent(saved, AgentTaskEventTypes.TASK_REQUEUED, "文献检索任务超时未领取，已重新投递唤醒消息", null);
             publishAfterCommit(saved);
             requeued++;
         }
@@ -203,7 +205,7 @@ public class LiteratureSearchTaskService {
             task.setFinishedAt(now);
             LiteratureSearchTask saved = tasks.save(task);
             syncUnifiedTask(saved);
-            recordEvent(saved, "TASK_TIMED_OUT", "文献检索任务运行超时，已标记失败", null);
+            recordEvent(saved, AgentTaskEventTypes.TASK_TIMED_OUT, "文献检索任务运行超时，已标记失败", null);
             timedOut++;
         }
 
@@ -226,7 +228,7 @@ public class LiteratureSearchTaskService {
             task.setStartedAt(Instant.now());
             LiteratureSearchTask saved = tasks.save(task);
             syncUnifiedTask(saved);
-            recordEvent(saved, "TASK_RUNNING", "文献检索任务开始执行", null);
+            recordEvent(saved, AgentTaskEventTypes.TASK_RUNNING, "文献检索任务开始执行", null);
             return Optional.of(saved);
         }
         if (STATUS_CANCEL_REQUESTED.equals(task.getStatus()) || STATUS_CANCELLING.equals(task.getStatus())) {
@@ -255,7 +257,7 @@ public class LiteratureSearchTaskService {
             task.setCurrentStage(StringUtils.hasText(task.getCurrentStage()) ? task.getCurrentStage() : "CANCELLING");
             LiteratureSearchTask saved = tasks.save(task);
             syncUnifiedTask(saved);
-            recordEvent(saved, "TASK_CANCELLING", "文献检索任务正在安全停止", null);
+            recordEvent(saved, AgentTaskEventTypes.TASK_CANCELLING, "文献检索任务正在安全停止", null);
             return saved;
         }
         return task;
@@ -285,7 +287,7 @@ public class LiteratureSearchTaskService {
         task.setFinishedAt(Instant.now());
         LiteratureSearchTask saved = tasks.save(task);
         syncUnifiedTask(saved);
-        recordEvent(saved, "TASK_FAILED", trimToLength(errorMessage, MAX_EVENT_MESSAGE_LENGTH), null);
+        recordEvent(saved, AgentTaskEventTypes.TASK_FAILED, trimToLength(errorMessage, MAX_EVENT_MESSAGE_LENGTH), null);
         return saved;
     }
 
@@ -374,7 +376,7 @@ public class LiteratureSearchTaskService {
         task.setFinishedAt(Instant.now());
         LiteratureSearchTask saved = tasks.save(task);
         syncUnifiedTask(saved);
-        recordEvent(saved, "TASK_CANCELLED", "文献检索任务已取消", null);
+        recordEvent(saved, AgentTaskEventTypes.TASK_CANCELLED, "文献检索任务已取消", null);
         return saved;
     }
 

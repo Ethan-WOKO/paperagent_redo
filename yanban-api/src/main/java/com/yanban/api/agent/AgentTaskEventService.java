@@ -2,6 +2,8 @@ package com.yanban.api.agent;
 
 import com.yanban.core.agent.AgentTaskEvent;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskEventTypes;
+import com.yanban.core.agent.AgentTaskStatus;
 import com.yanban.paper.domain.PaperTaskRepository;
 import com.yanban.paper.literature.LiteratureSearchTaskService;
 import jakarta.annotation.PreDestroy;
@@ -27,12 +29,17 @@ public class AgentTaskEventService {
     private static final int DEFAULT_STREAM_POLL_INTERVAL_MS = 1000;
     private static final int MIN_STREAM_POLL_INTERVAL_MS = 250;
     private static final int MAX_STREAM_POLL_INTERVAL_MS = 30_000;
-    private static final Set<String> TERMINAL_EVENT_STATUSES = Set.of("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT");
+    private static final Set<String> TERMINAL_EVENT_STATUSES = Set.of(
+            AgentTaskStatus.COMPLETED.value(),
+            AgentTaskStatus.FAILED.value(),
+            AgentTaskStatus.CANCELLED.value(),
+            "TIMED_OUT"
+    );
     private static final Set<String> TERMINAL_EVENT_TYPES = Set.of(
-            "TASK_COMPLETED",
-            "TASK_FAILED",
-            "TASK_CANCELLED",
-            "TASK_TIMED_OUT"
+            AgentTaskEventTypes.TASK_COMPLETED,
+            AgentTaskEventTypes.TASK_FAILED,
+            AgentTaskEventTypes.TASK_CANCELLED,
+            AgentTaskEventTypes.TASK_TIMED_OUT
     );
 
     private final AgentTaskEventRecorder events;
