@@ -8,6 +8,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.core.agent.AgentTask;
+import com.yanban.core.agent.AgentTaskEvent;
+import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskEventRepository;
 import com.yanban.core.agent.AgentTaskRepository;
 import com.yanban.api.user.SysUser;
 import com.yanban.api.user.SysUserRepository;
@@ -62,6 +65,9 @@ class TaskControlControllerIntegrationTest {
     AgentTaskRepository agentTaskRepository;
 
     @Autowired
+    AgentTaskEventRepository agentTaskEventRepository;
+
+    @Autowired
     SysUserRepository sysUserRepository;
 
     @MockBean
@@ -113,6 +119,16 @@ class TaskControlControllerIntegrationTest {
         Long userId = sysUserRepository.findByUsername(username).orElseThrow().getId();
         PaperTask paperTask = createPaperTask(userId, "RUNNING", "POLISH");
         Long taskId = paperTask.getId();
+        AgentTaskEvent latest = agentTaskEventRepository.save(new AgentTaskEvent(
+                AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
+                taskId,
+                userId,
+                "STAGE_CHANGED",
+                "POLISH",
+                "RUNNING",
+                "paper task entered polish",
+                null
+        ));
 
         mockMvc.perform(get("/api/v1/tasks/{taskId}/status", taskId)
                         .header("Authorization", "Bearer " + token)
@@ -124,6 +140,9 @@ class TaskControlControllerIntegrationTest {
                 .andExpect(jsonPath("$.partialResultAvailable").value(false))
                 .andExpect(jsonPath("$.completedArtifactCount").value(0))
                 .andExpect(jsonPath("$.partialArtifactCount").value(0))
+                .andExpect(jsonPath("$.lastEventId").value(latest.getId()))
+                .andExpect(jsonPath("$.lastEventType").value("STAGE_CHANGED"))
+                .andExpect(jsonPath("$.lastEventMessage").value("paper task entered polish"))
                 .andExpect(jsonPath("$.cancellable").value(true))
                 .andExpect(jsonPath("$.terminal").value(false));
     }

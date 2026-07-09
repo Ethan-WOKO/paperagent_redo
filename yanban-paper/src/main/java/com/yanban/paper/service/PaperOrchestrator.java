@@ -2,7 +2,9 @@ package com.yanban.paper.service;
 
 import com.yanban.core.agent.AgentTaskEventCreateRequest;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskEventTypes;
 import com.yanban.core.agent.AgentTaskRegistry;
+import com.yanban.core.agent.AgentTaskStatus;
 import com.yanban.core.agent.AgentTaskUpsertRequest;
 import com.yanban.paper.domain.PaperSection;
 import com.yanban.paper.domain.PaperSectionRepository;
@@ -43,15 +45,15 @@ import org.springframework.web.server.ResponseStatusException;
 public class PaperOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(PaperOrchestrator.class);
-    static final String STATUS_RUNNING = "RUNNING";
+    static final String STATUS_RUNNING = AgentTaskStatus.RUNNING.value();
     static final String STATUS_PAUSED = "PAUSED";
-    static final String STATUS_WAITING_INPUT = "WAITING_INPUT";
-    static final String STATUS_COMPLETED = "COMPLETED";
-    static final String STATUS_FAILED = "FAILED";
-    static final String STATUS_CANCEL_REQUESTED = "CANCEL_REQUESTED";
-    static final String STATUS_CANCELLING = "CANCELLING";
-    static final String STATUS_CANCELLED = "CANCELLED";
-    static final String STATUS_STOPPED = "STOPPED";
+    static final String STATUS_WAITING_INPUT = AgentTaskStatus.WAITING_INPUT.value();
+    static final String STATUS_COMPLETED = AgentTaskStatus.COMPLETED.value();
+    static final String STATUS_FAILED = AgentTaskStatus.FAILED.value();
+    static final String STATUS_CANCEL_REQUESTED = AgentTaskStatus.CANCEL_REQUESTED.value();
+    static final String STATUS_CANCELLING = AgentTaskStatus.CANCELLING.value();
+    static final String STATUS_CANCELLED = AgentTaskStatus.CANCELLED.value();
+    static final String STATUS_STOPPED = AgentTaskStatus.STOPPED.value();
     static final String STAGE_CANCELLED = "CANCELLED";
 
     private final PaperTaskRepository tasks;
@@ -182,7 +184,7 @@ public class PaperOrchestrator {
         task.setCurrentStage(task.getCurrentStage() == null ? STATUS_PAUSED : task.getCurrentStage());
         syncUnifiedTask(task);
         eventStreamService.publish(PaperSseEvent.of("paused", taskId, "任务已暂停", task.getCurrentStage()));
-        recordEvent(task, "TASK_PAUSED", task.getCurrentStage(), STATUS_PAUSED, "论文润色任务已暂停");
+        recordEvent(task, AgentTaskEventTypes.TASK_PAUSED, task.getCurrentStage(), STATUS_PAUSED, "论文润色任务已暂停");
     }
 
     @Transactional
@@ -196,11 +198,16 @@ public class PaperOrchestrator {
         task.setStatus(STATUS_RUNNING);
         syncUnifiedTask(task);
         eventStreamService.publish(PaperSseEvent.of("log", taskId, "任务继续执行", task.getCurrentStage()));
-        recordEvent(task, "TASK_RESUMED", task.getCurrentStage(), STATUS_RUNNING, "论文润色任务继续执行");
+        recordEvent(task, AgentTaskEventTypes.TASK_RESUMED, task.getCurrentStage(), STATUS_RUNNING, "论文润色任务继续执行");
     }
 
     @Transactional
     public void stop(Long userId, Long taskId) {
+        stop(userId, taskId, null);
+    }
+
+    @Transactional
+    public void stop(Long userId, Long taskId, String cancelReason) {
         PaperTask task = getOwnedTask(userId, taskId);
         if (isTerminalStatus(task.getStatus())) {
             return;
@@ -208,9 +215,10 @@ public class PaperOrchestrator {
         ControlState state = controlStates.computeIfAbsent(taskId, key -> new ControlState());
         state.stopped = true;
         state.paused = false;
+        state.cancellationReason = trimToNull(cancelReason);
         String currentStage = task.getCurrentStage() == null ? STATUS_CANCEL_REQUESTED : task.getCurrentStage();
         eventStreamService.publish(PaperSseEvent.of("cancel_requested", taskId, "任务停止请求已受理，正在等待安全检查点", currentStage));
-        recordEvent(task, "TASK_CANCEL_REQUESTED", currentStage, STATUS_CANCEL_REQUESTED, "论文润色任务停止请求已受理");
+        recordEvent(task, AgentTaskEventTypes.TASK_CANCEL_REQUESTED, currentStage, STATUS_CANCEL_REQUESTED, "论文润色任务停止请求已受理");
         if (runningTasks.contains(taskId)) {
             task.setStatus(STATUS_CANCEL_REQUESTED);
             task.setCurrentStage(currentStage);
@@ -222,10 +230,10 @@ public class PaperOrchestrator {
         task.setFinalObjectKey(null);
         task.setStatus(STATUS_CANCELLED);
         task.setCurrentStage(STAGE_CANCELLED);
-        syncUnifiedTask(task);
         task.setErrorMessage("任务已取消");
+        syncUnifiedTask(task);
         eventStreamService.publish(PaperSseEvent.of("cancelled", taskId, "任务已取消", STAGE_CANCELLED));
-        recordEvent(task, "TASK_CANCELLED", STAGE_CANCELLED, STATUS_CANCELLED, "论文润色任务已取消");
+        recordEvent(task, AgentTaskEventTypes.TASK_CANCELLED, STAGE_CANCELLED, STATUS_CANCELLED, "论文润色任务已取消");
     }
 
     private void runTask(Long taskId) {
@@ -294,7 +302,7 @@ public class PaperOrchestrator {
                 checkpoint(taskId);
                 publishProgress("assemble_start", taskId, "仅文献推荐模式：生成 recommended bib 与检索报告", "ASSEMBLE", selectedLiterature.size(), literatureLimit, null, null, null, 92);
                 assembleService.assemble(taskId, document, false);
-                recordTaskEvent(taskId, "TASK_COMPLETED", "COMPLETE", STATUS_COMPLETED, "论文润色任务已完成");
+                recordTaskEvent(taskId, AgentTaskEventTypes.TASK_COMPLETED, "COMPLETE", STATUS_COMPLETED, "论文润色任务已完成");
                 checkpoint(taskId);
                 publishProgress("complete", taskId, "文献推荐已完成：未执行 Gap 分析、章节润色和全文改写", "COMPLETE", selectedLiterature.size(), 8, null, null, null, 100);
                 return;
@@ -320,7 +328,7 @@ public class PaperOrchestrator {
             checkpoint(taskId);
             publishProgress("assemble_start", taskId, "开始生成完整产物", "ASSEMBLE", document.sections().size(), document.sections().size(), null, null, null, 92);
             assembleService.assemble(taskId, document, true);
-            recordTaskEvent(taskId, "TASK_COMPLETED", "COMPLETE", STATUS_COMPLETED, "论文润色任务已完成");
+            recordTaskEvent(taskId, AgentTaskEventTypes.TASK_COMPLETED, "COMPLETE", STATUS_COMPLETED, "论文润色任务已完成");
             checkpoint(taskId);
             publishProgress("complete", taskId, "论文任务已完成：已生成润色文本、推荐文献与审查报告", "COMPLETE", document.sections().size(), document.sections().size(), null, null, null, 100);
             }
@@ -470,7 +478,7 @@ public class PaperOrchestrator {
         task.setErrorMessage(errorMessage);
         tasks.save(task);
         syncUnifiedTask(task);
-        String eventType = STATUS_FAILED.equals(status) ? "TASK_FAILED" : "STAGE_CHANGED";
+        String eventType = STATUS_FAILED.equals(status) ? AgentTaskEventTypes.TASK_FAILED : AgentTaskEventTypes.STAGE_CHANGED;
         String message = STATUS_FAILED.equals(status) ? errorMessage : "论文润色任务进入阶段: " + stage;
         recordEvent(task, eventType, stage, status, message);
     }
@@ -489,7 +497,7 @@ public class PaperOrchestrator {
         tasks.save(task);
         syncUnifiedTask(task);
         publish("cancelled", taskId, message, STAGE_CANCELLED);
-        recordEvent(task, "TASK_CANCELLED", STAGE_CANCELLED, STATUS_CANCELLED, message);
+        recordEvent(task, AgentTaskEventTypes.TASK_CANCELLED, STAGE_CANCELLED, STATUS_CANCELLED, message);
     }
 
     private void markGeneratedArtifactsPartial(PaperTask task) {
@@ -505,7 +513,7 @@ public class PaperOrchestrator {
         for (PaperTaskArtifact artifact : changedArtifacts) {
             recordEvent(
                     task,
-                    "ARTIFACT_MARKED_PARTIAL",
+                    AgentTaskEventTypes.ARTIFACT_MARKED_PARTIAL,
                     task.getCurrentStage(),
                     task.getStatus(),
                     "Artifact marked partial after cancellation: " + artifact.getType() + " v" + artifact.getVersion()
@@ -601,7 +609,7 @@ public class PaperOrchestrator {
             tasks.save(task);
             syncUnifiedTask(task);
             publish("cancelling", taskId, "任务正在安全停止", task.getCurrentStage());
-            recordEvent(task, "TASK_CANCELLING", task.getCurrentStage(), STATUS_CANCELLING, "论文润色任务正在安全停止");
+            recordEvent(task, AgentTaskEventTypes.TASK_CANCELLING, task.getCurrentStage(), STATUS_CANCELLING, "论文润色任务正在安全停止");
         }
         return true;
     }
@@ -625,7 +633,7 @@ public class PaperOrchestrator {
                 task.getCurrentStage(),
                 null,
                 task.getErrorMessage(),
-                null,
+                cancellationReasonFor(task.getId()),
                 0,
                 0,
                 STATUS_RUNNING.equals(task.getStatus()) || isCancellingStatus(task.getStatus()) ? task.getUpdatedAt() : null,
@@ -644,10 +652,7 @@ public class PaperOrchestrator {
     }
 
     private boolean isTerminalStatus(String status) {
-        return STATUS_COMPLETED.equals(status)
-                || STATUS_FAILED.equals(status)
-                || STATUS_CANCELLED.equals(status)
-                || STATUS_STOPPED.equals(status);
+        return AgentTaskStatus.isTerminal(status);
     }
 
     private boolean isCancellingStatus(String status) {
@@ -682,9 +687,19 @@ public class PaperOrchestrator {
         }
     }
 
+    private String cancellationReasonFor(Long taskId) {
+        ControlState state = controlStates.get(taskId);
+        return state == null ? null : state.cancellationReason;
+    }
+
+    private String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
     private static final class ControlState {
         private volatile boolean paused;
         private volatile boolean stopped;
+        private volatile String cancellationReason;
     }
 
     private static final class TaskStoppedException extends RuntimeException {

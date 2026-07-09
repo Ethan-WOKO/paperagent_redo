@@ -2,6 +2,7 @@ package com.yanban.paper.service;
 
 import com.yanban.core.agent.AgentTaskEventCreateRequest;
 import com.yanban.core.agent.AgentTaskEventRecorder;
+import com.yanban.core.agent.AgentTaskEventTypes;
 import com.yanban.core.agent.AgentTaskRegistry;
 import com.yanban.core.agent.AgentTaskUpsertRequest;
 import com.yanban.core.user.UserAccountPolicy;
@@ -140,7 +141,7 @@ public class PaperTaskService {
                 AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH,
                 task.getId(),
                 task.getUserId(),
-                "TASK_CREATED",
+                AgentTaskEventTypes.TASK_CREATED,
                 task.getCurrentStage(),
                 task.getStatus(),
                 EVENT_MESSAGE_TASK_CREATED,

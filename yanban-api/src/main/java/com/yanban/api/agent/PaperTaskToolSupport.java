@@ -81,10 +81,14 @@ class PaperTaskToolSupport {
     }
 
     ToolResult cancel(String toolCallId, String toolName, Long taskId) {
+        return cancel(toolCallId, toolName, taskId, null);
+    }
+
+    ToolResult cancel(String toolCallId, String toolName, Long taskId, String cancelReason) {
         return withUser(toolCallId, toolName, userId -> {
             PaperTask before = ownedTask(userId, taskId);
             boolean terminalBefore = isTerminal(before.getStatus());
-            paperOrchestrator.stop(userId, taskId);
+            paperOrchestrator.stop(userId, taskId, cancelReason);
             PaperTask after = ownedTask(userId, taskId);
             ObjectNode output = taskSummary(userId, after);
             output.put("cancelAccepted", !terminalBefore);
@@ -143,7 +147,9 @@ class PaperTaskToolSupport {
             node.put("artifactId", artifact.getId());
             node.put("type", artifact.getType());
             node.put("version", artifact.getVersion());
-            node.put("downloadable", DOWNLOADABLE_ARTIFACT_TYPES.contains(artifact.getType()));
+            node.put("artifactStatus", artifact.getArtifactStatus());
+            node.put("downloadable", DOWNLOADABLE_ARTIFACT_TYPES.contains(artifact.getType())
+                    && PaperTaskArtifact.STATUS_COMPLETED.equals(artifact.getArtifactStatus()));
             String filename = metadataFilename(artifact.getMetadataJson());
             if (filename != null) {
                 node.put("filename", filename);

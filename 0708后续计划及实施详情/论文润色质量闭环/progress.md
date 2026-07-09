@@ -109,3 +109,25 @@ Evaluation:
 Scope boundary:
 - This baseline validates guardrails and reportability with a deterministic model stub.
 - It does not judge full academic writing quality or replace manual review.
+## 2026-07-09 Issue #90 统一任务状态和事件体验
+
+目标：
+- 将论文润色任务接入第一版统一任务状态和事件约定。
+
+本次完成：
+- 复用现有 `paper_tasks`、`paper_task_artifacts`、`agent_tasks`、`agent_task_events`，未新增数据库迁移。
+- 论文任务状态常量收口到统一 `AgentTaskStatus`，事件类型收口到 `AgentTaskEventTypes`。
+- 统一状态接口新增最近事件字段，并继续返回失败原因、取消原因、partial artifact 计数。
+- 论文取消的 `cancelReason` 写入统一 `agent_tasks.cancellation_reason` 镜像，不新增 `paper_tasks` 字段。
+- 论文任务工具输出 artifact 的 `artifactStatus`，且 `PARTIAL` artifact 不再标记为 downloadable。
+
+测试：
+- 已执行统一任务/事件目标测试命令。
+- 结果：通过，44 tests, 0 failures, 0 errors。
+
+风险：
+- 本次改变了公共状态响应字段和任务状态机常量引用，但未改变已有状态值。
+- 取消原因通过统一镜像表保存，不扩展 `paper_tasks` 表结构。
+
+下一步：
+- 后续 UI 可按 `artifactStatus` 和最近事件字段优化展示；本 issue 不改 UI。

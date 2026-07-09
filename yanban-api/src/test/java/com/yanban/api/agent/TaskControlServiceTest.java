@@ -61,7 +61,7 @@ class TaskControlServiceTest {
         assertThat(response.idempotent()).isFalse();
         assertThat(response.beforeStatus()).isEqualTo("RUNNING");
         assertThat(response.afterStatus()).isNotBlank();
-        verify(paperOrchestrator).stop(USER_ID, TASK_ID);
+        verify(paperOrchestrator).stop(USER_ID, TASK_ID, "stop now");
     }
 
     @Test
@@ -198,7 +198,7 @@ class TaskControlServiceTest {
 
         service.cancel(USER_ID, TASK_ID, null, null);
 
-        verify(paperOrchestrator).stop(USER_ID, TASK_ID);
+        verify(paperOrchestrator).stop(USER_ID, TASK_ID, null);
     }
 
     @Test
@@ -265,9 +265,14 @@ class TaskControlServiceTest {
                 null,
                 null,
                 null,
+                null,
                 false,
                 0,
                 0,
+                null,
+                null,
+                null,
+                null,
                 terminal,
                 cancellable
         );

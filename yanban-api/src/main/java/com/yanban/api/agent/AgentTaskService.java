@@ -1,9 +1,12 @@
 package com.yanban.api.agent;
 
 import com.yanban.core.agent.AgentTask;
+import com.yanban.core.agent.AgentTaskEvent;
+import com.yanban.core.agent.AgentTaskEventRepository;
 import com.yanban.core.agent.AgentTaskEventRecorder;
 import com.yanban.core.agent.AgentTaskRegistry;
 import com.yanban.core.agent.AgentTaskRepository;
+import com.yanban.core.agent.AgentTaskStatus;
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import com.yanban.paper.domain.PaperTask;
@@ -14,7 +17,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.Set;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -23,20 +25,19 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AgentTaskService {
 
-    private static final Set<String> PAPER_TERMINAL_STATUSES = Set.of("COMPLETED", "FAILED", "CANCELLED", "STOPPED");
-    private static final Set<String> LITERATURE_TERMINAL_STATUSES = Set.of("COMPLETED", "FAILED", "CANCELLED");
-    private static final Set<String> CANCELLING_STATUSES = Set.of("CANCEL_REQUESTED", "CANCELLING");
-
     private final AgentTaskRepository agentTasks;
+    private final AgentTaskEventRepository taskEvents;
     private final PaperTaskRepository paperTasks;
     private final PaperTaskArtifactRepository paperArtifacts;
     private final LiteratureSearchTaskRepository literatureTasks;
 
     public AgentTaskService(AgentTaskRepository agentTasks,
+                            AgentTaskEventRepository taskEvents,
                             PaperTaskRepository paperTasks,
                             PaperTaskArtifactRepository paperArtifacts,
                             LiteratureSearchTaskRepository literatureTasks) {
         this.agentTasks = agentTasks;
+        this.taskEvents = taskEvents;
         this.paperTasks = paperTasks;
         this.paperArtifacts = paperArtifacts;
         this.literatureTasks = literatureTasks;
@@ -119,6 +120,7 @@ public class AgentTaskService {
         String status = valueOrMirror(task.getStatus(), mirror == null ? null : mirror.getStatus());
         String currentStage = valueOrMirror(task.getCurrentStage(), mirror == null ? null : mirror.getCurrentStage());
         String errorMessage = valueOrMirror(task.getErrorMessage(), mirror == null ? null : mirror.getErrorMessage());
+        LastTaskEvent lastEvent = lastEvent(AgentTaskEventRecorder.TASK_TYPE_PAPER_POLISH, task.getId(), task.getUserId());
         Instant startedAt = mirror == null ? null : mirror.getStartedAt();
         Instant finishedAt = mirror == null ? null : mirror.getFinishedAt();
         Integer progressPercent = mirror == null ? null : mirror.getProgressPercent();
@@ -132,13 +134,18 @@ public class AgentTaskService {
                 startedAt,
                 finishedAt,
                 progressPercent,
+                mirror == null ? null : mirror.getErrorCode(),
                 errorMessage,
                 mirror == null ? null : mirror.getCancellationReason(),
                 artifacts.partialArtifactCount() > 0,
                 artifacts.completedArtifactCount(),
                 artifacts.partialArtifactCount(),
-                PAPER_TERMINAL_STATUSES.contains(status),
-                canCancel(status)
+                lastEvent.id(),
+                lastEvent.eventType(),
+                lastEvent.message(),
+                lastEvent.createdAt(),
+                AgentTaskStatus.isTerminal(status),
+                AgentTaskStatus.canCancel(status)
         );
     }
 
@@ -147,9 +154,12 @@ public class AgentTaskService {
         String currentStage = valueOrMirror(task.getCurrentStage(), mirror == null ? null : mirror.getCurrentStage());
         String errorMessage = valueOrMirror(task.getErrorMessage(), mirror == null ? null : mirror.getErrorMessage());
         String cancellationReason = valueOrMirror(task.getCancelReason(), mirror == null ? null : mirror.getCancellationReason());
+        LastTaskEvent lastEvent = lastEvent(AgentTaskEventRecorder.TASK_TYPE_LITERATURE_SEARCH, task.getId(), task.getUserId());
         Integer progressPercent = mirror != null && mirror.getProgressPercent() != null
                 ? mirror.getProgressPercent()
-                : ("COMPLETED".equals(status) ? 100 : null);
+                : (AgentTaskStatus.COMPLETED.value().equals(status) ? 100 : null);
+        boolean partialResultAvailable = StringUtils.hasText(task.getResultJson())
+                && StringUtils.hasText(task.getSourceFailuresJson());
         return new TaskStatusResponse(
                 "literature_search",
                 task.getId(),
@@ -160,17 +170,23 @@ public class AgentTaskService {
                 firstNonNull(task.getStartedAt(), mirror == null ? null : mirror.getStartedAt()),
                 firstNonNull(task.getFinishedAt(), mirror == null ? null : mirror.getFinishedAt()),
                 progressPercent,
+                mirror == null ? null : mirror.getErrorCode(),
                 errorMessage,
                 cancellationReason,
-                false,
+                partialResultAvailable,
                 0,
                 0,
-                LITERATURE_TERMINAL_STATUSES.contains(status),
-                canCancel(status)
+                lastEvent.id(),
+                lastEvent.eventType(),
+                lastEvent.message(),
+                lastEvent.createdAt(),
+                AgentTaskStatus.isTerminal(status),
+                AgentTaskStatus.canCancel(status)
         );
     }
 
     private TaskStatusResponse statusFromMirror(AgentTask task, String responseTaskType) {
+        LastTaskEvent lastEvent = lastEvent(task.getTaskType(), task.getSourceId(), task.getUserId());
         return new TaskStatusResponse(
                 responseTaskType,
                 task.getSourceId(),
@@ -181,13 +197,18 @@ public class AgentTaskService {
                 task.getStartedAt(),
                 task.getFinishedAt(),
                 task.getProgressPercent(),
+                task.getErrorCode(),
                 task.getErrorMessage(),
                 task.getCancellationReason(),
                 false,
                 0,
                 0,
-                isTerminal(task.getStatus()),
-                canCancel(task.getStatus())
+                lastEvent.id(),
+                lastEvent.eventType(),
+                lastEvent.message(),
+                lastEvent.createdAt(),
+                AgentTaskStatus.isTerminal(task.getStatus()),
+                AgentTaskStatus.canCancel(task.getStatus())
         );
     }
 
@@ -202,14 +223,6 @@ public class AgentTaskService {
             }
         }
         return new ArtifactSummary(completed, partial);
-    }
-
-    private boolean canCancel(String status) {
-        return !isTerminal(status) && !CANCELLING_STATUSES.contains(status);
-    }
-
-    private boolean isTerminal(String status) {
-        return PAPER_TERMINAL_STATUSES.contains(status) || LITERATURE_TERMINAL_STATUSES.contains(status);
     }
 
     private TaskType resolveTaskType(String taskType) {
@@ -256,7 +269,26 @@ public class AgentTaskService {
         return preferred != null ? preferred : fallback;
     }
 
+    private LastTaskEvent lastEvent(String taskType, Long taskId, Long userId) {
+        if (!StringUtils.hasText(taskType) || taskId == null || userId == null) {
+            return LastTaskEvent.empty();
+        }
+        return taskEvents.findTopByTaskTypeAndTaskIdAndUserIdOrderByIdDesc(taskType, taskId, userId)
+                .map(LastTaskEvent::from)
+                .orElseGet(LastTaskEvent::empty);
+    }
+
     private record ArtifactSummary(int completedArtifactCount, int partialArtifactCount) {
+    }
+
+    private record LastTaskEvent(Long id, String eventType, String message, Instant createdAt) {
+        private static LastTaskEvent from(AgentTaskEvent event) {
+            return new LastTaskEvent(event.getId(), event.getEventType(), event.getMessage(), event.getCreatedAt());
+        }
+
+        private static LastTaskEvent empty() {
+            return new LastTaskEvent(null, null, null, null);
+        }
     }
 
     private enum TaskType {

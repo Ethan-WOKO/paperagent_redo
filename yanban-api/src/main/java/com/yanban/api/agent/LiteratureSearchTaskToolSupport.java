@@ -44,6 +44,7 @@ class LiteratureSearchTaskToolSupport {
             LiteratureSearchTask task = taskService.getTask(userId, taskId);
             ObjectNode output = taskSummary(task);
             output.put("resultAvailable", task.getResultJson() != null && !task.getResultJson().isBlank());
+            output.put("partialResultAvailable", partialResultAvailable(task));
             output.set("items", resultItems(task.getResultJson()));
             output.set("sourceFailures", sourceFailures(task.getSourceFailuresJson()));
             return ToolResult.success(toolCallId, toolName, output);
@@ -92,9 +93,15 @@ class LiteratureSearchTaskToolSupport {
         if (task.getSourceAttempts() != null) {
             output.put("sourceAttempts", task.getSourceAttempts());
         }
+        output.put("partialResultAvailable", partialResultAvailable(task));
         output.put("createdAt", task.getCreatedAt() == null ? null : task.getCreatedAt().toString());
         output.put("updatedAt", task.getUpdatedAt() == null ? null : task.getUpdatedAt().toString());
         return output;
+    }
+
+    private boolean partialResultAvailable(LiteratureSearchTask task) {
+        return task.getResultJson() != null && !task.getResultJson().isBlank()
+                && task.getSourceFailuresJson() != null && !task.getSourceFailuresJson().isBlank();
     }
 
     private ArrayNode resultItems(String resultJson) {
