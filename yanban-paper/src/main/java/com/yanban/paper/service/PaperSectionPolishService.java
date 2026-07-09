@@ -394,20 +394,106 @@ public class PaperSectionPolishService {
     private Map<String, Object> diff(String original, String polished) {
         List<String> originalWords = words(original);
         List<String> polishedWords = words(polished);
+        String safeOriginal = original == null ? "" : original;
+        String safePolished = polished == null ? "" : polished;
+        List<String> originalLines = lines(safeOriginal);
+        List<String> polishedLines = lines(safePolished);
+        int prefix = commonPrefixLines(originalLines, polishedLines);
+        int suffix = commonSuffixLines(originalLines, polishedLines, prefix);
+        List<Map<String, Object>> hunkLines = new ArrayList<>();
+        for (int i = Math.max(0, prefix - 2); i < prefix; i++) {
+            hunkLines.add(diffLine("CONTEXT", i + 1, i + 1, originalLines.get(i)));
+        }
+        for (int i = prefix; i < originalLines.size() - suffix; i++) {
+            hunkLines.add(diffLine("DELETE", i + 1, null, originalLines.get(i)));
+        }
+        for (int i = prefix; i < polishedLines.size() - suffix; i++) {
+            hunkLines.add(diffLine("ADD", null, i + 1, polishedLines.get(i)));
+        }
+        int contextStart = Math.max(prefix, originalLines.size() - suffix);
+        int contextEnd = Math.min(originalLines.size(), contextStart + 2);
+        for (int i = contextStart; i < contextEnd; i++) {
+            int newLine = i + polishedLines.size() - originalLines.size();
+            hunkLines.add(diffLine("CONTEXT", i + 1, Math.max(1, newLine + 1), originalLines.get(i)));
+        }
+        List<Map<String, Object>> hunks = hunkLines.isEmpty() ? List.of() : List.of(Map.of(
+                "oldStart", prefix + 1,
+                "newStart", prefix + 1,
+                "lines", hunkLines
+        ));
+        Map<String, Object> diff = new LinkedHashMap<>();
+        diff.put("schemaVersion", 1);
+        diff.put("format", "section-unified-diff");
+        diff.put("changed", !safeOriginal.equals(safePolished));
+        diff.put("originalWordCount", originalWords.size());
+        diff.put("polishedWordCount", polishedWords.size());
+        diff.put("originalLineCount", originalLines.size());
+        diff.put("polishedLineCount", polishedLines.size());
+        diff.put("commonPrefixLines", prefix);
+        diff.put("commonSuffixLines", suffix);
+        diff.put("lengthDelta", safePolished.length() - safeOriginal.length());
+        int maxWords = Math.max(originalWords.size(), polishedWords.size());
+        diff.put("changeRatio", maxWords == 0 ? 0.0 : wordChangeRatio(originalWords, polishedWords));
+        diff.put("hunks", hunks);
+        diff.put("unifiedDiff", unifiedDiff(hunkLines));
+        return diff;
+    }
+
+    private List<String> lines(String text) {
+        if (text == null || text.isEmpty()) return List.of();
+        return new ArrayList<>(List.of(text.split("\\R", -1)));
+    }
+
+    private Map<String, Object> diffLine(String type, Integer oldLine, Integer newLine, String text) {
+        Map<String, Object> line = new LinkedHashMap<>();
+        line.put("type", type);
+        line.put("oldLine", oldLine);
+        line.put("newLine", newLine);
+        line.put("text", text);
+        return line;
+    }
+
+    private int commonPrefixLines(List<String> originalLines, List<String> polishedLines) {
+        int count = 0;
+        while (count < originalLines.size() && count < polishedLines.size()
+                && originalLines.get(count).equals(polishedLines.get(count))) {
+            count++;
+        }
+        return count;
+    }
+
+    private int commonSuffixLines(List<String> originalLines, List<String> polishedLines, int prefix) {
+        int count = 0;
+        while (count + prefix < originalLines.size()
+                && count + prefix < polishedLines.size()
+                && originalLines.get(originalLines.size() - 1 - count).equals(polishedLines.get(polishedLines.size() - 1 - count))) {
+            count++;
+        }
+        return count;
+    }
+
+    private double wordChangeRatio(List<String> originalWords, List<String> polishedWords) {
         int commonPrefix = 0;
         while (commonPrefix < originalWords.size() && commonPrefix < polishedWords.size()
                 && originalWords.get(commonPrefix).equals(polishedWords.get(commonPrefix))) {
             commonPrefix++;
         }
-        Map<String, Object> diff = new LinkedHashMap<>();
-        diff.put("originalWordCount", originalWords.size());
-        diff.put("polishedWordCount", polishedWords.size());
-        diff.put("changed", !original.equals(polished));
-        diff.put("commonPrefixWords", commonPrefix);
-        diff.put("lengthDelta", polished.length() - original.length());
-        int maxWords = Math.max(originalWords.size(), polishedWords.size());
-        diff.put("changeRatio", maxWords == 0 ? 0.0 : 1.0 - ((double) commonPrefix / maxWords));
-        return diff;
+        return 1.0 - ((double) commonPrefix / Math.max(originalWords.size(), polishedWords.size()));
+    }
+
+    private String unifiedDiff(List<Map<String, Object>> hunkLines) {
+        if (hunkLines.isEmpty()) return "";
+        StringBuilder builder = new StringBuilder("--- original\n+++ polished\n@@ section @@\n");
+        for (Map<String, Object> line : hunkLines) {
+            String type = String.valueOf(line.get("type"));
+            String prefix = switch (type) {
+                case "ADD" -> "+";
+                case "DELETE" -> "-";
+                default -> " ";
+            };
+            builder.append(prefix).append(line.get("text")).append('\n');
+        }
+        return builder.length() > 6000 ? builder.substring(0, 6000) + "\n... diff truncated ...\n" : builder.toString();
     }
 
     private List<String> words(String text) {

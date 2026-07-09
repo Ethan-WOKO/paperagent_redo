@@ -15,6 +15,7 @@ public record PaperSectionResponse(
         Integer charStart,
         Integer charEnd,
         String polishStatus,
+        String revisionStatus,
         String reviewJson,
         String diffJson
 ) {
@@ -32,6 +33,7 @@ public record PaperSectionResponse(
                 section.getCharStart(),
                 section.getCharEnd(),
                 section.getPolishStatus(),
+                section.getRevisionStatus(),
                 section.getReviewJson(),
                 section.getDiffJson()
         );

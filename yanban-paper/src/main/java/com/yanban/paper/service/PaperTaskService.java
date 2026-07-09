@@ -389,9 +389,16 @@ public class PaperTaskService {
     }
 
     private List<PaperTaskArtifact> downloadableArtifacts(Long taskId) {
-        return artifactRepository.findByTaskIdOrderByCreatedAt(taskId).stream()
+        Map<String, PaperTaskArtifact> latestByType = artifactRepository.findByTaskIdOrderByCreatedAt(taskId).stream()
                 .filter(artifact -> downloadableArtifactTypes().contains(artifact.getType()))
                 .filter(artifact -> PaperTaskArtifact.STATUS_COMPLETED.equals(artifact.getArtifactStatus()))
+                .collect(Collectors.toMap(
+                        PaperTaskArtifact::getType,
+                        artifact -> artifact,
+                        (left, right) -> right,
+                        java.util.LinkedHashMap::new
+                ));
+        return latestByType.values().stream()
                 .toList();
     }
 

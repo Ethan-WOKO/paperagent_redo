@@ -119,6 +119,14 @@ public class PaperController {
         return PaperSectionResponse.from(paperSectionService.updateRole(userId, taskId, sectionId, request.role()));
     }
 
+    @PostMapping("/api/v1/paper/tasks/{taskId}/sections/{sectionId}/revision-status")
+    public PaperSectionResponse updateSectionRevisionStatus(@AuthenticationPrincipal(expression = "id") Long userId,
+                                                            @PathVariable Long taskId,
+                                                            @PathVariable Long sectionId,
+                                                            @Valid @RequestBody PaperSectionRevisionStatusUpdateRequest request) {
+        return PaperSectionResponse.from(paperPreviewService.updateSectionRevisionStatus(userId, taskId, sectionId, request.status()));
+    }
+
     @GetMapping("/api/v1/paper/tasks/{taskId}/clarifications")
     public List<PaperClarificationResponse> clarifications(@AuthenticationPrincipal(expression = "id") Long userId,
                                                            @PathVariable Long taskId) {

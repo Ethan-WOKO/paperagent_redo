@@ -113,7 +113,7 @@ class PaperSectionPolishServiceTest {
         PaperSection saved = sections.findById(stored.getId()).orElseThrow();
         assertThat(saved.getPolishStatus()).isEqualTo("POLISHED");
         assertThat(saved.getReviewJson()).contains("88", "attempts", "reasonCode", "maxRounds", "innerMaxAttempts");
-        assertThat(saved.getDiffJson()).contains("originalWordCount");
+        assertThat(saved.getDiffJson()).contains("schemaVersion", "hunks", "unifiedDiff", "originalWordCount");
     }
 
     @Test

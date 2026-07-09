@@ -223,3 +223,20 @@ Scope boundary:
 下一步：
 
 - amend 当前提交，force-with-lease 推送，并确认 GitHub merge state 为 CLEAN/MERGEABLE 后请求复审。
+## 2026-07-09 issue #93 final rebase after #99
+
+Goal:
+- Rebase PR #97 onto main after #99 and keep the scope limited to issue #93.
+
+Completed:
+- Kept #99 paper polish config/status logic as the main baseline.
+- Kept issue #93 section revision status and diff acceptance loop.
+- Resolved `PaperSectionPolishServiceTest` by preserving #99 review metadata assertions and #93 readable diff assertions.
+- Kept migration order as V30 because #99 owns V29.
+- Kept non-completed task protection so section/suggestion status updates do not assemble artifacts until the task is `COMPLETED`.
+
+Scope boundaries:
+- No #92 configuration/scoring/failure-reason feature work beyond conflict adaptation.
+- No full-paper missing citation detection.
+- No automatic citation insertion or literature replacement.
+- No UI redesign.

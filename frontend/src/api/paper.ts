@@ -61,6 +61,7 @@ export interface PaperSectionResponse {
   charStart: number;
   charEnd: number;
   polishStatus: string | null;
+  revisionStatus: string | null;
   reviewJson: string | null;
   diffJson: string | null;
 }
@@ -112,6 +113,7 @@ export interface PaperArtifactResponse {
   objectKey: string;
   version: number;
   metadataJson: string | null;
+  artifactStatus: string | null;
   createdAt: string;
 }
 
@@ -191,6 +193,10 @@ export function getPaperArtifacts(taskId: number) {
 
 export function updatePaperSectionRole(taskId: number, sectionId: number, role: string) {
   return http.post<PaperSectionResponse>(`/paper/tasks/${taskId}/sections/${sectionId}/role`, { role });
+}
+
+export function updatePaperSectionRevisionStatus(taskId: number, sectionId: number, status: string) {
+  return http.post<PaperSectionResponse>(`/paper/tasks/${taskId}/sections/${sectionId}/revision-status`, { status });
 }
 
 export function downloadPaperTask(taskId: number) {

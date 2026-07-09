@@ -14,6 +14,10 @@ import org.hibernate.annotations.UpdateTimestamp;
 @Table(name = "paper_sections")
 public class PaperSection {
 
+    public static final String REVISION_PENDING = "PENDING";
+    public static final String REVISION_ACCEPTED = "ACCEPTED";
+    public static final String REVISION_REJECTED = "REJECTED";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -63,6 +67,9 @@ public class PaperSection {
     @Column(name = "polish_status", length = 32)
     private String polishStatus;
 
+    @Column(name = "revision_status", nullable = false, length = 32)
+    private String revisionStatus = REVISION_PENDING;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -105,6 +112,7 @@ public class PaperSection {
     public String getReviewJson() { return reviewJson; }
     public String getDiffJson() { return diffJson; }
     public String getPolishStatus() { return polishStatus; }
+    public String getRevisionStatus() { return revisionStatus; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 
@@ -116,4 +124,5 @@ public class PaperSection {
     public void setReviewJson(String reviewJson) { this.reviewJson = reviewJson; }
     public void setDiffJson(String diffJson) { this.diffJson = diffJson; }
     public void setPolishStatus(String polishStatus) { this.polishStatus = polishStatus; }
+    public void setRevisionStatus(String revisionStatus) { this.revisionStatus = revisionStatus; }
 }

@@ -127,6 +127,9 @@ public class PaperAssembleService {
             if (!"POLISHED".equalsIgnoreCase(section.getPolishStatus())) {
                 continue;
             }
+            if (!PaperSection.REVISION_ACCEPTED.equalsIgnoreCase(section.getRevisionStatus())) {
+                continue;
+            }
             String objectKey = section.getPolishedObjectKey();
             if (objectKey != null && !objectKey.isBlank() && !objectKey.startsWith("memory://")) {
                 try {
@@ -196,15 +199,21 @@ public class PaperAssembleService {
 
     private BibBuildResult buildSuggestedBib(Long taskId, List<Suggestion> taskSuggestions, Map<Long, List<LiteratureCard>> evidenceCards, Map<String, LatexBibEntry> existingBibliography, int literatureLimit) {
         Set<Long> usedCards = new LinkedHashSet<>();
+        Set<Long> blockedCards = new LinkedHashSet<>();
         for (Suggestion suggestion : taskSuggestions) {
-            if ("ADVOCACY".equalsIgnoreCase(suggestion.getTrack()) || Boolean.TRUE.equals(suggestion.getApplicable())) {
-                evidenceCards.getOrDefault(suggestion.getId(), List.of()).forEach(card -> usedCards.add(card.getId()));
+            List<LiteratureCard> cards = evidenceCards.getOrDefault(suggestion.getId(), List.of());
+            if ("ACCEPTED".equalsIgnoreCase(suggestion.getStatus())
+                    && ("ADVOCACY".equalsIgnoreCase(suggestion.getTrack()) || Boolean.TRUE.equals(suggestion.getApplicable()))) {
+                cards.forEach(card -> usedCards.add(card.getId()));
+            } else {
+                cards.forEach(card -> blockedCards.add(card.getId()));
             }
         }
+        blockedCards.removeAll(usedCards);
         List<PaperTaskLiterature> selectedLiterature = taskLiterature.findByTaskIdOrderByRelevanceScoreDesc(taskId).stream()
                 .filter(item -> Boolean.TRUE.equals(item.getSelected()))
                 .filter(item -> item.getRelevanceScore() >= SUPPLEMENTAL_BIB_MIN_SCORE)
-                .filter(item -> item.getCardId() != null && !usedCards.contains(item.getCardId()))
+                .filter(item -> item.getCardId() != null && !usedCards.contains(item.getCardId()) && !blockedCards.contains(item.getCardId()))
                 .toList();
         Set<String> usedCategories = new LinkedHashSet<>();
         Map<String, Integer> perCategory = new LinkedHashMap<>();
@@ -374,6 +383,7 @@ public class PaperAssembleService {
             report.append("### #").append(suggestion.getId()).append(" ").append(suggestion.getCategory()).append("\n")
                     .append("- Track: ").append(suggestion.getTrack()).append("\n")
                     .append("- Severity: ").append(suggestion.getSeverity()).append("\n")
+                    .append("- Status: ").append(suggestion.getStatus()).append("\n")
                     .append("- Applicable: ").append(suggestion.getApplicable()).append("\n")
                     .append("- Statement: ").append(suggestion.getStatement()).append("\n")
                     .append("- Evidence:\n");
@@ -597,6 +607,7 @@ public class PaperAssembleService {
         int version = artifacts.findFirstByTaskIdAndTypeOrderByVersionDesc(task.getId(), type)
                 .map(existing -> existing.getVersion() + 1)
                 .orElse(1);
+        supersedeExistingArtifacts(task.getId(), type);
         String objectKey = storageService.storeArtifact(task.getUserId(), type, filename, content.getBytes(StandardCharsets.UTF_8), contentType);
         PaperTaskArtifact artifact = new PaperTaskArtifact(task.getId(), type, objectKey, version);
         Map<String, Object> meta = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
@@ -610,6 +621,17 @@ public class PaperAssembleService {
         result.put("objectKey", artifact.getObjectKey());
         result.put("version", artifact.getVersion());
         return result;
+    }
+
+    private void supersedeExistingArtifacts(Long taskId, String type) {
+        List<PaperTaskArtifact> existingArtifacts = artifacts.findByTaskIdOrderByCreatedAt(taskId).stream()
+                .filter(artifact -> type.equals(artifact.getType()))
+                .filter(artifact -> PaperTaskArtifact.STATUS_COMPLETED.equals(artifact.getArtifactStatus()))
+                .peek(artifact -> artifact.setArtifactStatus(PaperTaskArtifact.STATUS_SUPERSEDED))
+                .toList();
+        if (!existingArtifacts.isEmpty()) {
+            artifacts.saveAll(existingArtifacts);
+        }
     }
 
     private String uniqueBibKey(LiteratureCard card, Set<String> usedKeys) {

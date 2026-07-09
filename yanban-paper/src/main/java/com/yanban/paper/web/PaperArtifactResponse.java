@@ -10,6 +10,7 @@ public record PaperArtifactResponse(
         String objectKey,
         Integer version,
         String metadataJson,
+        String artifactStatus,
         Instant createdAt
 ) {
     public static PaperArtifactResponse from(PaperTaskArtifact artifact) {
@@ -20,6 +21,7 @@ public record PaperArtifactResponse(
                 artifact.getObjectKey(),
                 artifact.getVersion(),
                 artifact.getMetadataJson(),
+                artifact.getArtifactStatus(),
                 artifact.getCreatedAt()
         );
     }

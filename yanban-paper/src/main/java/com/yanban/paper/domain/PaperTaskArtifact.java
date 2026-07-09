@@ -16,6 +16,7 @@ public class PaperTaskArtifact {
     public static final String STATUS_COMPLETED = "COMPLETED";
     public static final String STATUS_PARTIAL = "PARTIAL";
     public static final String STATUS_CANCELLED = "CANCELLED";
+    public static final String STATUS_SUPERSEDED = "SUPERSEDED";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

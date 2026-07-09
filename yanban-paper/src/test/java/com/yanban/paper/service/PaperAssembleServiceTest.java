@@ -13,6 +13,8 @@ import com.yanban.paper.domain.PaperTaskAnalysis;
 import com.yanban.paper.domain.PaperTaskAnalysisRepository;
 import com.yanban.paper.domain.PaperTaskArtifact;
 import com.yanban.paper.domain.PaperTaskArtifactRepository;
+import com.yanban.paper.domain.PaperTaskLiterature;
+import com.yanban.paper.domain.PaperTaskLiteratureRepository;
 import com.yanban.paper.domain.PaperTaskRepository;
 import com.yanban.paper.domain.Suggestion;
 import com.yanban.paper.domain.SuggestionEvidence;
@@ -71,6 +73,7 @@ class PaperAssembleServiceTest {
     private final SuggestionRepository suggestions;
     private final SuggestionEvidenceRepository evidence;
     private final LiteratureCardRepository cards;
+    private final PaperTaskLiteratureRepository taskLiterature;
     private final FakePaperStorageService storage;
 
     @Autowired
@@ -81,6 +84,7 @@ class PaperAssembleServiceTest {
                              SuggestionRepository suggestions,
                              SuggestionEvidenceRepository evidence,
                              LiteratureCardRepository cards,
+                             PaperTaskLiteratureRepository taskLiterature,
                              FakePaperStorageService storage) {
         this.assembleService = assembleService;
         this.tasks = tasks;
@@ -89,6 +93,7 @@ class PaperAssembleServiceTest {
         this.suggestions = suggestions;
         this.evidence = evidence;
         this.cards = cards;
+        this.taskLiterature = taskLiterature;
         this.storage = storage;
     }
 
@@ -105,6 +110,7 @@ class PaperAssembleServiceTest {
         card = cards.save(card);
         Suggestion suggestion = new Suggestion(task.getId(), "ADVOCACY", "RelatedWork", "Use grounded evidence in related work.");
         suggestion.setApplicable(true);
+        suggestion.setStatus("ACCEPTED");
         suggestion = suggestions.save(suggestion);
         evidence.save(new SuggestionEvidence(suggestion.getId(), card.getId()));
 
@@ -118,7 +124,7 @@ class PaperAssembleServiceTest {
         assertThat(result.artifacts()).hasSize(4);
         assertThat(artifacts.findByTaskIdOrderByCreatedAt(task.getId())).extracting(PaperTaskArtifact::getType)
                 .containsExactly("polished_tex", "suggested_bib", "suggested_bib_novel", "review_report");
-        assertThat(storage.contentsByKey).hasSize(4);
+        assertThat(result.artifacts()).extracting(item -> item.get("objectKey")).allMatch(storage.contentsByKey::containsKey);
         assertThat(tasks.findById(task.getId()).orElseThrow().getStatus()).isEqualTo("COMPLETED");
     }
 
@@ -133,6 +139,58 @@ class PaperAssembleServiceTest {
         assertThat(result.artifacts()).hasSize(3);
         assertThat(artifacts.findByTaskIdOrderByCreatedAt(task.getId())).extracting(PaperTaskArtifact::getType)
                 .containsExactly("suggested_bib", "suggested_bib_novel", "review_report");
+    }
+
+    @Test
+    void assembleAdvancedModeAppliesOnlyAcceptedSectionPolish() {
+        PaperTask task = tasks.save(new PaperTask(7L, "Demo Paper", "main.tex", "paper/original.tex", "RUNNING", "en", "ASSEMBLE", null));
+        PaperSection section = new PaperSection(task.getId(), "main.tex", 0, 2, "Introduction", "INTRO", 1.0, "test", 0, 50);
+        section.setPolishStatus("POLISHED");
+        String polishedKey = storage.storeArtifact(7L, "section_polished", "section-0-polished.tex",
+                "\\section{Introduction}\nAccepted polished wording.\n".getBytes(StandardCharsets.UTF_8),
+                "application/x-tex; charset=UTF-8");
+        section.setPolishedObjectKey(polishedKey);
+        section = sections.save(section);
+
+        PaperAssembleResult pending = assembleService.assemble(task.getId(), document(), true);
+        assertThat(pending.polishedTex()).contains("This is the original text");
+        assertThat(pending.polishedTex()).doesNotContain("Accepted polished wording");
+
+        section.setRevisionStatus(PaperSection.REVISION_ACCEPTED);
+        sections.save(section);
+        PaperAssembleResult accepted = assembleService.assemble(task.getId(), document(), true);
+        assertThat(accepted.polishedTex()).contains("Accepted polished wording");
+        assertThat(accepted.polishedTex()).doesNotContain("This is the original text");
+
+        section.setRevisionStatus(PaperSection.REVISION_REJECTED);
+        sections.save(section);
+        PaperAssembleResult rejected = assembleService.assemble(task.getId(), document(), true);
+        assertThat(rejected.polishedTex()).contains("This is the original text");
+        assertThat(rejected.polishedTex()).doesNotContain("Accepted polished wording");
+    }
+
+    @Test
+    void rejectedSuggestionEvidenceDoesNotReturnThroughSupplementalBib() {
+        PaperTask task = tasks.save(new PaperTask(7L, "Demo Paper", "main.tex", "paper/original.tex", "RUNNING", "en", "ASSEMBLE", null));
+        sections.save(new PaperSection(task.getId(), "main.tex", 0, 2, "Introduction", "INTRO", 1.0, "test", 0, 50));
+        LiteratureCard card = new LiteratureCard("hash-rejected", "Rejected Evidence Work");
+        card.setAuthors("[\"Alice Smith\"]");
+        card.setPublicationYear(2024);
+        card = cards.save(card);
+        Suggestion suggestion = new Suggestion(task.getId(), "ADVOCACY", "RelatedWork", "Do not use this evidence.");
+        suggestion.setApplicable(true);
+        suggestion.setStatus("REJECTED");
+        suggestion = suggestions.save(suggestion);
+        evidence.save(new SuggestionEvidence(suggestion.getId(), card.getId()));
+        PaperTaskLiterature literature = new PaperTaskLiterature(task.getId(), card.getId());
+        literature.setSelected(true);
+        literature.setRelevanceScore(0.95);
+        taskLiterature.save(literature);
+
+        PaperAssembleResult result = assembleService.assemble(task.getId(), document(), true);
+
+        assertThat(result.suggestedBib()).doesNotContain("Rejected Evidence Work");
+        assertThat(result.reviewReport()).contains("- Status: REJECTED");
     }
 
     private LatexDocument document() {

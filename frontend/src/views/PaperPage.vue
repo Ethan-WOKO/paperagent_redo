@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <AppLayout>
     <div class="paper-page workbench-page scholar-page scholar-page--paper">
       <WorkspaceHero
@@ -412,7 +412,7 @@
               </NButtonGroup>
               <div v-for="section in previewSections" :key="`preview-${section.id}`" class="paper-diff-card">
                 <div class="paper-diff-card__title">{{ section.orderIndex + 1 }}. {{ section.title }} 路 {{ section.polishStatus || 'NOT_POLISHED' }}</div>
-                <pre v-if="section.diffJson" class="paper-code-preview">{{ prettyJson(section.diffJson) }}</pre>
+                <pre v-if="section.diffJson" class="paper-code-preview">{{ readableDiff(section.diffJson) }}</pre>
                 <pre v-else-if="section.reviewJson" class="paper-code-preview">{{ prettyJson(section.reviewJson) }}</pre>
               </div>
               <div v-for="suggestion in suggestions" :key="suggestion.id" class="paper-suggestion-card" :class="`paper-suggestion-card--${suggestion.honestyGrade}`">
@@ -721,8 +721,18 @@
                       </NAlert>
                       <NEmpty v-if="suggestions.length === 0 && previewSections.length === 0" description="暂无 diff 或建议结果" />
                       <div v-for="section in previewSections" :key="`preview-${section.id}`" class="paper-diff-card">
-                        <div class="paper-diff-card__title">{{ section.orderIndex + 1 }}. {{ section.title }} 路 {{ section.polishStatus || 'NOT_POLISHED' }}</div>
-                        <pre v-if="section.diffJson" class="paper-code-preview">{{ prettyJson(section.diffJson) }}</pre>
+                        <div class="paper-diff-card__title">
+                          <span>{{ section.orderIndex + 1 }}. {{ section.title }} · {{ section.polishStatus || 'NOT_POLISHED' }}</span>
+                          <NSpace size="small" align="center">
+                            <NTag size="small" :type="section.revisionStatus === 'ACCEPTED' ? 'success' : section.revisionStatus === 'REJECTED' ? 'error' : 'warning'">
+                              {{ section.revisionStatus || 'PENDING' }}
+                            </NTag>
+                            <NButton size="tiny" tertiary :disabled="sectionRevisionSubmitting === section.id" @click="updateSectionRevisionStatus(section, 'ACCEPTED')">采纳</NButton>
+                            <NButton size="tiny" tertiary :disabled="sectionRevisionSubmitting === section.id" @click="updateSectionRevisionStatus(section, 'REJECTED')">拒绝</NButton>
+                            <NButton size="tiny" tertiary :disabled="sectionRevisionSubmitting === section.id" @click="updateSectionRevisionStatus(section, 'PENDING')">待处理</NButton>
+                          </NSpace>
+                        </div>
+                        <pre v-if="section.diffJson" class="paper-code-preview">{{ readableDiff(section.diffJson) }}</pre>
                         <pre v-else-if="section.reviewJson" class="paper-code-preview">{{ prettyJson(section.reviewJson) }}</pre>
                       </div>
                       <div v-for="suggestion in suggestions" :key="suggestion.id" class="paper-suggestion-card" :class="`paper-suggestion-card--${suggestion.honestyGrade}`">
@@ -845,6 +855,7 @@ import {
   getPaperTasks,
   pausePaperTask,
   resumePaperTask,
+  updatePaperSectionRevisionStatus as updatePaperSectionRevisionStatusApi,
   updatePaperSectionRole,
   updatePaperSuggestionStatus,
   type PaperAnalysisResponse,
@@ -881,6 +892,7 @@ const historyLoading = ref(false);
 const downloadingTaskId = ref<number | null>(null);
 const previewMode = ref<'basic' | 'advanced'>('basic');
 const suggestionSubmitting = ref<number | null>(null);
+const sectionRevisionSubmitting = ref<number | null>(null);
 const clarificationAnswers = reactive<Record<number, string>>({});
 const clarificationSubmitting = ref(false);
 const sseStatus = ref<'idle' | 'connecting' | 'connected' | 'closed' | 'error'>('idle');
@@ -928,10 +940,11 @@ const canStop = computed(() => {
   return ['PENDING', 'RUNNING', 'PAUSED', 'CANCEL_REQUESTED', 'CANCELLING'].includes(currentTask.value?.status || '');
 });
 const downloadableArtifactTypes = ['polished_tex', 'suggested_bib', 'suggested_bib_novel', 'review_report', 'retrieved_literature_json', 'retrieved_literature_md'];
-const hasDownloadableArtifacts = computed(() => artifacts.value.some((item) => downloadableArtifactTypes.includes(item.type)));
+const activeArtifacts = computed(() => artifacts.value.filter((item) => !item.artifactStatus || item.artifactStatus === 'COMPLETED'));
+const hasDownloadableArtifacts = computed(() => activeArtifacts.value.some((item) => downloadableArtifactTypes.includes(item.type)));
 const canDownload = computed(() => (Boolean(currentTask.value?.finalObjectKey) || hasDownloadableArtifacts.value) && !downloading.value);
 const resultFileText = computed(() => {
-  const count = artifacts.value.filter((item) => downloadableArtifactTypes.includes(item.type)).length;
+  const count = activeArtifacts.value.filter((item) => downloadableArtifactTypes.includes(item.type)).length;
   if (count > 0) return `已生成 ${count} 个产物，可下载 zip`;
   if (currentTask.value?.finalObjectKey) return currentTask.value.finalObjectKey;
   return '尚未生成';
@@ -939,9 +952,9 @@ const resultFileText = computed(() => {
 const pendingClarifications = computed(() => clarifications.value.filter((item) => item.status === 'PENDING'));
 const pendingBlockingClarifications = computed(() => pendingClarifications.value.filter((item) => clarificationQuestion(item).blocking));
 const acceptedSuggestions = computed(() => suggestions.value.filter((item) => item.status === 'ACCEPTED'));
-const suggestedBibArtifacts = computed(() => artifacts.value.filter((item) => item.type === 'suggested_bib' || item.type === 'suggested_bib_novel'));
-const polishedTexArtifacts = computed(() => artifacts.value.filter((item) => item.type === 'polished_tex'));
-const retrievedLiteratureArtifacts = computed(() => artifacts.value.filter((item) => item.type === 'retrieved_literature_json' || item.type === 'retrieved_literature_md'));
+const suggestedBibArtifacts = computed(() => activeArtifacts.value.filter((item) => item.type === 'suggested_bib' || item.type === 'suggested_bib_novel'));
+const polishedTexArtifacts = computed(() => activeArtifacts.value.filter((item) => item.type === 'polished_tex'));
+const retrievedLiteratureArtifacts = computed(() => activeArtifacts.value.filter((item) => item.type === 'retrieved_literature_json' || item.type === 'retrieved_literature_md'));
 const previewSections = computed(() => sections.value.filter((section) => section.diffJson || section.reviewJson || section.polishStatus));
 const bibliographyCards = computed(() => {
   const seen = new Set<number>();
@@ -953,7 +966,7 @@ const bibliographyCards = computed(() => {
 });
 const visibleSuggestions = computed(() => suggestions.value.slice(0, 5));
 const literatureSupportCards = computed(() => bibliographyCards.value);
-const exportArtifacts = computed(() => artifacts.value.filter((item) => downloadableArtifactTypes.includes(item.type)));
+const exportArtifacts = computed(() => activeArtifacts.value.filter((item) => downloadableArtifactTypes.includes(item.type)));
 const liveTaskEvents = computed(() => events.value);
 const latestProgressEvent = computed(() => [...events.value].reverse().find((event) => hasProgressMeta(event)) || null);
 const stageSteps = [
@@ -1602,9 +1615,41 @@ async function updateSuggestionStatus(suggestion: PaperSuggestionResponse, statu
   }
 }
 
+async function updateSectionRevisionStatus(section: PaperSectionResponse, status: string) {
+  if (!currentTaskId.value) return;
+  sectionRevisionSubmitting.value = section.id;
+  try {
+    await updatePaperSectionRevisionStatusApi(currentTaskId.value, section.id, status);
+    await loadClarificationsAndSections(currentTaskId.value);
+    ui.message.success(status === 'ACCEPTED' ? '已采纳章节润色' : status === 'REJECTED' ? '已拒绝章节润色' : '章节润色已标记为待处理');
+  } catch (error: any) {
+    ui.message.error(error.response?.data?.message || '更新章节采纳状态失败');
+  } finally {
+    sectionRevisionSubmitting.value = null;
+  }
+}
+
 function prettyJson(raw: string) {
   try {
     return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function readableDiff(raw: string) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.unifiedDiff === 'string' && parsed.unifiedDiff.trim()) {
+      return parsed.unifiedDiff;
+    }
+    if (Array.isArray(parsed.hunks)) {
+      return parsed.hunks
+        .flatMap((hunk: any) => Array.isArray(hunk.lines) ? hunk.lines : [])
+        .map((line: any) => `${line.type === 'ADD' ? '+' : line.type === 'DELETE' ? '-' : ' '}${line.text ?? ''}`)
+        .join('\n');
+    }
+    return JSON.stringify(parsed, null, 2);
   } catch {
     return raw;
   }
@@ -1843,4 +1888,3 @@ function stringPayloadValue(value: unknown) {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 </script>
-
