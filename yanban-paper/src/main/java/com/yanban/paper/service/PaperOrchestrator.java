@@ -230,8 +230,8 @@ public class PaperOrchestrator {
         task.setFinalObjectKey(null);
         task.setStatus(STATUS_CANCELLED);
         task.setCurrentStage(STAGE_CANCELLED);
-        syncUnifiedTask(task);
         task.setErrorMessage("任务已取消");
+        syncUnifiedTask(task);
         eventStreamService.publish(PaperSseEvent.of("cancelled", taskId, "任务已取消", STAGE_CANCELLED));
         recordEvent(task, AgentTaskEventTypes.TASK_CANCELLED, STAGE_CANCELLED, STATUS_CANCELLED, "论文润色任务已取消");
     }
