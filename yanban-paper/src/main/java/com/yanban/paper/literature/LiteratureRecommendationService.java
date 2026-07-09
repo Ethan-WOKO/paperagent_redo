@@ -119,7 +119,7 @@ public class LiteratureRecommendationService {
         Set<String> existing = existingIdentityKeys(normalizedRequest.existingBibtex());
 
         List<RecommendationItem> items = selected.stream()
-                .map(result -> toItem(result, existing, normalizedRequest))
+                .map(result -> toItem(result, existing, normalizedRequest, pool.duplicateSourcesByKey(), pool.duplicateMergeCountsByKey()))
                 .toList();
         log.info("LiteratureRecommendation select elapsedMs={} selectedCount={} existingBibtexKeys={}",
                 elapsedMs(selectStart),
@@ -425,7 +425,9 @@ public class LiteratureRecommendationService {
 
     private RetrievalPool retrieve(List<String> queries, RecommendationRequest request) {
         Map<String, LiteratureCandidate> unique = new LinkedHashMap<>();
-        Set<String> seenKeys = new LinkedHashSet<>();
+        Map<String, String> keyAliases = new LinkedHashMap<>();
+        Map<String, LinkedHashSet<String>> duplicateSources = new LinkedHashMap<>();
+        Map<String, Integer> duplicateMergeCounts = new LinkedHashMap<>();
         List<String> failures = new ArrayList<>();
         List<RetrievalDiagnosticItem> diagnostics = new ArrayList<>();
         int rawCount = 0;
@@ -450,7 +452,7 @@ public class LiteratureRecommendationService {
             for (LiteratureCandidate candidate : localCandidates) {
                 if (!validCandidate(candidate, request.yearFrom())) continue;
                 localAccepted++;
-                putUniqueCandidate(unique, seenKeys, candidate);
+                putUniqueCandidate(unique, keyAliases, duplicateSources, duplicateMergeCounts, candidate);
             }
             log.info("LiteratureRecommendation retrieval source=local_card elapsedMs={} query={} returned={} accepted={} failed={} uniqueSoFar={} message={}",
                     elapsedMs(localStart),
@@ -482,7 +484,7 @@ public class LiteratureRecommendationService {
                 for (LiteratureCandidate candidate : safeCandidates) {
                     if (!validCandidate(candidate, request.yearFrom())) continue;
                     accepted++;
-                    putUniqueCandidate(unique, seenKeys, candidate);
+                    putUniqueCandidate(unique, keyAliases, duplicateSources, duplicateMergeCounts, candidate);
                 }
                 log.info("LiteratureRecommendation retrieval source={} elapsedMs={} query={} limit={} returned={} accepted={} failed={} uniqueSoFar={} message={}",
                         source.name(),
@@ -497,18 +499,32 @@ public class LiteratureRecommendationService {
                 diagnostics.add(new RetrievalDiagnosticItem(query, source.name(), safeCandidates.size(), accepted, failed, message));
             }
         }
-        return new RetrievalPool(unique, rawCount, sourceAttempts, failures, diagnostics);
+        Map<String, List<String>> duplicateSourcesByKey = new LinkedHashMap<>();
+        duplicateSources.forEach((key, values) -> duplicateSourcesByKey.put(key, List.copyOf(values)));
+        return new RetrievalPool(unique, rawCount, sourceAttempts, failures, diagnostics, duplicateSourcesByKey, Map.copyOf(duplicateMergeCounts));
     }
 
     private void putUniqueCandidate(Map<String, LiteratureCandidate> unique,
-                                    Set<String> seenKeys,
+                                    Map<String, String> keyAliases,
+                                    Map<String, LinkedHashSet<String>> duplicateSources,
+                                    Map<String, Integer> duplicateMergeCounts,
                                     LiteratureCandidate candidate) {
         List<String> keys = identityKeys(candidate);
-        if (keys.stream().anyMatch(seenKeys::contains)) {
+        String existingPrimaryKey = keys.stream()
+                .map(keyAliases::get)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(null);
+        if (StringUtils.hasText(existingPrimaryKey)) {
+            duplicateSources.computeIfAbsent(existingPrimaryKey, ignored -> new LinkedHashSet<>()).add(sourceLabel(candidate));
+            duplicateMergeCounts.merge(existingPrimaryKey, 1, Integer::sum);
+            keys.forEach(key -> keyAliases.putIfAbsent(key, existingPrimaryKey));
             return;
         }
-        seenKeys.addAll(keys);
-        unique.put(keys.get(0), candidate);
+        String primaryKey = keys.get(0);
+        keys.forEach(key -> keyAliases.put(key, primaryKey));
+        duplicateSources.computeIfAbsent(primaryKey, ignored -> new LinkedHashSet<>()).add(sourceLabel(candidate));
+        unique.put(primaryKey, candidate);
     }
 
     private int sourceLimit(String sourceName, int candidateK) {
@@ -662,9 +678,17 @@ public class LiteratureRecommendationService {
         return new LiteratureSearchResult(result.card(), result.relevanceScore(), result.narrativeRole(), result.ladderNode(), true, result.sourceQuery());
     }
 
-    private RecommendationItem toItem(LiteratureSearchResult result, Set<String> existing, RecommendationRequest request) {
+    private RecommendationItem toItem(LiteratureSearchResult result,
+                                      Set<String> existing,
+                                      RecommendationRequest request,
+                                      Map<String, List<String>> duplicateSourcesByKey,
+                                      Map<String, Integer> duplicateMergeCountsByKey) {
         LiteratureCard card = result.card();
-        boolean alreadyPresent = existing.contains(cardIdentityKey(card)) || existing.contains(titleKey(card.getTitle()));
+        String deduplicationKey = cardIdentityKey(card);
+        boolean alreadyPresent = existing.contains(deduplicationKey) || existing.contains(titleKey(card.getTitle()));
+        List<String> duplicateSources = duplicateSourcesByKey.getOrDefault(deduplicationKey, List.of());
+        int duplicateMergeCount = duplicateMergeCountsByKey.getOrDefault(deduplicationKey, 0);
+        List<String> metadataRiskNotes = metadataRiskNotes(card);
         return new RecommendationItem(
                 card.getId(),
                 card.getTitle(),
@@ -682,7 +706,16 @@ public class LiteratureRecommendationService {
                 result.sourceQuery(),
                 alreadyPresent,
                 recommendationReason(result, request, alreadyPresent),
-                request.includeBibtex() ? bibtex(card) : null
+                request.includeBibtex() ? bibtex(card) : null,
+                matchTarget(request, result),
+                rankingBasis(result, request, card),
+                citationStatus(card, request.includeBibtex(), metadataRiskNotes),
+                metadataRiskLevel(metadataRiskNotes),
+                metadataRiskNotes,
+                deduplicationKey,
+                duplicateMergeCount > 0 ? "MERGED_DUPLICATES" : "UNIQUE",
+                duplicateSources,
+                duplicateMergeCount
         );
     }
 
@@ -705,6 +738,74 @@ public class LiteratureRecommendationService {
         }
         reason.append("; score=").append(String.format(Locale.ROOT, "%.3f", result.relevanceScore()));
         return reason.toString();
+    }
+
+    private String matchTarget(RecommendationRequest request, LiteratureSearchResult result) {
+        if (StringUtils.hasText(result.sourceQuery())) {
+            return result.sourceQuery();
+        }
+        if (StringUtils.hasText(request.query())) {
+            return request.query();
+        }
+        return "topic_search";
+    }
+
+    private List<String> rankingBasis(LiteratureSearchResult result, RecommendationRequest request, LiteratureCard card) {
+        List<String> basis = new ArrayList<>();
+        basis.add("score=" + String.format(Locale.ROOT, "%.3f", result.relevanceScore()));
+        if (StringUtils.hasText(result.narrativeRole())) {
+            basis.add("role=" + result.narrativeRole());
+        }
+        if (StringUtils.hasText(result.sourceQuery())) {
+            basis.add("matched_query=" + result.sourceQuery());
+        }
+        if (card.getCitationCount() != null && card.getCitationCount() > 0) {
+            basis.add("citation_count=" + card.getCitationCount());
+        }
+        if (StringUtils.hasText(card.getDoi()) || StringUtils.hasText(card.getArxivId()) || StringUtils.hasText(card.getUrl())) {
+            basis.add("stable_identifier_or_url_available");
+        }
+        if (StringUtils.hasText(request.goal())) {
+            basis.add("goal_considered");
+        }
+        return basis;
+    }
+
+    private String citationStatus(LiteratureCard card, boolean includeBibtex, List<String> riskNotes) {
+        if (!includeBibtex) {
+            return "BIBTEX_NOT_REQUESTED_VERIFY_METADATA";
+        }
+        if (riskNotes.isEmpty()) {
+            return "BIBTEX_READY_VERIFY_BEFORE_SUBMISSION";
+        }
+        return "BIBTEX_NEEDS_METADATA_REVIEW";
+    }
+
+    private String metadataRiskLevel(List<String> riskNotes) {
+        if (riskNotes.isEmpty()) return "LOW";
+        boolean high = riskNotes.stream().anyMatch(note ->
+                note.contains("stable identifier") || note.contains("authors") || note.contains("publication year"));
+        return high ? "HIGH" : "MEDIUM";
+    }
+
+    private List<String> metadataRiskNotes(LiteratureCard card) {
+        List<String> notes = new ArrayList<>();
+        if (card == null) {
+            return List.of("missing literature metadata");
+        }
+        if (!StringUtils.hasText(card.getTitle())) notes.add("missing title");
+        if (parseList(card.getAuthors()).isEmpty()) notes.add("missing authors");
+        if (card.getPublicationYear() == null) notes.add("missing publication year");
+        if (!StringUtils.hasText(card.getVenue())) notes.add("missing venue/source");
+        if (!StringUtils.hasText(card.getDoi())
+                && !StringUtils.hasText(card.getArxivId())
+                && !StringUtils.hasText(card.getOpenAlexId())
+                && !StringUtils.hasText(card.getS2Id())
+                && !StringUtils.hasText(card.getUrl())) {
+            notes.add("missing stable identifier or URL");
+        }
+        if (!StringUtils.hasText(card.getAbstractText())) notes.add("missing abstract");
+        return List.copyOf(notes);
     }
 
     private double ruleScore(LiteratureCandidate candidate, RecommendationRequest request, SearchPlan searchPlan) {
@@ -849,6 +950,13 @@ public class LiteratureRecommendationService {
         if (StringUtils.hasText(candidate.s2Id())) keys.add("s2:" + candidate.s2Id());
         keys.add(titleKey(candidate.title()));
         return keys;
+    }
+
+    private String sourceLabel(LiteratureCandidate candidate) {
+        if (candidate == null || !StringUtils.hasText(candidate.source())) {
+            return "unknown";
+        }
+        return candidate.source();
     }
 
     private String cardIdentityKey(LiteratureCard card) {
@@ -1140,7 +1248,9 @@ public class LiteratureRecommendationService {
                                  int rawCandidateCount,
                                  int sourceAttempts,
                                  List<String> sourceFailures,
-                                 List<RetrievalDiagnosticItem> retrievalDiagnostics) {
+                                 List<RetrievalDiagnosticItem> retrievalDiagnostics,
+                                 Map<String, List<String>> duplicateSourcesByKey,
+                                 Map<String, Integer> duplicateMergeCountsByKey) {
     }
 
     private record SearchPlan(List<String> queries,
@@ -1217,7 +1327,37 @@ public class LiteratureRecommendationService {
                                      String sourceQuery,
                                      boolean alreadyPresent,
                                      String reason,
-                                     String bibtex) {
+                                     String bibtex,
+                                     String matchTarget,
+                                     List<String> rankingBasis,
+                                     String citationStatus,
+                                     String metadataRiskLevel,
+                                     List<String> metadataRiskNotes,
+                                     String deduplicationKey,
+                                     String duplicateStatus,
+                                     List<String> duplicateSources,
+                                     int duplicateMergeCount) {
+        public RecommendationItem(Long cardId,
+                                  String title,
+                                  List<String> authors,
+                                  Integer year,
+                                  String venue,
+                                  String doi,
+                                  String arxivId,
+                                  String openAlexId,
+                                  String url,
+                                  String pdfUrl,
+                                  Integer citationCount,
+                                  double score,
+                                  String role,
+                                  String sourceQuery,
+                                  boolean alreadyPresent,
+                                  String reason,
+                                  String bibtex) {
+            this(cardId, title, authors, year, venue, doi, arxivId, openAlexId, url, pdfUrl, citationCount,
+                    score, role, sourceQuery, alreadyPresent, reason, bibtex, sourceQuery, List.of(), "UNKNOWN",
+                    "UNKNOWN", List.of(), "", "UNKNOWN", List.of(), 0);
+        }
     }
 
     public record RecommendationDiagnosticItem(Long cardId,
