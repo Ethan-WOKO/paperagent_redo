@@ -82,3 +82,30 @@
 - 建议先开独立 issue：`论文润色参数真实生效`。
 - 从最新可控分支开始实现。
 - 优先修复参数持久化、评分尺度统一、编排器传参和幂等 key。
+
+## 2026-07-09 issue #94 evaluation baseline
+
+Goal:
+- Establish the first repeatable baseline for paper polish must-not-regress checks.
+
+Completed:
+- Added `PaperPolishBaselineEvaluationTest`.
+- Reused existing fixed LaTeX samples under `yanban-paper/src/test/resources/paper-quality-samples/`.
+- Generated paper polish baseline reports under `yanban-paper/target/paper-polish-baseline-eval/`.
+- Added the combined runner `docs/evaluation/run-paper-quality-baseline-eval.ps1`.
+- Added the dated report `docs/evaluation/reports/paper-quality-baseline-eval-20260709.md`.
+
+Baseline cases:
+- `POLISH-EN-001`: English section preserves citation, reference, and section structure.
+- `POLISH-ZH-001`: Chinese sample preserves citation, figure, label, ref, graphics, and math spans.
+- `POLISH-NEG-001`: unsafe output that drops protected placeholders is rejected and keeps the original text.
+
+Evaluation:
+- Command: `docs/evaluation/run-paper-quality-baseline-eval.ps1`
+- Paper polish report output:
+  - `yanban-paper/target/paper-polish-baseline-eval/report.json`
+  - `yanban-paper/target/paper-polish-baseline-eval/report.md`
+
+Scope boundary:
+- This baseline validates guardrails and reportability with a deterministic model stub.
+- It does not judge full academic writing quality or replace manual review.

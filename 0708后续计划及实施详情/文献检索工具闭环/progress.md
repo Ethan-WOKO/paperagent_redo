@@ -255,3 +255,23 @@
 3. 先实现补引用最小闭环。
 4. 补一个前端结果展示入口。
 5. 建立第一批补引用评测用例。
+
+## 2026-07-09 issue #94 evaluation baseline
+
+Goal:
+- Establish the first repeatable baseline for literature recommendation quality checks.
+
+Completed:
+- Reused `LiteratureRecommendationEvaluationTest` as the mandatory fixture-backed literature baseline.
+- Added the combined runner `docs/evaluation/run-paper-quality-baseline-eval.ps1`.
+- Added the dated report `docs/evaluation/reports/paper-quality-baseline-eval-20260709.md`.
+
+Evaluation:
+- Command: `docs/evaluation/run-paper-quality-baseline-eval.ps1`
+- Literature report output:
+  - `yanban-paper/target/literature-recommendation-eval/report.json`
+  - `yanban-paper/target/literature-recommendation-eval/report.md`
+
+Scope boundary:
+- This baseline does not make live external paper sources the only mandatory gate.
+- This baseline does not implement a full Agent eval or broader literature workflow changes.
