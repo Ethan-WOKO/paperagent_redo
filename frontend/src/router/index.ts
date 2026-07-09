@@ -23,16 +23,23 @@ const router = createRouter({
     { path: '/knowledge-base', name: 'knowledge-base', component: KnowledgeBasePage, meta: { requiresAuth: true } },
     { path: '/knowledge-base/search-debug', name: 'knowledge-base-search-debug', component: KnowledgeSearchDebugPage, meta: { requiresAuth: true } },
     { path: '/settings', name: 'settings', component: SettingsPage, meta: { requiresAuth: true } },
+    { path: '/:pathMatch(.*)*', redirect: '/chat' },
   ],
 });
 
 router.beforeEach(async (to) => {
   const authStore = useAuthStore();
+  const hasToken = Boolean(authStore.token);
+
+  if (!hasToken && to.path !== '/login') {
+    return { path: '/login', query: to.fullPath === '/' ? undefined : { redirect: to.fullPath } };
+  }
+
   if (authStore.token && !authStore.ready) {
     await authStore.fetchCurrentUser();
   }
 
-  if (to.meta.requiresAuth && !authStore.isAuthenticated) {
+  if (hasToken && to.meta.requiresAuth && !authStore.isAuthenticated) {
     return { path: '/login', query: { redirect: to.fullPath } };
   }
   if (to.meta.guestOnly && authStore.isAuthenticated) {

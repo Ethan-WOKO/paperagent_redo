@@ -4,7 +4,6 @@
       class="chat-page research-chat-page"
       :class="{
         'research-chat-page--sessions-collapsed': chatSidebarCollapsed,
-        'research-chat-page--agent-collapsed': agentSidebarCollapsed,
       }"
     >
       <button
@@ -299,65 +298,6 @@
         </NCard>
       </section>
 
-      <button
-        v-if="agentSidebarCollapsed"
-        type="button"
-        class="chat-rail-toggle chat-rail-toggle--agent"
-        title="Show Research Agent"
-        @click="setAgentSidebarCollapsed(false)"
-      >
-        ✦
-      </button>
-
-      <aside class="agent-sidebar" :aria-hidden="agentSidebarCollapsed">
-        <section class="agent-card agent-card--plan">
-          <div class="agent-card__head">
-            <div>
-              <strong>Research Agent</strong>
-              <span>Agent Plan</span>
-            </div>
-            <div class="agent-card__head-actions">
-              <em>Live</em>
-              <NButton secondary size="small" class="chat-panel-collapse" title="Hide Research Agent" @click="setAgentSidebarCollapsed(true)">Hide</NButton>
-            </div>
-          </div>
-          <div class="agent-progress"><span :style="{ width: currentPlan ? (planProgress + '%') : (sending ? '62%' : '36%') }" /></div>
-          <div class="agent-plan-list" v-if="currentPlan">
-            <div
-              v-for="(step, index) in currentPlan.steps"
-              :key="step.id"
-              class="agent-plan-step"
-              :class="planStepClass(step.status)"
-            >
-              <i>{{ index + 1 }}</i><span>{{ step.title || step.description }}</span><small>{{ step.status }}</small>
-            </div>
-          </div>
-          <div class="agent-plan-list" v-else>
-            <div class="agent-plan-step agent-plan-step--done"><i>1</i><span>Understand request</span><small>Done</small></div>
-            <div class="agent-plan-step" :class="{ 'agent-plan-step--active': sending }"><i>2</i><span>{{ planMode ? 'Plan & execute' : 'Search literature' }}</span><small>{{ sending ? 'Running' : 'Ready' }}</small></div>
-            <div class="agent-plan-step"><i>3</i><span>Analyze result</span><small>Pending</small></div>
-            <div class="agent-plan-step"><i>4</i><span>Draft response</span><small>Pending</small></div>
-          </div>
-        </section>
-
-        <section class="agent-card">
-          <div class="agent-card__head"><strong>Tools & Execution</strong><a>View all</a></div>
-          <div class="tool-call-row"><span>S</span><div><strong>search_literature</strong><small>OpenAlex / arXiv / local cards</small></div><em>Ready</em></div>
-          <div class="tool-call-row"><span>K</span><div><strong>search_knowledge</strong><small>Private RAG retrieval</small></div><em>{{ ragDisabled ? 'Off' : 'Ready' }}</em></div>
-          <div class="tool-call-row"><span>P</span><div><strong>paper polish</strong><small>Critic / repair workflow</small></div><em>Ready</em></div>
-          <div class="tool-call-row"><span>T</span><div><strong>skill mode</strong><small>{{ selectedSkillId || 'No skill selected' }}</small></div><em>{{ selectedSkillId ? 'On' : 'Idle' }}</em></div>
-        </section>
-
-        <section class="agent-card">
-          <div class="agent-card__head"><strong>Execution Trace</strong><span>{{ messages.length }} msgs</span></div>
-          <div class="execution-log">
-            <div><time>Now</time><span>Workspace ready</span><em>Info</em></div>
-            <div v-if="sending"><time>Now</time><span>Agent response streaming</span><em>Running</em></div>
-            <div><time>RAG</time><span>{{ ragDisabled ? 'Knowledge disabled' : 'Knowledge enabled' }}</span><em>{{ ragDisabled ? 'Off' : 'Ready' }}</em></div>
-          </div>
-        </section>
-
-      </aside>
     </div>
 
     <NModal v-model:show="renameModalVisible" preset="card" title="重命名会话" style="width: 420px" :bordered="false">
@@ -531,10 +471,8 @@ const chatUploading = ref(false);
 const chatUploadProgress = ref(0);
 const chatUploadStatus = ref('');
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'yanban.chat.sessionsCollapsed';
-const AGENT_SIDEBAR_COLLAPSED_KEY = 'yanban.chat.agentCollapsed';
 const SESSION_STORAGE_KEY = 'yanban.chat.selectedSessionId';
 const chatSidebarCollapsed = ref(readStoredBoolean(CHAT_SIDEBAR_COLLAPSED_KEY, false));
-const agentSidebarCollapsed = ref(readStoredBoolean(AGENT_SIDEBAR_COLLAPSED_KEY, false));
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
 const DEFAULT_GLM_MODEL = 'glm-5.2';
 const WS_ACK_TIMEOUT_MS = 4000;
@@ -569,7 +507,7 @@ const modelOptions = computed(() => {
   }
   const customModels = settings.value?.customModels || [];
   for (const cm of customModels) {
-    if (!cm.builtin) {
+    if (!cm.builtin || cm.providerKey.startsWith('openrouter-')) {
       options.push({ label: cm.label + ' / ' + cm.modelName, value: toModelKey(cm.providerKey, cm.modelName) });
     }
   }
@@ -583,15 +521,6 @@ const modelOptions = computed(() => {
 const activeSessionTitle = computed(() => {
   const active = sessions.value.find((item) => item.id === selectedSessionId.value);
   return active?.title || '研究对话';
-});
-
-const planProgress = computed(() => {
-  const steps = currentPlan.value?.steps || [];
-  if (steps.length === 0) {
-    return sending.value ? 62 : 36;
-  }
-  const finished = steps.filter((step) => ['COMPLETED', 'DEGRADED', 'SUPERSEDED', 'FAILED', 'SKIPPED'].includes(step.status)).length;
-  return Math.max(8, Math.round((finished / steps.length) * 100));
 });
 
 const filteredMessages = computed(() => {
@@ -711,7 +640,6 @@ function useDemoQuestion(question: string) {
 function applyMobileChatDefaults() {
   if (typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches) {
     setChatSidebarCollapsed(true);
-    setAgentSidebarCollapsed(true);
   }
 }
 
@@ -1467,7 +1395,16 @@ async function scrollMessagesToBottom() {
   if (!container) {
     return;
   }
-  container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+  const bottom = Math.max(container.scrollHeight - container.clientHeight, 0);
+  container.scrollTo({ top: bottom, behavior: 'auto' });
+  window.requestAnimationFrame(() => {
+    const current = messagesContainerRef.value;
+    if (!current) {
+      return;
+    }
+    current.scrollTop = Math.max(current.scrollHeight - current.clientHeight, 0);
+    syncMinimapViewport();
+  });
   syncMinimapViewport();
 }
 
@@ -1816,11 +1753,6 @@ function setChatSidebarCollapsed(collapsed: boolean) {
   setStoredBoolean(CHAT_SIDEBAR_COLLAPSED_KEY, collapsed);
 }
 
-function setAgentSidebarCollapsed(collapsed: boolean) {
-  agentSidebarCollapsed.value = collapsed;
-  setStoredBoolean(AGENT_SIDEBAR_COLLAPSED_KEY, collapsed);
-}
-
 function openRenameSession(session: AgentSessionResponse) {
   renameSessionId.value = session.id;
   renameDraft.value = session.title || '';
@@ -2069,14 +2001,6 @@ function filenameFromDisposition(disposition?: string | null) {
   return plainMatch?.[1] || '';
 }
 
-function planStepClass(status: AgentPlanStepResponse['status']) {
-  return {
-    'agent-plan-step--done': status === 'COMPLETED' || status === 'DEGRADED' || status === 'SUPERSEDED',
-    'agent-plan-step--active': status === 'RUNNING' || status === 'REPAIRING',
-    'agent-plan-step--failed': status === 'FAILED' || status === 'SKIPPED',
-  };
-}
-
 function toViewMessage(message: AgentMessageResponse): ChatMessageView {
   const content = message.content || '';
   const role = normalizeRole(message.role);
@@ -2227,8 +2151,8 @@ function toolRequestLabel(toolName: string) {
       return '正在检索知识库。';
     case 'search_web':
       return '正在联网搜索资料。';
-    case 'search_literature':
-      return '正在检索论文资料。';
+    case 'recommend_literature':
+      return '正在检索并整理相关文献。';
     case 'literature_search_start':
       return '正在创建文献检索任务。';
     case 'literature_search_status':
@@ -2257,7 +2181,7 @@ function toolResultLabel(toolName?: string | null, payload?: Record<string, any>
       return count > 0 ? '知识库检索完成，找到 ' + count + ' 个相关片段。' : '知识库检索完成，未找到明显相关片段。';
     case 'search_web':
       return count > 0 ? '联网搜索完成，获取 ' + count + ' 条候选结果。' : '联网搜索完成，未获取到可靠结果。';
-    case 'search_literature':
+    case 'recommend_literature':
     case 'literature_search_result':
       return count > 0 ? '文献检索完成，找到 ' + count + ' 条候选文献。' : '文献检索完成，暂未找到候选文献。';
     case 'literature_search_start':

@@ -23,7 +23,7 @@ class AgentToolPolicyEngineTest {
 
         assertThat(decision.allowedTools()).containsExactly(
                 "search_web",
-                "search_literature",
+                "recommend_literature",
                 "search_knowledge",
                 "literature_search_start",
                 "literature_search_status",
@@ -61,7 +61,7 @@ class AgentToolPolicyEngineTest {
     private ToolRegistry registry() {
         return new ToolRegistry()
                 .register(new StubTool("search_web"))
-                .register(new StubTool("search_literature"))
+                .register(new StubTool("recommend_literature"))
                 .register(new StubTool("search_knowledge"))
                 .register(new StubTool("literature_search_start"))
                 .register(new StubTool("literature_search_status"))

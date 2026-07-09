@@ -15,13 +15,17 @@ public record UserModelResponse(
         Instant updatedAt
 ) {
     public static UserModelResponse from(UserModel model) {
+        return from(model, false);
+    }
+
+    public static UserModelResponse from(UserModel model, boolean apiKeyConfiguredByGlobalProvider) {
         return new UserModelResponse(
                 model.getId(),
                 model.getProviderKey(),
                 model.getProviderLabel(),
                 model.getModelName(),
                 model.getApiUrl(),
-                model.getApiKeyEncrypted() != null && !model.getApiKeyEncrypted().isBlank(),
+                apiKeyConfiguredByGlobalProvider || model.getApiKeyEncrypted() != null && !model.getApiKeyEncrypted().isBlank(),
                 Boolean.TRUE.equals(model.getBuiltin()),
                 model.getSortOrder(),
                 model.getCreatedAt(),

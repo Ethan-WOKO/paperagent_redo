@@ -37,6 +37,8 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       TZ: Asia/Shanghai
+    ports:
+      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -95,6 +97,9 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-yanbanminio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       TZ: Asia/Shanghai
+    ports:
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
     healthcheck:

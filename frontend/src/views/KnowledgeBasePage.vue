@@ -1,17 +1,19 @@
 <template>
   <AppLayout>
     <div class="kb-page workbench-page scholar-page scholar-page--knowledge">
-      <section class="workbench-hero scholar-page-hero">
-        <div>
-          <div class="workbench-kicker">Knowledge Base</div>
-          <h1>Knowledge Base</h1>
-          <p>Manage private research documents, parsing status, retrieval visibility, and previewable text assets.</p>
-        </div>
-        <NSpace align="center">
-          <NButton secondary @click="router.push('/knowledge-base/search-debug')">Search Debug</NButton>
-          <NButton :loading="loading" @click="loadDocuments">Sync</NButton>
-        </NSpace>
-      </section>
+      <WorkspaceHero
+        kicker="Knowledge Base"
+        title="Knowledge Base"
+        subtitle="Manage private research documents, parsing status, retrieval visibility, and previewable text assets."
+        storage-key="yanban.hero.knowledge"
+      >
+        <template #actions>
+          <NSpace align="center">
+            <NButton secondary @click="router.push('/knowledge-base/search-debug')">Search Debug</NButton>
+            <NButton :loading="loading" @click="loadDocuments">Sync</NButton>
+          </NSpace>
+        </template>
+      </WorkspaceHero>
 
       <div class="scholar-metric-strip">
         <article class="scholar-metric-card">
@@ -105,14 +107,14 @@
                       <small v-if="item.errorMessage" class="kb-error-text">{{ item.errorMessage }}</small>
                     </div>
                   </div>
-                  <span>{{ documentTypeLabel(item) }}</span>
-                  <span>{{ formatFileSize(item.fileSize) }}</span>
-                  <NTag :type="statusTagType(item.status)" size="small">{{ item.status }}</NTag>
-                  <NTag :type="item.isPublic ? 'info' : 'default'" size="small">
+                  <span class="kb-document-type">{{ documentTypeLabel(item) }}</span>
+                  <span class="kb-document-size">{{ formatFileSize(item.fileSize) }}</span>
+                  <NTag class="kb-document-tag kb-document-status" :type="statusTagType(item.status)" size="small">{{ item.status }}</NTag>
+                  <NTag class="kb-document-tag kb-document-visibility" :type="item.isPublic ? 'info' : 'default'" size="small">
                     {{ item.isPublic ? 'Public' : 'Private' }}
                   </NTag>
-                  <span>{{ formatDateTime(item.updatedAt) }}</span>
-                  <NSpace size="small" justify="end">
+                  <span class="kb-document-updated">{{ formatDateTime(item.updatedAt) }}</span>
+                  <NSpace class="kb-document-actions" size="small" justify="end">
                     <NButton text type="primary" @click="handlePreview(item)">Preview</NButton>
                     <NPopconfirm v-if="item.sourceType !== 'DEMO_SEED'" @positive-click="handleDelete(item.id)">
                       <template #trigger>
@@ -206,6 +208,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import AppLayout from '@/components/AppLayout.vue';
+import WorkspaceHero from '@/components/WorkspaceHero.vue';
 import {
   deleteKbDocument,
   listKbDocuments,

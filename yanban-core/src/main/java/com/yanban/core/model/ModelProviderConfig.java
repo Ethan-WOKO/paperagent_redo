@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
-@EnableConfigurationProperties({DeepSeekProperties.class, GlmProperties.class})
+@EnableConfigurationProperties({DeepSeekProperties.class, GlmProperties.class, OpenRouterProperties.class})
 public class ModelProviderConfig {
 
     @Bean

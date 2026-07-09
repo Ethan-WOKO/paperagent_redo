@@ -82,7 +82,7 @@ public class UserModelController {
                     16,
                     null,
                     resolved.apiKey(),
-                    null,
+                    resolved.apiUrl(),
                     null,
                     null,
                     null

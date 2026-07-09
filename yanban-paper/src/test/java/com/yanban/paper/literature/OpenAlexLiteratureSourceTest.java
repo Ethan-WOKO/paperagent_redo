@@ -48,4 +48,17 @@ class OpenAlexLiteratureSourceTest {
         });
         server.verify();
     }
+
+    @Test
+    void appendsApiKeyWhenConfigured() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://api.openalex.org");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.openalex.org/works?search=rag&per-page=3&api_key=openalex-key"))
+                .andRespond(withSuccess("{\"results\":[]}", MediaType.APPLICATION_JSON));
+
+        List<LiteratureCandidate> candidates = new OpenAlexLiteratureSource(builder.build(), "openalex-key").search("rag", 3);
+
+        assertThat(candidates).isEmpty();
+        server.verify();
+    }
 }

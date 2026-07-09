@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.yanban.api.agent.AgentRuntimeRequest;
 import com.yanban.api.agent.LangChain4jChatModelAdapter;
 import com.yanban.paper.service.PaperModelClient;
 import dev.langchain4j.data.message.SystemMessage;
@@ -24,7 +25,7 @@ class PaperModelClientConfigTest {
         when(chatModel.chat(any(ChatRequest.class))).thenReturn(ChatResponse.builder()
                 .aiMessage(AiMessage.from("polished"))
                 .build());
-        PaperModelClient client = new PaperModelClientConfig().paperModelClient(chatModel);
+        PaperModelClient client = new PaperModelClientConfig().paperModelClient(chatModel, new PaperModelProperties());
 
         String result = client.complete("system prompt", "user prompt", 0.2, 1024);
 
@@ -37,5 +38,30 @@ class PaperModelClientConfigTest {
         assertThat(((UserMessage) request.messages().get(1)).singleText()).isEqualTo("user prompt");
         assertThat(request.temperature()).isEqualTo(0.2);
         assertThat(request.maxOutputTokens()).isEqualTo(1024);
+    }
+
+    @Test
+    void paperModelClientCanUseConfiguredOpenRouterRuntime() {
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class))).thenReturn(ChatResponse.builder()
+                .aiMessage(AiMessage.from("hy3"))
+                .build());
+        PaperModelProperties properties = new PaperModelProperties();
+        properties.setProvider("openrouter-hy3-free");
+        properties.setModel("tencent/hy3:free");
+        properties.setApiUrl("https://openrouter.ai/api/v1/chat/completions");
+        properties.setApiKey("or-key");
+        PaperModelClient client = new PaperModelClientConfig().paperModelClient(chatModel, properties);
+
+        String result = client.complete("system prompt", "user prompt", 0.2, 1024);
+
+        assertThat(result).isEqualTo("hy3");
+        ArgumentCaptor<AgentRuntimeRequest> runtimeCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(chatModel).chat(any(ChatRequest.class), runtimeCaptor.capture());
+        AgentRuntimeRequest runtime = runtimeCaptor.getValue();
+        assertThat(runtime.provider()).isEqualTo("openrouter-hy3-free");
+        assertThat(runtime.model()).isEqualTo("tencent/hy3:free");
+        assertThat(runtime.apiUrl()).isEqualTo("https://openrouter.ai/api/v1/chat/completions");
+        assertThat(runtime.apiKey()).isEqualTo("or-key");
     }
 }

@@ -165,7 +165,7 @@ public class PlanningAgentPlanner {
                 3. Each description must be directly executable and say what to read, search, call, compare, synthesize, or verify.
                 4. Do not invent tools. allowedTools may only contain registered tool names. Use [] when no tool restriction is needed.
                 5. For public web, current facts, official docs, products, news, or broad internet research, use search_web.
-                6. Use search_literature only for academic papers, DOI, arXiv, OpenAlex, BibTeX, or scholarly literature.
+                6. Use recommend_literature for academic papers, DOI, arXiv, OpenAlex, BibTeX, scholarly literature, survey building, classic-paper collection, or citation recommendation.
                 7. Use search_knowledge only for user-uploaded/private knowledge base or project-local knowledge.
                 8. Avoid repeated search-only loops. Prefer search, synthesis, and verification steps.
                 9. If search may fail or return degraded results, plan a fallback using model knowledge with a clear limitation note.

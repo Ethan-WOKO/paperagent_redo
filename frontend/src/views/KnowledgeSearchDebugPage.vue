@@ -1,17 +1,19 @@
 <template>
   <AppLayout>
     <div class="search-page workbench-page scholar-page scholar-page--search">
-      <section class="workbench-hero scholar-page-hero">
-        <div>
-          <div class="workbench-kicker">Search Debug</div>
-          <h1>Knowledge Search Debug</h1>
-          <p>Inspect retrieval quality, score bands, selected chunks, and RAG visibility before shipping answers to users.</p>
-        </div>
-        <NSpace align="center">
-          <NTag type="info" round>{{ results.length }} results</NTag>
-          <NButton secondary @click="fillSampleQuery">Sample Query</NButton>
-        </NSpace>
-      </section>
+      <WorkspaceHero
+        kicker="Search Debug"
+        title="Knowledge Search Debug"
+        subtitle="Inspect retrieval quality, score bands, selected chunks, and RAG visibility before shipping answers to users."
+        storage-key="yanban.hero.retrieval"
+      >
+        <template #actions>
+          <NSpace align="center">
+            <NTag type="info" round>{{ results.length }} results</NTag>
+            <NButton secondary @click="fillSampleQuery">Sample Query</NButton>
+          </NSpace>
+        </template>
+      </WorkspaceHero>
 
       <NGrid :cols="24" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>
         <NGridItem span="24 xl:17">
@@ -191,6 +193,7 @@ import {
 } from 'naive-ui';
 import { computed, reactive, ref } from 'vue';
 import AppLayout from '@/components/AppLayout.vue';
+import WorkspaceHero from '@/components/WorkspaceHero.vue';
 import { searchKnowledge, type KnowledgeSearchResult } from '@/api/knowledge';
 import { ui } from '@/ui';
 

@@ -2,6 +2,7 @@ package com.yanban.api.settings;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yanban.core.model.OpenRouterProperties;
 import com.yanban.core.user.UserAccountPolicy;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -18,6 +19,8 @@ public class UserSettingsService {
 
     public static final String DEFAULT_PROVIDER = "deepseek";
     public static final String PROVIDER_GLM = "glm";
+    public static final String PROVIDER_OPENROUTER_HY3_FREE = "openrouter-hy3-free";
+    public static final String PROVIDER_OPENROUTER_HY3 = "openrouter-hy3";
     public static final String DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
     public static final String DEFAULT_GLM_MODEL = "glm-5.2";
     public static final BigDecimal DEFAULT_TEMPERATURE = new BigDecimal("0.70");
@@ -54,6 +57,7 @@ public class UserSettingsService {
     private final ObjectMapper objectMapper;
     private final UserAccountPolicy accountPolicy;
     private final UserSettingsInitializer initializer;
+    private final OpenRouterProperties openRouterProperties;
 
     public UserSettingsService(SysUserSettingsRepository repository,
                                UserModelRepository userModelRepository,
@@ -61,7 +65,8 @@ public class UserSettingsService {
                                ModelDiscoveryService modelDiscoveryService,
                                ObjectMapper objectMapper,
                                UserAccountPolicy accountPolicy,
-                               UserSettingsInitializer initializer) {
+                               UserSettingsInitializer initializer,
+                               OpenRouterProperties openRouterProperties) {
         this.repository = repository;
         this.userModelRepository = userModelRepository;
         this.cryptoService = cryptoService;
@@ -69,11 +74,13 @@ public class UserSettingsService {
         this.objectMapper = objectMapper;
         this.accountPolicy = accountPolicy;
         this.initializer = initializer;
+        this.openRouterProperties = openRouterProperties;
     }
 
     @Transactional
     public UserSettingsResponse get(Long userId) {
         SysUserSettings settings = getOrCreate(userId);
+        ensureOpenRouterModels(userId);
         return toResponse(settings);
     }
 
@@ -81,6 +88,7 @@ public class UserSettingsService {
     public UserSettingsResponse update(Long userId, UserSettingsRequest request) {
         accountPolicy.assertSettingsMutable(userId);
         SysUserSettings settings = getOrCreate(userId);
+        ensureOpenRouterModels(userId);
         String provider = normalizeProvider(request.defaultProvider(), settings.getDefaultProvider());
         String deepseekModel = StringUtils.hasText(request.deepseekModel()) ? request.deepseekModel().trim() : settings.getDeepseekModel();
         String glmModel = StringUtils.hasText(request.glmModel()) ? request.glmModel().trim() : settings.getGlmModel();
@@ -168,7 +176,7 @@ public class UserSettingsService {
     public List<UserModelResponse> listCustomModels(Long userId) {
         ensureUserInitialized(userId);
         return userModelRepository.findByUserIdOrderBySortOrderAscIdAsc(userId).stream()
-                .map(UserModelResponse::from)
+                .map(this::toUserModelResponse)
                 .toList();
     }
 
@@ -193,7 +201,7 @@ public class UserSettingsService {
                 false,
                 nextSortOrder
         );
-        return UserModelResponse.from(userModelRepository.saveAndFlush(model));
+        return toUserModelResponse(userModelRepository.saveAndFlush(model));
     }
 
     @Transactional
@@ -202,7 +210,7 @@ public class UserSettingsService {
         UserModel model = findOwnedCustomModel(userId, modelId);
         String encryptedApiKey = resolveEncryptedApiKey(model.getApiKeyEncrypted(), request.apiKey());
         model.update(request.label().trim(), request.modelName().trim(), request.apiUrl().trim(), encryptedApiKey);
-        return UserModelResponse.from(userModelRepository.saveAndFlush(model));
+        return toUserModelResponse(userModelRepository.saveAndFlush(model));
     }
 
     @Transactional
@@ -227,6 +235,7 @@ public class UserSettingsService {
 
     private void ensureUserInitialized(Long userId) {
         getOrCreate(userId);
+        ensureOpenRouterModels(userId);
     }
 
     // ===== Model resolution for AgentService =====
@@ -256,8 +265,13 @@ public class UserSettingsService {
         // Custom provider: providerKey stored as-is (case-sensitive match by providerKey)
         List<UserModel> userModels = userModelRepository.findByUserIdOrderBySortOrderAscIdAsc(userId);
         Optional<UserModel> match = userModels.stream()
+                .filter(m -> m.getProviderKey().equals(provider) && m.getModelName().equals(model))
+                .findFirst();
+        if (match.isEmpty()) {
+            match = userModels.stream()
                 .filter(m -> m.getProviderKey().equals(provider))
                 .findFirst();
+        }
         if (match.isEmpty()) {
             // Fallback: match by model name
             match = userModels.stream()
@@ -270,8 +284,8 @@ public class UserSettingsService {
         UserModel um = match.get();
         return new ModelEndpoint(um.getProviderKey(),
                 um.getModelName(),
-                um.getApiUrl(),
-                decryptCustomModelApiKey(um));
+                resolveCustomModelApiUrl(um),
+                resolveCustomModelApiKey(um));
     }
 
     public String decryptDeepseekApiKey(SysUserSettings settings) {
@@ -302,6 +316,21 @@ public class UserSettingsService {
         return cryptoService.decrypt(model.getApiKeyEncrypted());
     }
 
+    private String resolveCustomModelApiUrl(UserModel model) {
+        if (isOpenRouterModel(model) && !StringUtils.hasText(model.getApiUrl())) {
+            return openRouterProperties.getApiUrl();
+        }
+        return model.getApiUrl();
+    }
+
+    private String resolveCustomModelApiKey(UserModel model) {
+        String modelKey = decryptCustomModelApiKey(model);
+        if (StringUtils.hasText(modelKey)) {
+            return modelKey;
+        }
+        return isOpenRouterModel(model) ? openRouterProperties.getApiKey() : null;
+    }
+
     public List<String> parseFilesystemRoots(SysUserSettings settings) {
         return readStringList(settings.getFilesystemRootsText(), DEFAULT_FILESYSTEM_ROOTS);
     }
@@ -321,7 +350,7 @@ public class UserSettingsService {
     private UserSettingsResponse toResponse(SysUserSettings settings) {
         List<UserModelResponse> customModels = userModelRepository
                 .findByUserIdOrderBySortOrderAscIdAsc(settings.getUserId()).stream()
-                .map(UserModelResponse::from)
+                .map(this::toUserModelResponse)
                 .toList();
         return UserSettingsResponse.from(settings,
                 parseFilesystemRoots(settings),
@@ -354,6 +383,29 @@ public class UserSettingsService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "默认模型提供方仅支持 deepseek 或 glm");
         }
         return resolved;
+    }
+
+    private void ensureOpenRouterModels(Long userId) {
+        List<UserModel> existing = userModelRepository.findByUserIdOrderBySortOrderAscIdAsc(userId);
+        List<UserModel> missing = new ArrayList<>();
+        if (existing.stream().noneMatch(model -> PROVIDER_OPENROUTER_HY3_FREE.equals(model.getProviderKey()))) {
+            missing.add(new UserModel(userId, PROVIDER_OPENROUTER_HY3_FREE, "OpenRouter", openRouterProperties.getHy3FreeModel(), openRouterProperties.getApiUrl(), null, true, 20));
+        }
+        if (existing.stream().noneMatch(model -> PROVIDER_OPENROUTER_HY3.equals(model.getProviderKey()))) {
+            missing.add(new UserModel(userId, PROVIDER_OPENROUTER_HY3, "OpenRouter", openRouterProperties.getHy3Model(), openRouterProperties.getApiUrl(), null, true, 21));
+        }
+        if (!missing.isEmpty()) {
+            userModelRepository.saveAllAndFlush(missing);
+        }
+    }
+
+    private UserModelResponse toUserModelResponse(UserModel model) {
+        boolean globalOpenRouterKey = isOpenRouterModel(model) && StringUtils.hasText(openRouterProperties.getApiKey());
+        return UserModelResponse.from(model, globalOpenRouterKey);
+    }
+
+    private boolean isOpenRouterModel(UserModel model) {
+        return model != null && model.getProviderKey() != null && model.getProviderKey().startsWith("openrouter-");
     }
 
     private String resolveEncryptedApiKey(String existingEncryptedValue, String apiKey) {

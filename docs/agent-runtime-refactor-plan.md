@@ -6,7 +6,7 @@ The current project already has useful agent building blocks:
 
 - `HarnessEngine` can run a model/tool loop and enforce basic tool-call budgets.
 - `ToolRegistry` and `ToolExecutor` provide a simple tool abstraction.
-- `search_web`, `search_literature`, `search_knowledge`, and MCP proxy tools exist.
+- `search_web`, `recommend_literature`, `search_knowledge`, and MCP proxy tools exist.
 - `PlanAgentService` supports plan creation, DAG-style step execution, limited parallelism, repair steps, degradation, events, and verification.
 - `PlanStepVerifier` can judge whether a plan step result satisfies success criteria.
 - The chat UI can stream assistant chunks and can show process messages.
@@ -84,8 +84,8 @@ User turn
 ### Acceptance Criteria
 
 - Asking "西瓜的功效" returns one assistant bubble and does not call `search_web`.
-- Asking "搜索一下西瓜的最新研究" may call `search_web` or `search_literature`, but still returns one assistant bubble.
-- Asking "帮我找 5 篇 RAG 论文" uses `search_literature`.
+- Asking "搜索一下西瓜的最新研究" may call `search_web` or `recommend_literature`, but still returns one assistant bubble.
+- Asking "帮我找 5 篇 RAG 论文" uses `recommend_literature`.
 - Tool preamble text like "我来搜索一下" is not persisted as a separate assistant answer.
 - Normal chat defaults to at most one web search call.
 

@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +47,7 @@ public class LiteratureService {
     private final LiteratureRerankService rerankService;
     private final PaperStorageService storageService;
     private final ObjectMapper objectMapper;
+    private final ObjectProvider<LiteratureRecommendationService> recommendationServiceProvider;
 
     public LiteratureService(List<LiteratureSource> sources,
                              LiteratureCardRepository cards,
@@ -58,7 +60,8 @@ public class LiteratureService {
                              LiteratureCardAnalysisService cardAnalysisService,
                              LiteratureRerankService rerankService,
                              PaperStorageService storageService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             ObjectProvider<LiteratureRecommendationService> recommendationServiceProvider) {
         this.sources = sources;
         this.cards = cards;
         this.taskLiterature = taskLiterature;
@@ -71,10 +74,71 @@ public class LiteratureService {
         this.rerankService = rerankService;
         this.storageService = storageService;
         this.objectMapper = objectMapper;
+        this.recommendationServiceProvider = recommendationServiceProvider;
     }
 
     @Transactional
     public List<LiteratureSearchResult> retrieveForTask(Long taskId, ResearchProfileResult profile, int perQueryLimit, int minSelectionLimit, int selectionLimit) {
+        LiteratureRecommendationService recommendationService = recommendationServiceProvider == null ? null : recommendationServiceProvider.getIfAvailable();
+        if (recommendationService != null) {
+            return retrieveForTaskWithRecommendationService(recommendationService, taskId, profile, selectionLimit);
+        }
+        return retrieveForTaskLegacy(taskId, profile, perQueryLimit, minSelectionLimit, selectionLimit);
+    }
+
+    private List<LiteratureSearchResult> retrieveForTaskWithRecommendationService(LiteratureRecommendationService recommendationService,
+                                                                                  Long taskId,
+                                                                                  ResearchProfileResult profile,
+                                                                                  int selectionLimit) {
+        PaperTask task = tasks.findById(taskId).orElse(null);
+        Map<String, SlotQuery> slotQueries = slotQueries(taskId);
+        LiteratureRecommendationService.RecommendationRequest request = new LiteratureRecommendationService.RecommendationRequest(
+                buildRecommendationQuery(task, profile, slotQueries),
+                buildRecommendationGoal(task, profile, slotQueries),
+                buildRecommendationClaims(profile, slotQueries),
+                inferYearFrom(task, profile, slotQueries),
+                selectionLimit,
+                Math.max(30, Math.min(50, Math.max(1, selectionLimit) * 4)),
+                Math.min(6, Math.max(3, slotQueries.isEmpty() ? 4 : slotQueries.size())),
+                true,
+                null,
+                30
+        );
+        LiteratureRecommendationService.RecommendationResult recommendation = recommendationService.recommend(request);
+        if (recommendation == null) {
+            recommendation = LiteratureRecommendationService.RecommendationResult.empty("recommendation_service_returned_null");
+        }
+        List<LiteratureSearchResult> selected = recommendationSelectedResults(recommendation, slotQueries);
+        List<LiteratureSearchResult> rankedPreview = recommendationPreviewResults(recommendation, slotQueries);
+        Set<Long> selectedCardIds = selected.stream()
+                .map(item -> item.card().getId())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (LiteratureSearchResult result : mergeRecommendationResults(selected, rankedPreview)) {
+            PaperTaskLiterature relation = taskLiterature.findByTaskIdAndCardId(taskId, result.card().getId())
+                    .orElseGet(() -> new PaperTaskLiterature(taskId, result.card().getId()));
+            boolean isSelected = selectedCardIds.contains(result.card().getId());
+            relation.setRelevanceScore(result.relevanceScore());
+            relation.setNarrativeRole(result.narrativeRole());
+            relation.setLadderNode(result.ladderNode());
+            relation.setSelected(isSelected);
+            relation.setSourceQuery(result.sourceQuery());
+            taskLiterature.save(relation);
+        }
+        writeConceptLadder(
+                taskId,
+                profile,
+                selected,
+                recommendation.queries(),
+                recommendation.sourceAttempts(),
+                recommendation.sourceFailures().size(),
+                recommendation.rawCandidateCount(),
+                recommendation.uniqueCandidateCount()
+        );
+        writeRecommendationArtifacts(task, taskId, profile, recommendation, rankedPreview, selected);
+        return selected;
+    }
+
+    private List<LiteratureSearchResult> retrieveForTaskLegacy(Long taskId, ResearchProfileResult profile, int perQueryLimit, int minSelectionLimit, int selectionLimit) {
         PaperTask task = tasks.findById(taskId).orElse(null);
         Map<String, SlotQuery> slotQueries = slotQueries(taskId);
         List<String> queries = slotQueries.isEmpty()
@@ -148,6 +212,130 @@ public class LiteratureService {
         return selected;
     }
 
+    private String buildRecommendationQuery(PaperTask task, ResearchProfileResult profile, Map<String, SlotQuery> slotQueries) {
+        LinkedHashSet<String> parts = new LinkedHashSet<>();
+        addIfNotBlank(parts, task == null ? null : task.getTitle());
+        if (profile != null) {
+            addIfNotBlank(parts, profile.problem());
+            addIfNotBlank(parts, profile.method());
+            safeList(profile.tasks()).forEach(item -> addIfNotBlank(parts, item));
+            safeList(profile.keywords()).forEach(item -> addIfNotBlank(parts, item));
+        }
+        slotQueries.values().stream()
+                .limit(6)
+                .forEach(slot -> addIfNotBlank(parts, slot.query()));
+        return parts.stream().limit(12).collect(Collectors.joining("; "));
+    }
+
+    private String buildRecommendationGoal(PaperTask task, ResearchProfileResult profile, Map<String, SlotQuery> slotQueries) {
+        String mode = task == null ? "" : nullToEmpty(task.getMode());
+        StringBuilder goal = new StringBuilder("为论文润色和文献推荐阶段查找真实、可引用、与研究问题直接相关的学术文献。");
+        goal.append("根据 citation slots 区分用途：背景/综述优先经典和高影响力文献，方法/实验/claim 支撑优先直接证据，涉及最新进展时优先近五年文献。");
+        if (mode.toLowerCase(Locale.ROOT).contains("literature")) {
+            goal.append("当前任务是仅文献推荐模式，需要给出可加入 suggested.bib 的候选文献。");
+        }
+        if (profile != null && profile.degraded()) {
+            goal.append("研究画像为降级抽取结果，检索时需要更依赖用户论文题目和 citation slot。");
+        }
+        if (!slotQueries.isEmpty()) {
+            goal.append("本次包含 ").append(slotQueries.size()).append(" 个 citation slot。");
+        }
+        return goal.toString();
+    }
+
+    private String buildRecommendationClaims(ResearchProfileResult profile, Map<String, SlotQuery> slotQueries) {
+        List<String> claims = new ArrayList<>();
+        for (SlotQuery slot : slotQueries.values()) {
+            String claim = normalizeQuery(slot.claim());
+            String query = normalizeQuery(slot.query());
+            if (!claim.isBlank() || !query.isBlank()) {
+                claims.add(slot.id() + " [" + slot.category() + ", " + slot.citationNeed() + "]: " + claim + " | query=" + query);
+            }
+            if (claims.size() >= 12) break;
+        }
+        if (claims.isEmpty() && profile != null) {
+            safeList(profile.contributions()).forEach(item -> {
+                if (claims.size() < 6) claims.add(item);
+            });
+        }
+        return String.join("\n", claims);
+    }
+
+    private Integer inferYearFrom(PaperTask task, ResearchProfileResult profile, Map<String, SlotQuery> slotQueries) {
+        String text = ((task == null ? "" : nullToEmpty(task.getTitle())) + " "
+                + (profile == null ? "" : profile.problem() + " " + profile.method() + " " + String.join(" ", safeList(profile.keywords()))) + " "
+                + slotQueries.values().stream().map(slot -> slot.query() + " " + slot.claim()).collect(Collectors.joining(" ")))
+                .toLowerCase(Locale.ROOT);
+        if (text.contains("latest") || text.contains("recent") || text.contains("state-of-the-art") || text.contains("最新") || text.contains("近年")) {
+            return java.time.Year.now().getValue() - 5;
+        }
+        return null;
+    }
+
+    private List<LiteratureSearchResult> recommendationSelectedResults(LiteratureRecommendationService.RecommendationResult recommendation,
+                                                                       Map<String, SlotQuery> slotQueries) {
+        if (recommendation == null || recommendation.items().isEmpty()) return List.of();
+        Map<Long, LiteratureCard> cardsById = cards.findAllById(recommendation.items().stream()
+                        .map(LiteratureRecommendationService.RecommendationItem::cardId)
+                        .filter(id -> id != null)
+                        .toList()).stream()
+                .collect(Collectors.toMap(LiteratureCard::getId, item -> item));
+        List<LiteratureSearchResult> results = new ArrayList<>();
+        for (LiteratureRecommendationService.RecommendationItem item : recommendation.items()) {
+            LiteratureCard card = cardsById.get(item.cardId());
+            if (card == null) continue;
+            results.add(new LiteratureSearchResult(
+                    card,
+                    item.score(),
+                    safeDbValue(item.role(), 32),
+                    ladderNodeFor(slotQueries, item.sourceQuery()),
+                    true,
+                    item.sourceQuery()
+            ));
+        }
+        return results;
+    }
+
+    private List<LiteratureSearchResult> recommendationPreviewResults(LiteratureRecommendationService.RecommendationResult recommendation,
+                                                                      Map<String, SlotQuery> slotQueries) {
+        if (recommendation == null || recommendation.rankedPreview().isEmpty()) return List.of();
+        Map<Long, LiteratureCard> cardsById = cards.findAllById(recommendation.rankedPreview().stream()
+                        .map(LiteratureRecommendationService.RecommendationDiagnosticItem::cardId)
+                        .filter(id -> id != null)
+                        .toList()).stream()
+                .collect(Collectors.toMap(LiteratureCard::getId, item -> item));
+        List<LiteratureSearchResult> results = new ArrayList<>();
+        for (LiteratureRecommendationService.RecommendationDiagnosticItem item : recommendation.rankedPreview()) {
+            LiteratureCard card = cardsById.get(item.cardId());
+            if (card == null) continue;
+            results.add(new LiteratureSearchResult(
+                    card,
+                    item.score(),
+                    safeDbValue(item.role(), 32),
+                    ladderNodeFor(slotQueries, item.sourceQuery()),
+                    false,
+                    item.sourceQuery()
+            ));
+        }
+        return results;
+    }
+
+    private List<LiteratureSearchResult> mergeRecommendationResults(List<LiteratureSearchResult> selected, List<LiteratureSearchResult> rankedPreview) {
+        Map<Long, LiteratureSearchResult> merged = new LinkedHashMap<>();
+        for (LiteratureSearchResult result : selected) {
+            if (result.card().getId() != null) merged.put(result.card().getId(), result);
+        }
+        for (LiteratureSearchResult result : rankedPreview) {
+            if (result.card().getId() != null) merged.putIfAbsent(result.card().getId(), result);
+        }
+        return List.copyOf(merged.values());
+    }
+
+    private String ladderNodeFor(Map<String, SlotQuery> slotQueries, String sourceQuery) {
+        SlotQuery slot = slotQueries.get(sourceQuery);
+        return slot == null ? "recommendation" : safeDbValue(slot.id(), 255);
+    }
+
     private void writeRetrievalArtifacts(PaperTask task, Long taskId, ResearchProfileResult profile, List<String> queries,
                                          List<Map<String, Object>> sourceAttemptDetails, List<LiteratureCandidate> rawCandidates,
                                          Map<String, LiteratureCandidate> unique, List<LiteratureSearchResult> ranked,
@@ -176,6 +364,81 @@ public class LiteratureService {
         } catch (Exception ignored) {
             // Retrieval artifacts are diagnostic only; never fail the paper task because diagnostics cannot be written.
         }
+    }
+
+    private void writeRecommendationArtifacts(PaperTask task,
+                                              Long taskId,
+                                              ResearchProfileResult profile,
+                                              LiteratureRecommendationService.RecommendationResult recommendation,
+                                              List<LiteratureSearchResult> rankedPreview,
+                                              List<LiteratureSearchResult> selected) {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("taskId", taskId);
+            payload.put("paperTitle", task == null ? "" : task.getTitle());
+            payload.put("generatedAt", Instant.now().toString());
+            payload.put("retrievalEngine", "recommend_literature");
+            payload.put("researchProfile", profile);
+            payload.put("query", recommendation.query());
+            payload.put("goal", recommendation.goal());
+            payload.put("queries", recommendation.queries());
+            payload.put("rawCandidateCount", recommendation.rawCandidateCount());
+            payload.put("uniqueCandidateCount", recommendation.uniqueCandidateCount());
+            payload.put("rankedCandidateCount", recommendation.rankedCandidateCount());
+            payload.put("selectedCandidateCount", recommendation.selectedCandidateCount());
+            payload.put("llmRerankUsed", recommendation.llmRerankUsed());
+            payload.put("sourceAttempts", recommendation.retrievalDiagnostics());
+            payload.put("sourceFailures", recommendation.sourceFailures());
+            payload.put("rankedCandidates", rankedPreview.stream().map(this::resultMap).toList());
+            payload.put("selectedCandidates", selected.stream().map(this::resultMap).toList());
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(payload);
+            saveArtifact(task, taskId, "retrieved_literature_json", "retrieved-literature.json", json, "application/json; charset=UTF-8",
+                    Map.of("rawCandidateCount", recommendation.rawCandidateCount(), "uniqueCandidateCount", recommendation.uniqueCandidateCount(), "selectedCandidateCount", selected.size(), "engine", "recommend_literature"));
+            saveArtifact(task, taskId, "retrieved_literature_md", "retrieved-literature.md", buildRecommendationMarkdown(payload, recommendation, rankedPreview, selected), "text/markdown; charset=UTF-8",
+                    Map.of("rawCandidateCount", recommendation.rawCandidateCount(), "uniqueCandidateCount", recommendation.uniqueCandidateCount(), "selectedCandidateCount", selected.size(), "engine", "recommend_literature"));
+        } catch (Exception ignored) {
+            // Retrieval artifacts are diagnostic only; never fail the paper task because diagnostics cannot be written.
+        }
+    }
+
+    private String buildRecommendationMarkdown(Map<String, Object> payload,
+                                               LiteratureRecommendationService.RecommendationResult recommendation,
+                                               List<LiteratureSearchResult> rankedPreview,
+                                               List<LiteratureSearchResult> selected) {
+        StringBuilder md = new StringBuilder();
+        md.append("# Retrieved Literature Diagnostics\n\n")
+                .append("- Task ID: ").append(payload.get("taskId")).append("\n")
+                .append("- Paper title: ").append(payload.get("paperTitle")).append("\n")
+                .append("- Retrieval engine: recommend_literature\n")
+                .append("- Generated at: ").append(payload.get("generatedAt")).append("\n")
+                .append("- Raw candidates: ").append(recommendation.rawCandidateCount()).append("\n")
+                .append("- Unique candidates: ").append(recommendation.uniqueCandidateCount()).append("\n")
+                .append("- Ranked candidates: ").append(recommendation.rankedCandidateCount()).append("\n")
+                .append("- Selected candidates: ").append(selected.size()).append("\n")
+                .append("- LLM rerank used: ").append(recommendation.llmRerankUsed()).append("\n\n");
+        md.append("## Main Request\n\n")
+                .append("- Query: `").append(recommendation.query()).append("`\n")
+                .append("- Goal: ").append(recommendation.goal()).append("\n\n");
+        md.append("## Queries\n\n");
+        for (String query : recommendation.queries()) md.append("- `").append(query).append("`\n");
+        md.append("\n## Source Attempts\n\n");
+        for (LiteratureRecommendationService.RetrievalDiagnosticItem item : recommendation.retrievalDiagnostics()) {
+            md.append("- ").append(item.source())
+                    .append(" | query=`").append(item.query()).append("`")
+                    .append(" | returned=").append(item.candidateCount())
+                    .append(" | accepted=").append(item.acceptedCount())
+                    .append(item.failed() ? " | failed=" + item.message() : "")
+                    .append("\n");
+        }
+        if (!recommendation.sourceFailures().isEmpty()) {
+            md.append("\n## Source Failures\n\n");
+            recommendation.sourceFailures().forEach(failure -> md.append("- ").append(failure).append("\n"));
+        }
+        md.append("\n## Selected Candidates\n\n");
+        appendResults(md, selected);
+        md.append("\n## Ranked Preview (Top 30)\n\n");
+        appendResults(md, rankedPreview);
+        return md.toString();
     }
 
     private void saveArtifact(PaperTask task, Long taskId, String type, String filename, String content, String contentType, Map<String, Object> metadata) throws JsonProcessingException {

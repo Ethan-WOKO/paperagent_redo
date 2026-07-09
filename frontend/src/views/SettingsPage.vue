@@ -1,17 +1,19 @@
 <template>
   <AppLayout>
     <div class="settings-page workbench-page scholar-page scholar-page--settings">
-      <section class="workbench-hero scholar-page-hero">
-        <div>
-          <div class="workbench-kicker">Settings</div>
-          <h1>Settings</h1>
-          <p>Configure model providers, agent behavior, MCP permissions, skills, and credentials without exposing secrets.</p>
-        </div>
-        <NSpace align="center">
-          <span class="chat-hint">Last updated: {{ updatedAtText }}</span>
-          <NButton type="primary" :loading="saving" :disabled="isDemoUser" @click="handleSave">Save settings</NButton>
-        </NSpace>
-      </section>
+      <WorkspaceHero
+        kicker="Settings"
+        title="Settings"
+        subtitle="Configure model providers, agent behavior, MCP permissions, skills, and credentials without exposing secrets."
+        storage-key="yanban.hero.settings"
+      >
+        <template #actions>
+          <NSpace align="center">
+            <span class="chat-hint">Last updated: {{ updatedAtText }}</span>
+            <NButton type="primary" :loading="saving" :disabled="isDemoUser" @click="handleSave">Save settings</NButton>
+          </NSpace>
+        </template>
+      </WorkspaceHero>
 
       <NAlert v-if="isDemoUser" type="info" class="settings-demo-alert" title="Demo 账号为只读配置">
         游客体验可以使用预置模型和样本文档，但不能修改 API Key、模型、MCP、Skills 或自定义模型。
@@ -286,6 +288,7 @@ import {
 } from 'naive-ui';
 import { computed, onMounted, reactive, ref } from 'vue';
 import AppLayout from '@/components/AppLayout.vue';
+import WorkspaceHero from '@/components/WorkspaceHero.vue';
 import { listSkills, type SkillListItemResponse } from '@/api/skills';
 import { getSettings, updateSettings, refreshProviderModels, createModel, updateModel, deleteModel, testModel, type UserModelResponse, type UserSettingsResponse } from '@/api/settings';
 import { useAuthStore } from '@/stores/auth';

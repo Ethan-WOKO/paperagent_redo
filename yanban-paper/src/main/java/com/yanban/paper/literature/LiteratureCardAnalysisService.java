@@ -16,6 +16,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -72,16 +77,57 @@ public class LiteratureCardAnalysisService {
     }
 
     public void analyzeTopCandidates(List<LiteratureSearchResult> ranked) {
-        if (ranked == null || ranked.isEmpty()) return;
-        int limit = Math.max(0, properties.getMaxAnalysisPerTask());
+        analyzeTopCandidates(ranked, properties.getMaxAnalysisPerTask());
+    }
+
+    public void analyzeTopCandidates(List<LiteratureSearchResult> ranked, Integer requestedLimit) {
+        long start = System.nanoTime();
+        if (ranked == null || ranked.isEmpty()) {
+            log.info("LiteratureCardAnalysis complete elapsedMs={} requestedLimit={} selectedCount=0 concurrency=0 failures=0",
+                    elapsedMs(start),
+                    requestedLimit);
+            return;
+        }
+        int limit = Math.max(0, requestedLimit == null ? properties.getMaxAnalysisPerTask() : requestedLimit);
         if (limit <= 0) return;
+        int concurrency = Math.max(1, Math.min(16, properties.getAnalysisConcurrency()));
         Set<Long> seen = new LinkedHashSet<>();
         for (LiteratureSearchResult result : ranked) {
             if (seen.size() >= limit) break;
             Long cardId = result.card().getId();
             if (cardId == null || !seen.add(cardId)) continue;
-            analyzeIfNeeded(cardId);
         }
+        if (seen.isEmpty()) return;
+        AtomicInteger failures = new AtomicInteger();
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(concurrency, seen.size()), threadFactory());
+        try {
+            List<CompletableFuture<Void>> futures = seen.stream()
+                    .map(cardId -> CompletableFuture.runAsync(() -> {
+                        long itemStart = System.nanoTime();
+                        try {
+                            analyzeIfNeeded(cardId);
+                            long itemMs = elapsedMs(itemStart);
+                            if (itemMs >= 5_000) {
+                                log.info("LiteratureCardAnalysis itemSlow cardId={} elapsedMs={}", cardId, itemMs);
+                            }
+                        } catch (Exception ex) {
+                            failures.incrementAndGet();
+                            log.warn("LiteratureCardAnalysis itemFailed cardId={} error={}",
+                                    cardId,
+                                    ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+                        }
+                    }, executor))
+                    .toList();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } finally {
+            executor.shutdown();
+        }
+        log.info("LiteratureCardAnalysis complete elapsedMs={} requestedLimit={} selectedCount={} concurrency={} failures={}",
+                elapsedMs(start),
+                limit,
+                seen.size(),
+                Math.min(concurrency, seen.size()),
+                failures.get());
     }
 
     private Map<String, Object> llmAnalysis(LiteratureCard card) throws JsonProcessingException {
@@ -203,5 +249,18 @@ public class LiteratureCardAnalysisService {
         } catch (Exception ex) {
             return "{}";
         }
+    }
+
+    private ThreadFactory threadFactory() {
+        AtomicInteger index = new AtomicInteger();
+        return runnable -> {
+            Thread thread = new Thread(runnable, "literature-card-analysis-" + index.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private long elapsedMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
     }
 }

@@ -6,18 +6,25 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
 public class OpenAlexLiteratureSource implements LiteratureSource {
 
     private final RestClient restClient;
+    private final String apiKey;
 
     public OpenAlexLiteratureSource() {
-        this(RestClient.builder().baseUrl("https://api.openalex.org").build());
+        this(RestClient.builder().baseUrl("https://api.openalex.org").build(), null);
     }
 
     public OpenAlexLiteratureSource(RestClient restClient) {
+        this(restClient, null);
+    }
+
+    public OpenAlexLiteratureSource(RestClient restClient, String apiKey) {
         this.restClient = restClient;
+        this.apiKey = apiKey;
     }
 
     @Override
@@ -28,8 +35,11 @@ public class OpenAlexLiteratureSource implements LiteratureSource {
     @Override
     public List<LiteratureCandidate> search(String query, int limit) {
         String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8);
+        String apiKeyParam = StringUtils.hasText(apiKey)
+                ? "&api_key=" + URLEncoder.encode(apiKey, StandardCharsets.UTF_8)
+                : "";
         JsonNode root = restClient.get()
-                .uri("/works?search=" + encoded + "&per-page=" + Math.max(1, Math.min(limit, 50)))
+                .uri("/works?search=" + encoded + "&per-page=" + Math.max(1, Math.min(limit, 50)) + apiKeyParam)
                 .retrieve()
                 .body(JsonNode.class);
         List<LiteratureCandidate> candidates = new ArrayList<>();

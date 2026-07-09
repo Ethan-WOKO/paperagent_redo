@@ -62,17 +62,16 @@
     <main
       class="app-workspace"
       :class="{
-        'app-workspace--topbar-collapsed': topbarCollapsed,
+        'app-workspace--topbar-collapsed': showTopbar && topbarCollapsed,
+        'app-workspace--no-topbar': !showTopbar,
         'app-workspace--chat': route.path.startsWith('/chat'),
         'app-workspace--paper': route.path.startsWith('/paper'),
         'app-workspace--settings': route.path.startsWith('/settings'),
       }"
     >
-      <header class="app-topbar">
+      <header v-if="showTopbar" class="app-topbar">
         <div>
-          <div class="app-topbar__eyebrow">{{ routeEyebrow }}</div>
           <h1>{{ routeTitle }}</h1>
-          <p>{{ routeSubtitle }}</p>
         </div>
         <NSpace align="center" :size="10" wrap>
           <NButton secondary round @click="router.push('/chat')">+ New Task</NButton>
@@ -87,7 +86,7 @@
       </header>
 
       <button
-        v-if="topbarCollapsed"
+        v-if="showTopbar && topbarCollapsed"
         type="button"
         class="app-topbar__restore"
         title="Show header"
@@ -116,13 +115,14 @@ const authStore = useAuthStore();
 const { isDark, toggleTheme } = useTheme();
 const TOPBAR_COLLAPSED_KEY = 'yanban.app.topbarCollapsed';
 const topbarCollapsed = ref(readStoredBoolean(TOPBAR_COLLAPSED_KEY, false));
+const showTopbar = computed(() => route.path.startsWith('/chat'));
 
 const navItems = [
   { label: 'Workspace', path: '/chat' },
-  { label: 'Paper Polish', path: '/paper' },
-  { label: 'Project Preview', path: '/projects' },
-  { label: 'Knowledge Base', path: '/knowledge-base' },
-  { label: 'Search Debug', path: '/knowledge-base/search-debug' },
+  { label: 'Papers', path: '/paper' },
+  { label: 'Projects', path: '/projects' },
+  { label: 'Knowledge', path: '/knowledge-base' },
+  { label: 'Retrieval', path: '/knowledge-base/search-debug' },
   { label: 'Settings', path: '/settings' },
 ];
 
@@ -130,27 +130,11 @@ const userInitial = computed(() => (authStore.currentUser?.username || 'U').slic
 
 const routeTitle = computed(() => {
   if (route.path.startsWith('/paper')) return 'Paper Polish Workspace';
-  if (route.path.startsWith('/projects')) return 'Project Preview';
+  if (route.path.startsWith('/projects')) return 'Project Workspace';
   if (route.path.startsWith('/knowledge-base/search-debug')) return 'Knowledge Search Debug';
   if (route.path.startsWith('/knowledge-base')) return 'Knowledge Base';
   if (route.path.startsWith('/settings')) return 'Settings';
   return 'Research Copilot';
-});
-
-const routeSubtitle = computed(() => {
-  if (route.path.startsWith('/paper')) return 'Polish LaTeX papers, retrieve literature, review suggestions, and export artifacts.';
-  if (route.path.startsWith('/projects')) return 'Preview the future Project or Workspace entry without enabling full project management yet.';
-  if (route.path.startsWith('/knowledge-base')) return 'Manage private knowledge and verify retrieval quality.';
-  if (route.path.startsWith('/settings')) return 'Configure models, tools, MCP, skills, and provider credentials.';
-  return 'Chat, search literature, and run multi-step research workflows.';
-});
-
-const routeEyebrow = computed(() => {
-  if (route.path.startsWith('/paper')) return 'Academic Writing';
-  if (route.path.startsWith('/projects')) return 'Preview';
-  if (route.path.startsWith('/knowledge-base')) return 'Retrieval';
-  if (route.path.startsWith('/settings')) return 'System';
-  return 'AI Research Assistant';
 });
 
 function isActiveNav(path: string) {

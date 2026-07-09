@@ -1050,7 +1050,7 @@ public class AgentService {
         return switch (toolName == null ? "" : toolName) {
             case "search_knowledge" -> "正在检索知识库。";
             case "search_web" -> "正在联网搜索资料。";
-            case "search_literature" -> "正在检索论文资料。";
+            case "recommend_literature" -> "正在检索并整理相关文献。";
             case "literature_search_start" -> "正在创建文献检索任务。";
             case "literature_search_status" -> "正在查看文献检索进度。";
             case "literature_search_result" -> "正在读取文献检索结果。";
@@ -1068,7 +1068,7 @@ public class AgentService {
         return switch (toolName == null ? "" : toolName) {
             case "search_knowledge" -> "知识库检索完成。";
             case "search_web" -> "联网搜索完成。";
-            case "search_literature", "literature_search_result" -> "文献检索完成。";
+            case "recommend_literature", "literature_search_result" -> "文献检索完成。";
             case "literature_search_start" -> "文献检索任务已创建。";
             case "literature_search_status", "paper_polish_status" -> "后台任务状态已更新。";
             case "literature_search_cancel", "paper_task_cancel" -> "后台任务已取消。";

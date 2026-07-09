@@ -91,18 +91,30 @@ public class AgentLangChain4jTools {
         return execute(userId, "search_web", args);
     }
 
-    @Tool(name = "search_literature", value = "Search public academic literature and return paper candidates.")
-    public String searchLiterature(@ToolMemoryId Long userId,
-                                   @P(name = "query", value = "Academic literature search query") String query,
-                                   @P(name = "topK", value = "Number of papers to return, default 8, max 20", required = false) Integer topK,
-                                   @P(name = "yearFrom", value = "Optional starting publication year", required = false) Integer yearFrom,
-                                   @P(name = "includeBibtex", value = "Whether to include BibTeX, default true", required = false) Boolean includeBibtex) {
+    @Tool(name = "recommend_literature", value = "Recommend academic literature with LLM query planning, deduplication, scoring, optional rerank, and explanation.")
+    public String recommendLiterature(@ToolMemoryId Long userId,
+                                      @P(name = "query", value = "Main academic literature topic or question") String query,
+                                      @P(name = "goal", value = "Optional goal such as survey, latest work, method comparison, or citation support", required = false) String goal,
+                                      @P(name = "claims", value = "Optional citation claims or evidence needs, separated by newline or semicolon", required = false) String claims,
+                                      @P(name = "topK", value = "Number of final recommendations, default 8, max 30", required = false) Integer topK,
+                                      @P(name = "candidateK", value = "Candidates to fetch from each source per generated query, default is derived from topK, max 50", required = false) Integer candidateK,
+                                      @P(name = "maxQueries", value = "Maximum generated search queries, default 4, max 6", required = false) Integer maxQueries,
+                                      @P(name = "analysisLimit", value = "Maximum top literature cards to analyze with LLM before reranking, default 15, max 30", required = false) Integer analysisLimit,
+                                      @P(name = "yearFrom", value = "Optional starting publication year", required = false) Integer yearFrom,
+                                      @P(name = "includeBibtex", value = "Whether to include BibTeX, default true", required = false) Boolean includeBibtex,
+                                      @P(name = "existingBibtex", value = "Optional existing BibTeX to mark already-present papers", required = false) String existingBibtex) {
         ObjectNode args = args();
         put(args, "query", query);
+        put(args, "goal", goal);
+        put(args, "claims", claims);
         put(args, "topK", topK);
+        put(args, "candidateK", candidateK);
+        put(args, "maxQueries", maxQueries);
+        put(args, "analysisLimit", analysisLimit);
         put(args, "yearFrom", yearFrom);
         put(args, "includeBibtex", includeBibtex);
-        return execute(userId, "search_literature", args);
+        put(args, "existingBibtex", existingBibtex);
+        return execute(userId, "recommend_literature", args);
     }
 
     @Tool(name = "literature_search_start", value = "Start an asynchronous literature-search task and return task id.")

@@ -4,16 +4,24 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
+import java.time.Duration;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 public class DeepSeekModelProvider implements ChatModelProvider {
+
+    private static final int MAX_TRANSPORT_RETRIES = 1;
 
     private final DeepSeekProperties properties;
     private final WebClient webClient;
@@ -56,6 +64,7 @@ public class DeepSeekModelProvider implements ChatModelProvider {
                             .flatMap(body -> Mono.error(new ModelProviderException(
                                     "DeepSeek API error: HTTP " + clientResponse.statusCode().value() + " " + body))))
                     .bodyToMono(DeepSeekChatResponse.class)
+                    .retryWhen(transportRetrySpec())
                     .block(properties.getTimeout());
             return fromDeepSeekResponse(response);
         } catch (WebClientResponseException ex) {
@@ -63,7 +72,7 @@ public class DeepSeekModelProvider implements ChatModelProvider {
         } catch (ModelProviderException ex) {
             throw ex;
         } catch (RuntimeException ex) {
-            throw new ModelProviderException("DeepSeek API request failed", ex);
+            throw new ModelProviderException("DeepSeek API request failed: " + transportFailureMessage(ex), ex);
         }
     }
 
@@ -84,8 +93,41 @@ public class DeepSeekModelProvider implements ChatModelProvider {
                         .flatMap(body -> Mono.error(new ModelProviderException(
                                 "DeepSeek API error: HTTP " + clientResponse.statusCode().value() + " " + body))))
                 .bodyToFlux(String.class)
+                .retryWhen(transportRetrySpec())
                 .flatMapIterable(this::parseSseChunk)
-                .onErrorMap(ex -> ex instanceof ModelProviderException ? ex : new ModelProviderException("DeepSeek API stream failed", ex));
+                .onErrorMap(ex -> ex instanceof ModelProviderException
+                        ? ex
+                        : new ModelProviderException("DeepSeek API stream failed: " + transportFailureMessage(ex), ex));
+    }
+
+    private Retry transportRetrySpec() {
+        return Retry.backoff(MAX_TRANSPORT_RETRIES, Duration.ofMillis(250))
+                .maxBackoff(Duration.ofSeconds(1))
+                .filter(this::isTransientTransportError);
+    }
+
+    private boolean isTransientTransportError(Throwable ex) {
+        Throwable root = rootCause(ex);
+        return ex instanceof WebClientRequestException
+                || root instanceof IOException
+                || root instanceof SocketException
+                || root instanceof TimeoutException
+                || root.getClass().getName().contains("PrematureCloseException");
+    }
+
+    private String transportFailureMessage(Throwable ex) {
+        Throwable root = rootCause(ex);
+        String message = root.getMessage();
+        String detail = StringUtils.hasText(message) ? message : root.getClass().getSimpleName();
+        return detail + ". This is a transport/network failure before a usable DeepSeek response was received.";
+    }
+
+    private Throwable rootCause(Throwable ex) {
+        Throwable current = ex;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
     }
 
     private void validateConfigured(String apiKeyOverride) {

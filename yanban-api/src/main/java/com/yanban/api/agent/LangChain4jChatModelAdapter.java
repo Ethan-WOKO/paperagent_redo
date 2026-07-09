@@ -30,12 +30,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 
 @Component
 public class LangChain4jChatModelAdapter implements ChatModel {
+
+    private static final Logger log = LoggerFactory.getLogger(LangChain4jChatModelAdapter.class);
 
     private final ChatModelProvider chatModelProvider;
     private final ObjectMapper objectMapper;
@@ -59,7 +64,21 @@ public class LangChain4jChatModelAdapter implements ChatModel {
 
     public Flux<ChatChunk> stream(dev.langchain4j.model.chat.request.ChatRequest request,
                                   AgentRuntimeRequest runtimeRequest) {
-        return chatModelProvider.streamChat(toCoreChatRequest(request, runtimeRequest));
+        ChatRequest coreRequest = toCoreChatRequest(request, runtimeRequest);
+        AtomicBoolean emitted = new AtomicBoolean(false);
+        return chatModelProvider.streamChat(coreRequest)
+                .doOnNext(chunk -> {
+                    if (chunk != null) {
+                        emitted.set(true);
+                    }
+                })
+                .onErrorResume(ex -> shouldFallbackToNonStreaming(ex) && !emitted.get(), ex -> {
+                    log.warn("Streaming chat failed before first chunk, falling back to non-streaming provider={} model={} error={}",
+                            coreRequest.provider(),
+                            coreRequest.model(),
+                            ex.getMessage());
+                    return Flux.fromIterable(toFallbackChunks(chatModelProvider.chat(coreRequest)));
+                });
     }
 
     private ChatRequest toCoreChatRequest(dev.langchain4j.model.chat.request.ChatRequest request,
@@ -236,5 +255,51 @@ public class LangChain4jChatModelAdapter implements ChatModel {
 
     private String defaultString(String value, String fallback) {
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private boolean shouldFallbackToNonStreaming(Throwable ex) {
+        Throwable current = ex;
+        while (current != null) {
+            String message = current.getMessage();
+            String className = current.getClass().getName();
+            if (StringUtils.hasText(message) && (
+                    message.contains("PrematureCloseException")
+                            || message.contains("Connection prematurely closed")
+                            || message.contains("stream failed"))) {
+                return true;
+            }
+            if (className.contains("PrematureCloseException")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private List<ChatChunk> toFallbackChunks(ChatResponse response) {
+        if (response == null || response.message() == null) {
+            return List.of(ChatChunk.done("stop"));
+        }
+        List<ChatChunk> chunks = new ArrayList<>();
+        if (StringUtils.hasText(response.message().content())) {
+            chunks.add(ChatChunk.token(response.message().content()));
+        }
+        if (response.message().toolCalls() != null) {
+            for (int i = 0; i < response.message().toolCalls().size(); i++) {
+                ToolCall toolCall = response.message().toolCalls().get(i);
+                if (toolCall == null || toolCall.function() == null) {
+                    continue;
+                }
+                chunks.add(ChatChunk.toolCallDelta(new ChatChunk.ToolCallDelta(
+                        i,
+                        toolCall.id(),
+                        toolCall.type(),
+                        toolCall.function().name(),
+                        toolCall.function().arguments()
+                )));
+            }
+        }
+        chunks.add(ChatChunk.done(defaultString(response.finishReason(), "stop")));
+        return chunks;
     }
 }

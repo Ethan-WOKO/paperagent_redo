@@ -1,45 +1,40 @@
 ﻿<template>
   <AppLayout>
     <div class="paper-page workbench-page scholar-page scholar-page--paper">
-      <section class="workbench-hero">
-        <div>
-          <div class="workbench-kicker">Paper workflow</div>
-          <h1>LaTeX 论文处理台</h1>
-          <p>上传 LaTeX 主文件（.tex）与可选 .bib 后订阅实时事件，处理完成即可下载三件套结果。</p>
-        </div>
-        <div class="paper-hero-panel">
-          <NTag :type="currentTask ? statusTagType(currentTask.status) : 'default'" round>
-            {{ currentTask?.status || '未创建任务' }}
-          </NTag>
-          <div class="paper-hero-metrics">
-            <div>
-              <span>进度</span>
-              <strong>{{ progressPercent }}%</strong>
-            </div>
-            <div>
-              <span>阶段</span>
-              <strong>{{ currentStageLabel }}</strong>
-            </div>
-            <div>
-              <span>产物</span>
-              <strong>{{ canDownload ? 'Ready' : 'Pending' }}</strong>
-            </div>
+      <WorkspaceHero
+        kicker="Academic Writing"
+        title="Paper Polish Workspace"
+        subtitle="Revise manuscripts with retrieval-backed critique, citation support, live task events, and export-ready artifacts."
+        storage-key="yanban.hero.paper"
+      >
+        <template #actions>
+          <NSpace align="center">
+            <NButton secondary @click="startNewPaperTask">New polish</NButton>
+            <NButton secondary :loading="historyLoading" @click="loadHistory">Save draft</NButton>
+            <NButton type="primary" :loading="submitting" @click="handleSubmit">Run Workflow</NButton>
+          </NSpace>
+        </template>
+      </WorkspaceHero>
+
+      <div class="paper-hero-panel">
+        <NTag :type="currentTask ? statusTagType(currentTask.status) : 'default'" round>
+          {{ currentTask?.status || '未创建任务' }}
+        </NTag>
+        <div class="paper-hero-metrics">
+          <div>
+            <span>进度</span>
+            <strong>{{ progressPercent }}%</strong>
+          </div>
+          <div>
+            <span>阶段</span>
+            <strong>{{ currentStageLabel }}</strong>
+          </div>
+          <div>
+            <span>产物</span>
+            <strong>{{ canDownload ? 'Ready' : 'Pending' }}</strong>
           </div>
         </div>
-      </section>
-
-      <section class="paper-polish-hero">
-        <div>
-          <div class="workbench-kicker">Academic Writing</div>
-          <h1>Paper Polish Workspace</h1>
-          <p>Revise manuscripts with retrieval-backed critique, citation support, live task events, and export-ready artifacts.</p>
-        </div>
-        <NSpace align="center">
-          <NButton secondary @click="startNewPaperTask">New polish</NButton>
-          <NButton secondary :loading="historyLoading" @click="loadHistory">Save draft</NButton>
-          <NButton type="primary" :loading="submitting" @click="handleSubmit">Run Workflow</NButton>
-        </NSpace>
-      </section>
+      </div>
 
       <section class="paper-task-board">
         <div class="paper-task-board__head">
@@ -836,6 +831,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppLayout from '@/components/AppLayout.vue';
+import WorkspaceHero from '@/components/WorkspaceHero.vue';
 import {
   answerPaperClarification,
   createPaperTask,
