@@ -54,6 +54,25 @@ class CompletionVerifierTest {
     }
 
     @Test
+    void governedResearchEnvelopeClosesCompletionEvidenceLoopAndStaleHashIsDiscarded() {
+        ProjectService researchProjects = mock(ProjectService.class);
+        String hash = "a".repeat(64);
+        when(researchProjects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, "b".repeat(64), List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        CompletionVerifier researchVerifier = new CompletionVerifier(new ObjectMapper(), new ProjectEvidenceValidator(researchProjects),
+                mock(CandidateChangeArtifactService.class));
+
+        AgentRuntimeResult current = researchVerifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT),
+                success("grounded", researchTranscript(hash)));
+        AgentRuntimeResult stale = researchVerifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT),
+                success("grounded", researchTranscript("c".repeat(64))));
+
+        assertThat(current.completionVerification().status()).isEqualTo(CompletionStatus.VERIFIED);
+        assertThat(current.trustedEvidenceLedger().evidence()).singleElement().extracting(EvidenceRef::version).isEqualTo(hash);
+        assertThat(stale.completionVerification().status()).isEqualTo(CompletionStatus.INSUFFICIENT_EVIDENCE);
+    }
+
+    @Test
     void historicalCrossProjectAndWrongHashEvidenceCannotPass() {
         AgentRuntimeRequest request = projectRequest(AgentStrategy.SINGLE_STEP_REACT);
         AgentRuntimeResult historicalOnly = verifier.verify(request, success("review", List.of()));
@@ -304,6 +323,15 @@ class CompletionVerifierTest {
     private ChatMessage tool(long projectId, String path, String hash) {
         return new ChatMessage("tool", "{\"projectId\":" + projectId + ",\"relativePath\":\"" + path
                 + "\",\"hash\":\"" + hash + "\",\"version\":\"" + hash + "\"}", null, "call-1");
+    }
+
+    private List<ChatMessage> researchTranscript(String hash) {
+        String envelope = "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\"" + "b".repeat(64)
+                + "\",\"relativePath\":\"paper/main.tex\",\"fileHash\":\"" + hash
+                + "\",\"range\":{\"startLine\":2,\"endLine\":2},\"parserVersion\":\"latex-outline@1\",\"trustLabel\":\"SERVER_ATTESTED_METADATA\"}],\"partial\":false,\"truncated\":false,\"parseFailed\":false}";
+        return List.of(new ChatMessage("assistant", null, List.of(new com.yanban.core.model.ToolCall("research-1", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall("project_latex_outline", "{\"relativePaths\":[\"paper/main.tex\"]}"))), null),
+                ChatMessage.tool("research-1", envelope));
     }
 
     private AgentRuntimeResult success(String content, List<ChatMessage> messages) {

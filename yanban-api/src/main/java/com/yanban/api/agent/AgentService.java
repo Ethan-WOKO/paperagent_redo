@@ -642,6 +642,13 @@ public class AgentService {
                 throw new IllegalArgumentException("conflicting evidence id: " + ref.id());
             }
         }
+        for (EvidenceRef ref : ResearchProjectEvidenceAdapter.extract(objectMapper, messages, historySize, context,
+                ResearchProjectEvidenceAdapter.allResearchTools()).evidence()) {
+            EvidenceRef existing = refs.putIfAbsent(ref.id(), ref);
+            if (existing != null && !existing.equals(ref)) {
+                throw new IllegalArgumentException("conflicting evidence id: " + ref.id());
+            }
+        }
         return new EvidenceLedger(List.copyOf(refs.values()));
     }
 

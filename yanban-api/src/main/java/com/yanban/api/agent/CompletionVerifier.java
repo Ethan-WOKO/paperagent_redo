@@ -147,6 +147,10 @@ public class CompletionVerifier {
             }
             putExact(refs, ref);
         }
+        for (EvidenceRef ref : ResearchProjectEvidenceAdapter.extract(objectMapper, messages, request.history().size(),
+                request.projectContext(), ResearchProjectEvidenceAdapter.allResearchTools()).evidence()) {
+            putExact(refs, ref);
+        }
         return new EvidenceLedger(List.copyOf(refs.values()));
     }
 

@@ -48,7 +48,10 @@ public class AgentToolPolicyEngine {
         return decide(new ToolPolicyRequest(
                 ToolDescriptor.CapabilityProfile.PROJECT,
                 skillAllowedTools,
-                Set.of("project:read"),
+                // Research executors additionally re-attest ProjectService READ_ONLY ownership.
+                // This permission only makes a registered descriptor eligible; the resolved
+                // skill/step allow-list remains the final model and execution boundary.
+                Set.of("project:read", "research:project-read"),
                 stepAllowedTools,
                 Set.of(ToolDescriptor.ResourceScope.PROJECT),
                 true));

@@ -13,6 +13,9 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.settings.SysUserSettings;
+import com.yanban.api.project.ProjectService;
+import com.yanban.api.project.ProjectManifestResponse;
+import com.yanban.api.project.ProjectFileEntry;
 import com.yanban.api.settings.UserSettingsService;
 import com.yanban.api.skills.SkillsService;
 import com.yanban.api.skills.ResolvedSkill;
@@ -27,6 +30,7 @@ import com.yanban.core.agent.AgentPlanStepStatus;
 import com.yanban.core.agent.AgentSession;
 import com.yanban.core.model.ChatMessage;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -88,6 +92,9 @@ class PlanAgentServiceTest {
     @Mock
     AgentToolPolicyEngine toolPolicyEngine;
 
+    @Mock
+    ProjectService projectService;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private PlanAgentService service;
     private AgentPlan plan;
@@ -101,12 +108,14 @@ class PlanAgentServiceTest {
                 events,
                 agentService,
                 agentRuntimeService,
+                null,
                 planner,
                 stepVerifier,
                 userSettingsService,
                 skillsService,
                 toolPolicyEngine,
-                objectMapper
+                objectMapper,
+                projectService
         );
         plan = newPlan();
         session = newSession();
@@ -126,6 +135,8 @@ class PlanAgentServiceTest {
         when(events.save(any(AgentPlanEvent.class))).thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(toolPolicyEngine.decide(any(), org.mockito.ArgumentMatchers.anyBoolean(), any()))
                 .thenReturn(new AgentToolPolicyEngine.Decision(List.of(), 3, 1, "test_plan_policy"));
+        lenient().when(projectService.manifest(anyLong(), anyLong()))
+                .thenReturn(new ProjectManifestResponse(42L, "manifest-test", List.of()));
     }
 
     @Test
@@ -152,6 +163,184 @@ class PlanAgentServiceTest {
         assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
                 .contains("analysis result");
         verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
+    }
+
+    @Test
+    void projectResearchStepPersistsTrustedEvidenceThroughExecutePlan() throws Exception {
+        String hash = "a".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("research", 1, List.of(), "[\"project_latex_outline\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "b".repeat(64), List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_latex_outline"), 3, 1, "project"));
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("research-call", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall("project_latex_outline", "{\"relativePaths\":[\"paper/main.tex\"]}"));
+        String envelope = "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\"" + "b".repeat(64)
+                + "\",\"relativePath\":\"paper/main.tex\",\"fileHash\":\"" + hash
+                + "\",\"range\":{\"startLine\":1,\"endLine\":1},\"parserVersion\":\"latex-outline@1\",\"trustLabel\":\"SERVER_ATTESTED_METADATA\"}]}";
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(new AgentRuntimeResult(true, "observed",
+                List.of(new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("research-call", envelope)),
+                1, null, List.of(), List.of(), null, null, null));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService).run(request.capture());
+        assertThat(request.getValue().projectContext()).isEqualTo(new ProjectRuntimeContext(USER_ID, 42L));
+        assertThat(request.getValue().toolPolicy().allowedTools()).containsExactly("project_latex_outline");
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class); verify(events, atLeast(1)).save(event.capture());
+        AgentPlanEvent evidenceEvent = event.getAllValues().stream().filter(value -> "step_project_evidence".equals(value.getEventType())).findFirst().orElseThrow();
+        var payload = objectMapper.readTree(evidenceEvent.getPayloadJson()); var evidence = payload.path("evidence").get(0);
+        assertThat(evidence.path("id").asText()).startsWith("trusted-plan:"); assertThat(evidence.path("file").asText()).isEqualTo("paper/main.tex");
+        assertThat(evidence.path("version").asText()).isEqualTo(hash); assertThat(evidenceEvent.getPayloadJson()).doesNotContain("host", "item prose");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void listProjectEvidenceMarksPersistedResearchEvidenceStaleAfterManifestChange() throws Exception {
+        String current = "c".repeat(64); String stale = "d".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        EvidenceRef ref = new EvidenceRef("trusted-plan:42:paper/main.tex:" + current + ":step", EvidenceSourceType.PROJECT,
+                "PROJECT", "paper/main.tex", "tool:step", null, current, "test");
+        AgentPlanEvent event = new AgentPlanEvent(PLAN_ID, 1L, "step_project_evidence",
+                objectMapper.writeValueAsString(java.util.Map.of("evidence", List.of(ref))));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(event));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, current))));
+        assertThat(service.listProjectEvidence(USER_ID, 42L, PLAN_ID)).singleElement().satisfies(value -> assertThat(value.current()).isTrue());
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "m2", List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, stale))));
+        assertThat(service.listProjectEvidence(USER_ID, 42L, PLAN_ID)).singleElement().satisfies(value -> assertThat(value.current()).isFalse());
+        assertThatThrownBy(() -> service.listProjectEvidence(USER_ID, 99L, PLAN_ID)).isInstanceOf(ResponseStatusException.class);
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void denyAllProjectStepCannotPersistResearchLookingTranscriptEvidence() {
+        String hash = "a".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("deny", 1, List.of(), "[]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(List.of("project_latex_outline"), 3, 1, "project"));
+        String envelope = "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\"" + "b".repeat(64)
+                + "\",\"relativePath\":\"paper/main.tex\",\"fileHash\":\"" + hash + "\",\"range\":{\"startLine\":1,\"endLine\":1},\"parserVersion\":\"latex-outline@1\",\"trustLabel\":\"SERVER_ATTESTED_METADATA\"}]}";
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("deny-call", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall("project_latex_outline", "{}"));
+        when(agentRuntimeService.run(any())).thenReturn(new AgentRuntimeResult(true, "result", List.of(
+                new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("deny-call", envelope)), 1, null, List.of(), List.of(), null, null, null));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class); verify(agentRuntimeService, atLeast(1)).run(request.capture());
+        assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools()).isEmpty());
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class); verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).noneMatch(value -> "step_project_evidence".equals(value.getEventType())
+                || (value.getPayloadJson() != null && value.getPayloadJson().contains("trusted-plan:")));
+    }
+
+    @Test
+    void projectStepCannotPersistResearchEvidenceForADifferentAllowedTool() {
+        String hash = "f".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("latex-only", 1, List.of(), "[\"project_latex_outline\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_latex_outline"), 3, 1, "project"));
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("bibtex-call", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall("project_bibtex_audit", "{\"relativePaths\":[\"paper/main.tex\"]}"));
+        String envelope = "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\"" + "b".repeat(64)
+                + "\",\"relativePath\":\"paper/main.tex\",\"fileHash\":\"" + hash
+                + "\",\"range\":{\"startLine\":1,\"endLine\":1},\"parserVersion\":\"bibtex-audit@1\",\"trustLabel\":\"SERVER_ATTESTED_METADATA\"}]}";
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(new AgentRuntimeResult(true, "observed",
+                List.of(new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("bibtex-call", envelope)),
+                1, null, List.of(), List.of(), null, null, null));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, times(2)).run(request.capture());
+        assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools())
+                .containsExactly("project_latex_outline"));
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).noneMatch(value -> "step_project_evidence".equals(value.getEventType())
+                || (value.getPayloadJson() != null && value.getPayloadJson().contains("trusted-plan:")));
+        assertThat(event.getAllValues()).extracting(AgentPlanEvent::getEventType).contains("step_evidence_insufficient");
+    }
+
+    @Test
+    void projectReadFileStepPersistsOneLegacyProjectEvidenceThroughExecutePlan() throws Exception {
+        String hash = "e".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("legacy-read", 1, List.of(), "[\"project_read_file\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "legacy-manifest", List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file"), 3, 1, "project"));
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("legacy-read-call", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall("project_read_file", "{\"relativePath\":\"paper/main.tex\"}"));
+        String result = "{\"projectId\":42,\"relativePath\":\"paper/main.tex\",\"hash\":\"" + hash
+                + "\",\"version\":\"" + hash + "\",\"evidenceRefs\":[\"legacy-read-ref\"]}";
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(new AgentRuntimeResult(true, "observed",
+                List.of(new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("legacy-read-call", result)),
+                1, null, List.of(), List.of(), null, null, null));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentPlanEvent> eventsCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(eventsCaptor.capture());
+        List<AgentPlanEvent> evidenceEvents = eventsCaptor.getAllValues().stream()
+                .filter(value -> "step_project_evidence".equals(value.getEventType())).toList();
+        assertThat(evidenceEvents).hasSize(1);
+        var evidence = objectMapper.readTree(evidenceEvents.get(0).getPayloadJson()).path("evidence");
+        assertThat(evidence).hasSize(1);
+        assertThat(evidence.get(0).path("id").asText()).startsWith("trusted-plan:");
+        assertThat(evidence.get(0).path("file").asText()).isEqualTo("paper/main.tex");
+        assertThat(evidence.get(0).path("version").asText()).isEqualTo(hash);
+    }
+
+    @Test
+    void projectStepPreservesServerOwnedTrustedLedgerEvidenceWithoutRewritingIt() throws Exception {
+        String hash = "9".repeat(64);
+        String trustedId = "trusted-tool:42:paper/main.tex:" + hash + ":runtime-call";
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("trusted-runtime", 1, List.of(), "[\"project_read_file\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "runtime-manifest", List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file"), 3, 1, "project"));
+        String legacyResult = "{\"projectId\":42,\"relativePath\":\"paper/main.tex\",\"hash\":\"" + hash
+                + "\",\"evidenceRefs\":[\"legacy-runtime-ref\"]}";
+        EvidenceRef serverOwned = new EvidenceRef(trustedId, EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex",
+                "tool:runtime-call", null, hash, "runtime-attested");
+        AgentRuntimeResult result = new AgentRuntimeResult(true, "observed", List.of(
+                ChatMessage.tool("runtime-call", legacyResult)), 1, null, List.of(), List.of(), null, null, null)
+                .withTrustedEvidenceLedger(new EvidenceLedger(List.of(serverOwned)));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(result);
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentPlanEvent> eventsCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(eventsCaptor.capture());
+        AgentPlanEvent evidenceEvent = eventsCaptor.getAllValues().stream()
+                .filter(value -> "step_project_evidence".equals(value.getEventType())).findFirst().orElseThrow();
+        var evidence = objectMapper.readTree(evidenceEvent.getPayloadJson()).path("evidence");
+        assertThat(evidence).hasSize(1);
+        assertThat(evidence.get(0).path("id").asText()).isEqualTo(trustedId);
+        assertThat(evidence.get(0).path("file").asText()).isEqualTo("paper/main.tex");
+        assertThat(evidence.get(0).path("version").asText()).isEqualTo(hash);
     }
 
     @Test

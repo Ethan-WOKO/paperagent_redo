@@ -659,7 +659,8 @@ public class PlanAgentService {
                 String content = StringUtils.hasText(result.assistantContent())
                         ? result.assistantContent()
                         : "Step completed.";
-                List<String> projectEvidenceRefs = projectContext == null ? List.of() : extractProjectEvidenceRefs(result, projectContext);
+                List<String> projectEvidenceRefs = projectContext == null ? List.of() : extractProjectEvidenceRefs(result, projectContext,
+                        runtimeRequest.toolPolicy().allowedTools());
                 if (projectContext != null && projectEvidenceRefs.isEmpty()) {
                     String error = "INSUFFICIENT_EVIDENCE: Project step completed without a current authorized file observation.";
                     previousError = error;
@@ -673,7 +674,8 @@ public class PlanAgentService {
                 }
                 if (!projectEvidenceRefs.isEmpty()) {
                     content += "\n[projectEvidenceRefs=" + String.join(",", projectEvidenceRefs) + "]";
-                    List<EvidenceRef> typedEvidence = trustedStepEvidence(result, projectContext);
+                    List<EvidenceRef> typedEvidence = trustedStepEvidence(result, projectContext,
+                            runtimeRequest.toolPolicy().allowedTools());
                     recordEvent(plan.getId(), step.getId(), "step_project_evidence", Map.of(
                             "stepKey", step.getStepKey(), "projectId", projectContext.projectId(),
                             "evidenceRefs", projectEvidenceRefs, "evidence", typedEvidence, "traceId", traceId));
@@ -1405,8 +1407,11 @@ public class PlanAgentService {
         return new ProjectRuntimeContext(userId, projectId);
     }
 
-    private List<String> extractProjectEvidenceRefs(AgentRuntimeResult result, ProjectRuntimeContext context) {
+    private List<String> extractProjectEvidenceRefs(AgentRuntimeResult result, ProjectRuntimeContext context, List<String> allowedTools) {
         LinkedHashSet<String> refs = new LinkedHashSet<>();
+        Set<String> allowedResearchTools = ResearchProjectEvidenceAdapter.allowedResearchTools(allowedTools);
+        ResearchProjectEvidenceAdapter.extract(objectMapper, result.messages(), 0, context, allowedResearchTools).evidence()
+                .forEach(ref -> refs.add(ref.id()));
         for (ChatMessage message : result.messages()) {
             if (message == null || !"tool".equals(message.role()) || !StringUtils.hasText(message.content())) continue;
             try {
@@ -1440,12 +1445,21 @@ public class PlanAgentService {
         return new EvidenceLedger(refs);
     }
 
-    private List<EvidenceRef> trustedStepEvidence(AgentRuntimeResult result, ProjectRuntimeContext context) {
+    private List<EvidenceRef> trustedStepEvidence(AgentRuntimeResult result, ProjectRuntimeContext context,
+                                                  List<String> allowedTools) {
         List<EvidenceRef> trusted = result.trustedEvidenceLedger().evidence().stream()
                 .filter(ProjectEvidenceValidator::isTrusted).toList();
         if (!trusted.isEmpty()) return trusted;
-        List<EvidenceRef> observed = AgentService.projectEvidenceFromRuntime(objectMapper, result, context, 0).evidence();
-        return observed.stream().map(ref -> new EvidenceRef(
+        Map<String, EvidenceRef> observed = new LinkedHashMap<>();
+        // Preserve the legacy top-level Project tool path, but never let its adapter pass
+        // reintroduce a research observation outside the step's exact allowed-tool set.
+        AgentService.projectEvidenceFromRuntime(objectMapper, result, context, 0).evidence().stream()
+                .filter(ref -> ref.id().startsWith("project-observation-"))
+                .forEach(ref -> observed.putIfAbsent(ref.id(), ref));
+        ResearchProjectEvidenceAdapter.extract(objectMapper, result.messages(), 0, context,
+                        ResearchProjectEvidenceAdapter.allowedResearchTools(allowedTools)).evidence()
+                .forEach(ref -> observed.putIfAbsent(ref.id(), ref));
+        return observed.values().stream().map(ref -> new EvidenceRef(
                 "trusted-plan:" + context.projectId() + ":" + ref.file() + ":" + ref.version() + ":" + ref.chunk(),
                 EvidenceSourceType.PROJECT, "PROJECT", ref.file(), ref.chunk(), ref.citation(), ref.version(),
                 "persisted plan step project observation")).toList();

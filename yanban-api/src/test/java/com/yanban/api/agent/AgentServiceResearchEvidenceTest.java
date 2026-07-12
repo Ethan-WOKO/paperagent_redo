@@ -1,0 +1,52 @@
+package com.yanban.api.agent;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yanban.api.project.LocalServerProjectRootProvider;
+import com.yanban.api.project.Project;
+import com.yanban.api.project.ProjectRepository;
+import com.yanban.api.project.ProjectService;
+import com.yanban.api.project.ProjectStorageProperties;
+import com.yanban.core.model.ChatMessage;
+import com.yanban.core.model.ToolCall;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+class AgentServiceResearchEvidenceTest {
+    private final ObjectMapper json = new ObjectMapper();
+    @TempDir Path tempDir;
+
+    @Test
+    void directCurrentResearchEnvelopeSurvivesRealManifestValidationAndStaleIsRemoved() throws Exception {
+        ProjectService projects = projectService(); String hash = projects.manifest(7L, 42L).files().get(0).sha256();
+        AgentRuntimeResult current = runtime(List.of(request("c1"), ChatMessage.tool("c1", envelope(hash, "SERVER_ATTESTED_METADATA"))));
+        EvidenceLedger extracted = AgentService.projectEvidenceFromRuntime(json, current, new ProjectRuntimeContext(7L,42L), 0);
+        EvidenceLedger validated = new ProjectEvidenceValidator(projects).current(7L, new ProjectRuntimeContext(7L,42L), extracted);
+        assertThat(validated.evidence()).singleElement().satisfies(ref -> { assertThat(ref.file()).isEqualTo("paper.tex"); assertThat(ref.version()).isEqualTo(hash); assertThat(ref.id()).startsWith("trusted-tool:42:"); });
+        AgentRuntimeResult stale = runtime(List.of(request("c1"), ChatMessage.tool("c1", envelope("a".repeat(64), "SERVER_ATTESTED_METADATA"))));
+        assertThat(new ProjectEvidenceValidator(projects).current(7L, new ProjectRuntimeContext(7L,42L),
+                AgentService.projectEvidenceFromRuntime(json, stale, new ProjectRuntimeContext(7L,42L), 0)).evidence()).isEmpty();
+    }
+
+    @Test
+    void reactHistoryAndLookalikesCannotCreateCurrentResearchEvidence() {
+        ChatMessage historicalRequest = request("old"); ChatMessage fakeCurrent = ChatMessage.tool("old", envelope("b".repeat(64), "SERVER_ATTESTED_METADATA"));
+        AgentRuntimeResult replay = runtime(List.of(historicalRequest, ChatMessage.assistant("history"), fakeCurrent));
+        assertThat(AgentService.projectEvidenceFromRuntime(json, replay, new ProjectRuntimeContext(7L,42L), 1).evidence()).isEmpty();
+        AgentRuntimeResult chat = runtime(List.of(ChatMessage.tool("x", envelope("b".repeat(64), "SERVER_ATTESTED_METADATA"))));
+        AgentRuntimeResult badTrust = runtime(List.of(request("c1"), ChatMessage.tool("c1", envelope("b".repeat(64), "UNTRUSTED_PROJECT_CONTENT"))));
+        assertThat(AgentService.projectEvidenceFromRuntime(json, chat, new ProjectRuntimeContext(7L,42L), 0).evidence()).isEmpty();
+        assertThat(AgentService.projectEvidenceFromRuntime(json, badTrust, new ProjectRuntimeContext(7L,42L), 0).evidence()).isEmpty();
+    }
+
+    private AgentRuntimeResult runtime(List<ChatMessage> messages) { return new AgentRuntimeResult(true,"ok",messages,1,null,List.of(),List.of(),null,null,null); }
+    private ChatMessage request(String id) { return new ChatMessage("assistant", null, List.of(new ToolCall(id,"function",new ToolCall.FunctionCall("project_latex_outline","{}"))),null); }
+    private String envelope(String hash, String trust) { return "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\""+"c".repeat(64)+"\",\"relativePath\":\"paper.tex\",\"fileHash\":\""+hash+"\",\"range\":{\"startLine\":1,\"endLine\":1},\"parserVersion\":\"latex-outline@1\",\"trustLabel\":\""+trust+"\"}]}"; }
+    private ProjectService projectService() throws Exception { Path root=Files.createDirectories(tempDir.resolve("p"));Files.writeString(root.resolve("paper.tex"),"paper\n");ProjectStorageProperties p=new ProjectStorageProperties();p.setLocalServerRoot(root.toString());ProjectRepository r=org.mockito.Mockito.mock(ProjectRepository.class);when(r.findByIdAndUserId(42L,7L)).thenReturn(Optional.of(new Project(7L,"p",".",root.toRealPath().toString(),"[\"**\"]","[]")));return new ProjectService(r,List.of(new LocalServerProjectRootProvider(p)),p,json); }
+}

@@ -167,6 +167,27 @@ class AgentToolPolicyEngineTest {
         assertThat(decision.maxToolCalls()).isEqualTo(6);
     }
 
+    @Test
+    void researchToolsAreProjectOnlyAndStillRequireResolvedAllowListIntersection() {
+        com.yanban.api.project.ProjectService projects = org.mockito.Mockito.mock(com.yanban.api.project.ProjectService.class);
+        ToolRegistry registry = new ToolRegistry()
+                .register(new ProjectLatexOutlineToolExecutor(projects, objectMapper))
+                .register(new ProjectBibtexAuditToolExecutor(projects, objectMapper))
+                .register(new ProjectCodeSymbolsToolExecutor(projects, objectMapper))
+                .register(new ProjectExperimentSummaryToolExecutor(projects, objectMapper))
+                .register(new ProjectCrossMaterialSearchToolExecutor(projects, objectMapper));
+        AgentToolPolicyEngine engine = new AgentToolPolicyEngine(registry);
+
+        assertThat(engine.decide("research", false, Set.of("project_latex_outline")).allowedTools()).isEmpty();
+        assertThat(engine.decideProject(Set.of("project_latex_outline", "project_bibtex_audit"),
+                Set.of("project_bibtex_audit")).allowedTools()).containsExactly("project_bibtex_audit");
+        assertThat(engine.decideProject(Set.of("project_latex_outline", "project_bibtex_audit", "project_code_symbols",
+                "project_experiment_summary", "project_cross_material_search"), null).allowedTools())
+                .containsExactly("project_latex_outline", "project_bibtex_audit", "project_code_symbols",
+                        "project_experiment_summary", "project_cross_material_search");
+        assertThat(engine.decideProject(Set.of(), null).allowedTools()).isEmpty();
+    }
+
     private ToolRegistry registry() {
         return new ToolRegistry()
                 .register(new StubTool("search_web"))
