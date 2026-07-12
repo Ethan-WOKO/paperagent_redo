@@ -3,6 +3,10 @@ package com.yanban.api.paper;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.blankOrNullString;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -12,10 +16,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.paper.domain.PaperTaskRepository;
-import com.yanban.paper.domain.PaperTaskRoundRepository;
+import com.yanban.paper.literature.LiteratureRecommendationService;
+import com.yanban.paper.literature.LiteratureSource;
+import com.yanban.paper.service.PaperModelClient;
+import com.yanban.paper.service.PaperOrchestrator;
 import io.minio.MinioClient;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -51,17 +59,42 @@ class PaperControllerIntegrationTest {
     PaperTaskRepository paperTaskRepository;
 
     @Autowired
-    PaperTaskRoundRepository paperTaskRoundRepository;
-
-    @Autowired
     JdbcTemplate jdbc;
 
     @MockBean
     MinioClient minioClient;
 
+    /**
+     * The HTTP contract creates a task after persistence, but the real
+     * orchestrator starts model and literature work on its own executor. The
+     * mock is the test double for that execution boundary; the test verifies
+     * its after-persistence delegation without starting background work.
+     */
+    @MockBean
+    PaperOrchestrator paperOrchestrator;
+
+    @MockBean
+    PaperModelClient paperModelClient;
+
+    @MockBean
+    LiteratureRecommendationService literatureRecommendationService;
+
+    @MockBean(name = "openAlexLiteratureSource")
+    LiteratureSource openAlexLiteratureSource;
+
+    @MockBean(name = "arxivLiteratureSource")
+    LiteratureSource arxivLiteratureSource;
+
     @BeforeEach
     void setUp() throws Exception {
         when(minioClient.putObject(any())).thenReturn(null);
+    }
+
+    @AfterEach
+    void externalProvidersRemainUncalled() {
+        verifyNoInteractions(paperModelClient, literatureRecommendationService,
+                openAlexLiteratureSource, arxivLiteratureSource);
+        verifyNoMoreInteractions(paperOrchestrator);
     }
 
     @Test
@@ -90,7 +123,7 @@ class PaperControllerIntegrationTest {
                 .andReturn();
 
         Long taskId = objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asLong();
-        waitForRounds(taskId);
+        verify(paperOrchestrator).startTask(taskId);
         var task = paperTaskRepository.findById(taskId).orElseThrow();
         Assertions.assertThat(task.getStatus()).isIn("PENDING", "RUNNING", "COMPLETED");
         Assertions.assertThat(task.getObjectKey()).isNotBlank();
@@ -100,7 +133,7 @@ class PaperControllerIntegrationTest {
         Assertions.assertThat(task.getScoreThreshold()).isEqualTo(75);
         Assertions.assertThat(task.getMaxRounds()).isEqualTo(3);
         Assertions.assertThat(task.getInnerMaxAttempts()).isEqualTo(2);
-        Assertions.assertThat(paperTaskRoundRepository.findByTaskIdOrderByCreatedAtAsc(taskId)).isNotEmpty();
+        Assertions.assertThat(task.getCurrentStage()).isEqualTo("UPLOAD_RECEIVED");
 
         mockMvc.perform(get("/api/v1/paper/tasks/{taskId}", taskId)
                         .header("Authorization", "Bearer " + token))
@@ -192,15 +225,7 @@ class PaperControllerIntegrationTest {
                 .andExpect(jsonPath("$.idempotent").value(true));
 
         Assertions.assertThat(paperTaskRepository.countByUserId(resolveUserId("paper_user_c"))).isEqualTo(1L);
-    }
-
-    private void waitForRounds(Long taskId) throws InterruptedException {
-        for (int i = 0; i < 20; i++) {
-            if (!paperTaskRoundRepository.findByTaskIdOrderByCreatedAtAsc(taskId).isEmpty()) {
-                return;
-            }
-            Thread.sleep(100);
-        }
+        verify(paperOrchestrator, times(1)).startTask(firstTaskId);
     }
 
     private String registerAndGetToken(String username) throws Exception {

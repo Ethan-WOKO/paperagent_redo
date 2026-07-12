@@ -24,6 +24,9 @@ $tests = @(
     'ProjectReactVerticalTest',
     'ProjectPlanEnvelopeTest',
     'ProjectPlanVerticalTest',
+    'ProjectAgentRuntimeStreamingTest',
+    'ProjectWebSocketHandshakeInterceptorTest',
+    'ProjectChatWebSocketHandlerTest',
     'AgentRuntimeCoordinatorTest',
     'AgentRuntimeServiceTest',
     'CompletionVerifierTest',
@@ -45,6 +48,11 @@ try {
     & mvn -o -pl yanban-api -am ("-Dtest=" + ($tests -join ',')) `
         '-Dsurefire.failIfNoSpecifiedTests=false' test
     $mavenExitCode = $LASTEXITCODE
+
+    # This is intentionally a direct local Node invocation: it runs the
+    # checked-in Markdown regression without invoking npm or the network.
+    & node --test frontend/tests/markdownNormalization.test.mjs
+    $frontendExitCode = $LASTEXITCODE
 } finally {
     Pop-Location
 }
@@ -77,11 +85,12 @@ foreach ($reportFile in $reportFiles) {
 }
 
 Write-Host ("MVP_RELEASE_GATE_RESULT tests={0} failures={1} errors={2} skipped={3}" -f $testsRun, $failures, $errors, $skipped.Count)
+Write-Host ("MVP_RELEASE_GATE_FRONTEND_RESULT command=node --test frontend/tests/markdownNormalization.test.mjs exit={0}" -f $frontendExitCode)
 foreach ($skip in $skipped) {
     Write-Host ("MVP_RELEASE_GATE_SKIP class={0} test={1} reason={2}" -f $skip.Class, $skip.Name, $skip.Reason)
 }
 
-if ($mavenExitCode -ne 0 -or $failures -ne 0 -or $errors -ne 0) {
+if ($mavenExitCode -ne 0 -or $frontendExitCode -ne 0 -or $failures -ne 0 -or $errors -ne 0) {
     exit 1
 }
 

@@ -7,7 +7,7 @@
 > 当前发布状态：`ENGINEERING_GATE_PASSED / LOCAL_ACCEPTANCE_PENDING`
 > 设计依据：《通用 Agent Runtime 设计》《通用 Agent Runtime 实施方案与进度》
 
-> 夜间串行进度：前序 Project 变更已于 2026-07-12 完成主对话复审，结论 `ACCEPTED`。独立验证为 Markdown fixtures 6/6、frontend build 通过、后端冻结定向回归 38/38。已形成工程基线 `da8eaf6`；下一步仅启动 Worker 1“MVP 本地验收矩阵”。
+> 夜间串行进度：前序 Project 变更与 Worker 1“MVP 本地验收矩阵”均已完成主对话复审。Worker 1 独立发布门为 Java 170/170、frontend 6/6、exit 0，并通过测试层隔离真实模型与文献 provider。下一步仅启动 Worker 2“科研工具与结构化索引契约”。
 
 ## 1. 目标与边界
 
@@ -356,7 +356,7 @@ Worker 开发
 
 前置条件：当前 Project 开发对话结束、主对话复审并形成新基线。
 
-状态：`READY_AFTER_BASELINE_COMMIT`
+状态：`ACCEPTED_ENGINEERING_GATE / LOCAL_MANUAL_ACCEPTANCE_PENDING`
 
 - 整理真实验收场景。
 - 补充自动化辅助测试。
@@ -366,6 +366,8 @@ Worker 开发
 ### Worker 2：科研语义工具契约
 
 前置条件：Worker 1 验收通过。
+
+状态：`READY_AFTER_BASELINE_COMMIT`
 
 - 定义第一批工具输入、输出、权限、Evidence、重复和预算。
 - 定义结构化索引最小模型。
