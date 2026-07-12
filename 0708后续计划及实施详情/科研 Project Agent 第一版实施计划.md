@@ -4,11 +4,12 @@
 > 创建日期：2026-07-12
 > 已审查工程基线：`da8eaf6`（Project Markdown 与输出格式修复）
 > Worker 1 验收基线：`e1f733d`（离线发布门与本地验收矩阵）
+> Worker 2 契约工程基线：`8e274ab`（科研工具与结构化索引纯契约）
 > Worker 启动基线：以串行任务包中冻结的完整 `HEAD` 为准
 > 当前发布状态：`ENGINEERING_GATE_PASSED / LOCAL_ACCEPTANCE_PENDING`
 > 设计依据：《通用 Agent Runtime 设计》《通用 Agent Runtime 实施方案与进度》
 
-> 夜间串行进度：前序 Project 变更与 Worker 1“MVP 本地验收矩阵”均已完成主对话复审。Worker 1 独立发布门为 Java 170/170、frontend 6/6、exit 0，并通过测试层隔离真实模型与文献 provider。下一步仅启动 Worker 2“科研工具与结构化索引契约”。
+> 夜间串行进度：Worker 1“MVP 本地验收矩阵”和 Worker 2“科研工具与结构化索引契约”均已完成主对话复审。Worker 2 独立 core 定向测试为 29/29，完整离线发布门为 Java 170/170、frontend 6/6、exit 0。五个科研工具仍为 `CONTRACT_ONLY`，没有 executor、注册或动态暴露。下一步仅启动 Worker 3“第一批低风险只读科研工具”。
 
 ## 1. 目标与边界
 
@@ -368,15 +369,20 @@ Worker 开发
 
 前置条件：Worker 1 验收通过。
 
-状态：`READY_AFTER_BASELINE_COMMIT`
+状态：`ACCEPTED / CONTRACT_ONLY`
 
 - 定义第一批工具输入、输出、权限、Evidence、重复和预算。
 - 定义结构化索引最小模型。
 - 先完成契约和测试基线，不批量实现。
+- 主对话复审结论：五类 typed output、trusted scope、Project 相对路径、版本/hash/parser token、Evidence/provenance、预算、错误、去重和序列化边界均已冻结。
+- 独立测试：core 定向 29/29；完整离线发布门 Java 170/170、frontend 6/6。
+- 工程基线：`8e274ab`。
 
 ### Worker 3：第一批只读科研工具
 
 前置条件：Worker 2 验收通过。
+
+状态：`READY_AFTER_BASELINE_COMMIT`
 
 - LaTeX outline。
 - BibTeX audit。
