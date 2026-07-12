@@ -30,7 +30,8 @@ public record ToolDescriptor(
         resourceScopes = resourceScopes == null ? List.of() : List.copyOf(resourceScopes);
         sideEffectType = sideEffectType == null ? SideEffectType.UNKNOWN : sideEffectType;
         confirmationPolicy = confirmationPolicy == null
-                ? (sideEffectType == SideEffectType.NONE ? ConfirmationPolicy.NEVER : ConfirmationPolicy.ON_SIDE_EFFECT)
+                ? ((sideEffectType == SideEffectType.NONE || sideEffectType == SideEffectType.READ_ONLY)
+                ? ConfirmationPolicy.NEVER : ConfirmationPolicy.ON_SIDE_EFFECT)
                 : confirmationPolicy;
         asyncMode = asyncMode == null ? AsyncMode.SYNC : asyncMode;
         idempotencyPolicy = idempotencyPolicy == null ? IdempotencyPolicy.NONE : idempotencyPolicy;
@@ -63,7 +64,7 @@ public record ToolDescriptor(
 
     public enum CapabilityProfile { CHAT, PROJECT }
     public enum ResourceScope { SESSION, USER_KNOWLEDGE, PROJECT, EXTERNAL }
-    public enum SideEffectType { UNKNOWN, NONE, EXTERNAL_READ, CREATE, MODIFY, DELETE, EXECUTE, EXTERNAL_SEND }
+    public enum SideEffectType { UNKNOWN, NONE, READ_ONLY, EXTERNAL_READ, CREATE, MODIFY, DELETE, EXECUTE, EXTERNAL_SEND }
     public enum ConfirmationPolicy { NEVER, ON_SIDE_EFFECT, ON_HIGH_RISK, ALWAYS }
     public enum AsyncMode { SYNC, RUNTIME_MANAGED_ASYNC, EXTERNAL_TASK }
     public enum IdempotencyPolicy { NONE, OPTIONAL_KEY, REQUIRED_KEY }
