@@ -78,7 +78,7 @@
           <NButton secondary round @click="router.push('/paper')">Upload Paper</NButton>
           <NButton secondary round @click="router.push('/chat')">Search Literature</NButton>
           <NButton type="primary" round class="agent-mode-button">Agent Mode Live</NButton>
-          <NButton quaternary circle class="theme-toggle-button" @click="toggleTheme">
+          <NButton quaternary round size="small" class="theme-toggle-button" @click="toggleTheme">
             {{ isDark ? 'Light' : 'Dark' }}
           </NButton>
         </NSpace>

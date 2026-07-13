@@ -29,6 +29,8 @@ import com.yanban.api.agent.ProjectAgentRuntimeService;
 import com.yanban.api.agent.SendMessageResponse;
 import com.yanban.api.agent.AgentPlanResponse;
 import com.yanban.api.agent.ProjectEvidenceResponse;
+import com.yanban.api.agent.AgentSessionResponse;
+import com.yanban.core.agent.AgentSessionScope;
 
 class ProjectControllerIntegrationTest {
 
@@ -121,8 +123,66 @@ class ProjectControllerIntegrationTest {
                 org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.any());
 
         mockMvc.perform(post("/api/v1/projects/42/agent/sessions/8/plans")
-                        .contentType("application/json").content("{\"content\":\"compare files\"}"))
+                        .contentType("application/json").content("{\"content\":\"compare files\",\"ragDisabled\":true,\"autoExecute\":true}"))
                 .andExpect(status().isCreated());
+        org.mockito.ArgumentCaptor<com.yanban.api.agent.CreateAgentPlanRequest> planRequest =
+                org.mockito.ArgumentCaptor.forClass(com.yanban.api.agent.CreateAgentPlanRequest.class);
+        org.mockito.Mockito.verify(facade).createPlan(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq(8L), planRequest.capture());
+        org.assertj.core.api.Assertions.assertThat(planRequest.getValue()).isEqualTo(
+                new com.yanban.api.agent.CreateAgentPlanRequest("compare files", true, null, true));
+    }
+
+    @Test
+    void projectSessionHistoryRoutesUseAuthenticatedUserAndPathProjectId() throws Exception {
+        ProjectService service = new ProjectService(projects, List.of(new LocalServerProjectRootProvider(properties)), properties, new ObjectMapper());
+        ProjectAgentRuntimeService facade = mock(ProjectAgentRuntimeService.class);
+        AgentSessionResponse session = new AgentSessionResponse(8L, 7L, AgentSessionScope.PROJECT, 42L,
+                "Study conversation", "deepseek", "deepseek-v4-flash", 20, true, null, null);
+        when(facade.listSessions(7L, 42L)).thenReturn(List.of(session));
+        when(facade.createSession(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.any())).thenReturn(session);
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(service, facade))
+                .setControllerAdvice(new ProjectExceptionHandler()).setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver()).build();
+
+        mockMvc.perform(get("/api/v1/projects/42/agent/sessions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].scope").value("PROJECT"))
+                .andExpect(jsonPath("$[0].projectId").value(42));
+
+        mockMvc.perform(post("/api/v1/projects/42/agent/sessions")
+                        .contentType("application/json")
+                        .content("{\"title\":\"Study conversation\",\"ragDisabled\":true}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.scope").value("PROJECT"));
+
+        org.mockito.Mockito.verify(facade).listSessions(7L, 42L);
+        org.mockito.Mockito.verify(facade).createSession(org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void projectPlanFailureReturnsDiagnosticJsonInsteadOfBareBadGateway() throws Exception {
+        ProjectService service = new ProjectService(projects, List.of(new LocalServerProjectRootProvider(properties)), properties, new ObjectMapper());
+        ProjectAgentRuntimeService facade = mock(ProjectAgentRuntimeService.class);
+        when(facade.createPlan(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        "Project Plan creation failed [traceId=plan-create-test]: Planner failed [MODEL_CALL_FAILED]: upstream timeout"));
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(service, facade))
+                .setControllerAdvice(new ProjectExceptionHandler())
+                .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver())
+                .build();
+
+        mockMvc.perform(post("/api/v1/projects/42/agent/sessions/8/plans")
+                        .contentType("application/json")
+                        .content("{\"content\":\"compare files\",\"ragDisabled\":true,\"autoExecute\":true}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.code").value("PROJECT_PLAN_FAILED"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("plan-create-test")))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("MODEL_CALL_FAILED")))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("upstream timeout")));
         org.mockito.Mockito.verify(facade).createPlan(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.eq(42L),
                 org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.any());
     }

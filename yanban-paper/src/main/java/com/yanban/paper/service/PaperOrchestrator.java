@@ -332,6 +332,7 @@ public class PaperOrchestrator {
                     perQueryLimit,
                     literatureMinLimit,
                     literatureLimit,
+                    String.join("\n\n", bibFiles.values()),
                     (completed, total, cardId, title) -> publishProgress(
                             "literature_card_analysis",
                             taskId,
@@ -381,26 +382,27 @@ public class PaperOrchestrator {
             transition(taskId, STATUS_RUNNING, "GLOBAL_REVIEW", null);
             checkpoint(taskId);
             List<PaperSection> polishedSections = sections.findByTaskIdOrderByOrderIndexAsc(taskId);
-            String finalDraftTex = assembleService.buildCitationAppliedDraft(taskId, document, polishedSections);
+            String finalDraftTex = assembleService.buildDraft(document, polishedSections);
             LatexDocument finalDraftDocument = latexParserService.parse(task.getMainEntry(), finalDraftTex, Map.of());
+            publishProgress("global_review_start", taskId, "Starting whole-paper consistency review", "GLOBAL_REVIEW", 0, 1, null, null, null, 91);
+            if (globalReviewService != null) {
+                globalReviewService.reviewAndSave(task, finalDraftDocument, finalDraftTex, polishedSections);
+                polishedSections = sections.findByTaskIdOrderByOrderIndexAsc(taskId);
+                finalDraftTex = assembleService.buildDraft(document, polishedSections);
+                finalDraftDocument = latexParserService.parse(task.getMainEntry(), finalDraftTex, Map.of());
+            }
+            publishProgress("global_review_complete", taskId, "Whole-paper consistency review completed", "GLOBAL_REVIEW", 1, 1, null, null, null, 92);
             if (citationClosureService != null) {
                 publishProgress("citation_closure_start", taskId,
                         "Checking unresolved Introduction citations with critic-editor review",
-                        "GLOBAL_REVIEW", 0, 1, null, null, null, 91);
+                        "GLOBAL_REVIEW", 0, 1, null, null, null, 93);
                 PaperCitationClosureService.ClosureResult closureResult = citationClosureService.close(taskId, finalDraftDocument);
                 checkpoint(taskId);
                 publishProgress("citation_closure_complete", taskId,
                         "Citation review completed: " + closureResult.acceptedCount()
                                 + " applied, " + closureResult.reportOnlyCount() + " report only",
-                        "GLOBAL_REVIEW", 1, 1, null, null, null, 92);
-                finalDraftTex = assembleService.buildCitationAppliedDraft(taskId, document, polishedSections);
-                finalDraftDocument = latexParserService.parse(task.getMainEntry(), finalDraftTex, Map.of());
+                        "GLOBAL_REVIEW", 1, 1, null, null, null, 94);
             }
-            publishProgress("global_review_start", taskId, "Starting whole-paper consistency review", "GLOBAL_REVIEW", 0, 1, null, null, null, 92);
-            if (globalReviewService != null) {
-                globalReviewService.reviewAndSave(task, finalDraftDocument, finalDraftTex, polishedSections);
-            }
-            publishProgress("global_review_complete", taskId, "Whole-paper consistency review completed", "GLOBAL_REVIEW", 1, 1, null, null, null, 94);
 
             transition(taskId, STATUS_RUNNING, "ASSEMBLE", null);
             checkpoint(taskId);

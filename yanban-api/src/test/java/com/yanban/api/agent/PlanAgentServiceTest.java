@@ -29,6 +29,9 @@ import com.yanban.core.agent.AgentPlanStepRepository;
 import com.yanban.core.agent.AgentPlanStepStatus;
 import com.yanban.core.agent.AgentSession;
 import com.yanban.core.model.ChatMessage;
+import com.yanban.core.model.ChatModelProvider;
+import com.yanban.core.model.ChatRequest;
+import com.yanban.core.model.ChatResponse;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -49,6 +52,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.quality.Strictness;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -146,7 +151,8 @@ class PlanAgentServiceTest {
         List<AgentPlanStep> orderedSteps = List.of(first, second);
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(orderedSteps);
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
-                .thenReturn(success("analysis result"))
+                .thenReturn(successWithTrace("analysis result",
+                        "step=1 tool=project_search args={\"query\":\"objective\"} success=true"))
                 .thenReturn(success("final result"));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
@@ -161,8 +167,57 @@ class PlanAgentServiceTest {
         ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
         verify(agentRuntimeService, times(2)).run(requestCaptor.capture());
         assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
-                .contains("analysis result");
+                .contains("analysis result")
+                .contains("Reusable tool observations from step_1")
+                .contains("project_search")
+                .contains("Do not repeat successful or zero-result searches");
         verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void scheduleAsyncExecutionWaitsUntilAfterCommitWhenTransactionIsActive() {
+        List<String> scheduled = new ArrayList<>();
+        PlanAgentService probe = new PlanAgentService(
+                plans, steps, events, agentService, agentRuntimeService, null, planner, stepVerifier,
+                userSettingsService, skillsService, toolPolicyEngine, objectMapper, projectService) {
+            @Override
+            void submitAsyncExecutionTask(Long userId, Long planId, String traceId) {
+                scheduled.add(userId + ":" + planId + ":" + traceId);
+            }
+        };
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            probe.scheduleAsyncExecution(USER_ID, PLAN_ID, "trace-1");
+            assertThat(scheduled).isEmpty();
+            List<TransactionSynchronization> synchronizations = TransactionSynchronizationManager.getSynchronizations();
+            assertThat(synchronizations).hasSize(1);
+            synchronizations.forEach(TransactionSynchronization::afterCommit);
+            assertThat(scheduled).containsExactly(USER_ID + ":" + PLAN_ID + ":trace-1");
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void scheduleAsyncExecutionStartsImmediatelyWithoutTransaction() {
+        List<String> scheduled = new ArrayList<>();
+        PlanAgentService probe = new PlanAgentService(
+                plans, steps, events, agentService, agentRuntimeService, null, planner, stepVerifier,
+                userSettingsService, skillsService, toolPolicyEngine, objectMapper, projectService) {
+            @Override
+            void submitAsyncExecutionTask(Long userId, Long planId, String traceId) {
+                scheduled.add(userId + ":" + planId + ":" + traceId);
+            }
+        };
+
+        probe.scheduleAsyncExecution(USER_ID, PLAN_ID, "trace-2");
+
+        assertThat(scheduled).containsExactly(USER_ID + ":" + PLAN_ID + ":trace-2");
     }
 
     @Test
@@ -191,6 +246,10 @@ class PlanAgentServiceTest {
         verify(agentRuntimeService).run(request.capture());
         assertThat(request.getValue().projectContext()).isEqualTo(new ProjectRuntimeContext(USER_ID, 42L));
         assertThat(request.getValue().toolPolicy().allowedTools()).containsExactly("project_latex_outline");
+        assertThat(request.getValue().history().get(0).content())
+                .contains("Server-cached Project manifest")
+                .contains("paper/main.tex")
+                .contains("do not call project_manifest again");
         ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class); verify(events, atLeast(1)).save(event.capture());
         AgentPlanEvent evidenceEvent = event.getAllValues().stream().filter(value -> "step_project_evidence".equals(value.getEventType())).findFirst().orElseThrow();
         var payload = objectMapper.readTree(evidenceEvent.getPayloadJson()); var evidence = payload.path("evidence").get(0);
@@ -219,7 +278,7 @@ class PlanAgentServiceTest {
 
     @Test
     @MockitoSettings(strictness = Strictness.LENIENT)
-    void denyAllProjectStepCannotPersistResearchLookingTranscriptEvidence() {
+    void emptyPreferredToolsStillExposeLowRiskReadOnlyProjectTools() {
         String hash = "a".repeat(64);
         ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
         AgentPlanStep step = newStep("deny", 1, List.of(), "[]");
@@ -238,10 +297,10 @@ class PlanAgentServiceTest {
         service.executePlan(USER_ID, PLAN_ID);
 
         ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class); verify(agentRuntimeService, atLeast(1)).run(request.capture());
-        assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools()).isEmpty());
+        assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools())
+                .containsExactly("project_latex_outline"));
         ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class); verify(events, atLeast(1)).save(event.capture());
-        assertThat(event.getAllValues()).noneMatch(value -> "step_project_evidence".equals(value.getEventType())
-                || (value.getPayloadJson() != null && value.getPayloadJson().contains("trusted-plan:")));
+        assertThat(event.getAllValues()).anyMatch(value -> "step_project_evidence".equals(value.getEventType()));
     }
 
     @Test
@@ -389,7 +448,7 @@ class PlanAgentServiceTest {
         ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
         verify(agentRuntimeService).run(requestCaptor.capture());
         assertThat(requestCaptor.getValue().toolPolicy().allowedTools()).containsExactly("search_web");
-        assertThat(requestCaptor.getValue().toolPolicy().maxToolCalls()).isEqualTo(3);
+        assertThat(requestCaptor.getValue().toolPolicy().maxToolCalls()).isEqualTo(8);
     }
 
     @Test
@@ -430,6 +489,61 @@ class PlanAgentServiceTest {
                 .hasMessageContaining("INVALID_PLAN");
 
         verify(plans, org.mockito.Mockito.never()).saveAndFlush(any(AgentPlan.class));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void truncatedProjectPlanRetryPersistsExactlyOneReadOnlyPlan() {
+        ChatModelProvider modelProvider = org.mockito.Mockito.mock(ChatModelProvider.class);
+        when(modelProvider.chat(any(ChatRequest.class)))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(
+                        "{\"summary\":\"Inspect\",\"steps\":[{\"description\":\"truncated"), "length", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {
+                          "summary": "Inspect Project",
+                          "steps": [{
+                            "id": "inspect",
+                            "title": "Inspect source",
+                            "description": "Read the authorized Project source.",
+                            "type": "FILE_READ",
+                            "dependencies": [],
+                            "allowedTools": ["project_read_file", "write_file"],
+                            "successCriteria": "The finding is grounded in the authorized source."
+                          }]
+                        }
+                        """), "stop", null));
+        PlanningAgentPlanner retryingPlanner = new PlanningAgentPlanner(modelProvider, objectMapper);
+        PlanAgentService retryingService = new PlanAgentService(
+                plans, steps, events, agentService, agentRuntimeService, null, retryingPlanner,
+                stepVerifier, userSettingsService, skillsService, toolPolicyEngine, objectMapper, projectService);
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(
+                new AgentToolPolicyEngine.Decision(List.of("project_read_file"), 6, 1, "project_read_only"));
+        when(plans.saveAndFlush(any(AgentPlan.class))).thenAnswer(invocation -> {
+            AgentPlan saved = invocation.getArgument(0);
+            ReflectionTestUtils.setField(saved, "id", PLAN_ID);
+            return saved;
+        });
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        AgentRuntimeRequest request = new AgentRuntimeRequest(
+                AgentStrategy.PLAN_EXECUTE, SESSION_ID, List.of(), USER_ID, "Inspect Project source",
+                "deepseek", "deepseek-v4-flash", null, null, 1, true, null, "test-api-key", null,
+                null, AgentRuntimeMode.LANGCHAIN4J, AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                new ResolvedToolPolicy(List.of("project_read_file"), 6, 1, "project_read_only"),
+                null, null, "trace-plan-retry", null, null)
+                .withProjectContext(new ProjectRuntimeContext(USER_ID, 42L));
+
+        AgentPlanResponse response = retryingService.createPlanWithinAdapter(request);
+
+        assertThat(response.id()).isEqualTo(PLAN_ID);
+        assertThat(response.steps()).singleElement().satisfies(step ->
+                assertThat(step.allowedTools()).containsExactly("project_read_file"));
+        verify(modelProvider, times(2)).chat(any(ChatRequest.class));
+        verify(plans, times(1)).saveAndFlush(any(AgentPlan.class));
+        verify(steps, times(1)).save(any(AgentPlanStep.class));
+        ArgumentCaptor<AgentPlanStep> persistedStep = ArgumentCaptor.forClass(AgentPlanStep.class);
+        verify(steps).save(persistedStep.capture());
+        assertThat(persistedStep.getValue().getAllowedToolsJson())
+                .isEqualTo("[\"project_read_file\"]");
     }
 
     @Test
@@ -585,7 +699,7 @@ class PlanAgentServiceTest {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
-                .thenReturn(success("too vague"))
+                .thenReturn(successWithTrace("too vague", "step=1 tool=project_manifest args={} success=true"))
                 .thenReturn(success("complete evidence-backed result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("missing reusable evidence"))
@@ -603,17 +717,20 @@ class PlanAgentServiceTest {
         assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
                 .contains("Previous attempt error")
                 .contains("Step result did not satisfy success criteria")
-                .contains("missing reusable evidence");
+                .contains("missing reusable evidence")
+                .contains("Reusable observations from earlier attempts")
+                .contains("project_manifest")
+                .contains("Do not repeat successful calls");
         verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
-        verify(events, times(6)).save(eventCaptor.capture());
+        verify(events, times(7)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
-                .contains("step_verification_failed", "step_retry", "step_completed", "plan_completed");
+                .contains("step_tool_observation", "step_verification_failed", "step_retry", "step_completed", "plan_completed");
     }
 
     @Test
-    void executePlanCompletesWhenVerificationIsInconclusive() {
+    void executePlanPreservesResultAsDegradedWhenVerificationIsInconclusive() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
@@ -624,7 +741,7 @@ class PlanAgentServiceTest {
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
 
         assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
-        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
+        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
         assertThat(step.getAttemptCount()).isEqualTo(1);
         assertThat(step.getResult()).isEqualTo("usable result");
         verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
@@ -633,7 +750,42 @@ class PlanAgentServiceTest {
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
         verify(events, times(5)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
-                .contains("step_verification_inconclusive", "step_completed", "plan_completed");
+                .contains("step_verification_inconclusive", "step_completed_unverified", "plan_completed");
+    }
+
+    @Test
+    void executePlanDeliversControlledRuntimePartialWithoutVerifierOrRetry() {
+        AgentPlanStep step = newStep("step_1", 1, List.of());
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        AgentRuntimeResult partial = new AgentRuntimeResult(
+                true,
+                "Evidence was collected, but final synthesis timed out.",
+                List.of(ChatMessage.assistant("Evidence was collected, but final synthesis timed out.")),
+                3,
+                null,
+                List.of("step=1 tool=project_search args={} success=true"),
+                List.of("Final synthesis unavailable after controlled stop: timeout"),
+                null,
+                null,
+                null
+        ).withRuntimeStopSignal(AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED)
+                .withCoordination(AgentStrategy.SINGLE_STEP_REACT, AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED,
+                        "PARTIAL", true, AgentStrategy.SINGLE_STEP_REACT);
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(partial);
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
+        assertThat(step.getAttemptCount()).isEqualTo(1);
+        assertThat(step.getResult()).contains("Evidence was collected");
+        verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
+        verify(stepVerifier, org.mockito.Mockito.never()).verify(any());
+
+        ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, times(5)).save(eventCaptor.capture());
+        assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
+                .contains("step_tool_observation", "step_completed_partial", "plan_completed");
     }
 
     @Test
@@ -856,6 +1008,11 @@ class PlanAgentServiceTest {
                 null,
                 null
         );
+    }
+
+    private AgentRuntimeResult successWithTrace(String content, String trace) {
+        return new AgentRuntimeResult(true, content, List.of(ChatMessage.assistant(content)), 1, null,
+                List.of(trace), List.of(), null, null, null);
     }
 
     private AgentRuntimeResult failure(String error) {

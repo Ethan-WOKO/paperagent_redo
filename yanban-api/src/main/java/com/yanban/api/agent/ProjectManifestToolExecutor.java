@@ -18,11 +18,11 @@ public class ProjectManifestToolExecutor extends AbstractProjectReadToolExecutor
         super(projects, objectMapper);
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
-        schema.putObject("properties").putObject("projectId").put("type", "integer")
-                .put("description", "The currently authorized project id; it must match the runtime context.");
-        schema.putArray("required").add("projectId");
+        schema.putObject("properties");
         schema.put("additionalProperties", false);
-        definition = new ToolDefinition("project_manifest", "List safe, readable files in the authorized read-only Project. Never use paths outside that Project.", schema);
+        definition = new ToolDefinition("project_manifest", "List safe, readable files in the authorized read-only Project. "
+                + "Use this first when the Project is large or its relevant files are unknown, then pass selected concrete "
+                + "relative paths to specialized tools such as project_cross_material_search. Never use paths outside that Project.", schema);
     }
     @Override public ToolDefinition definition() { return definition; }
     @Override public ToolResult execute(ToolCall call) {

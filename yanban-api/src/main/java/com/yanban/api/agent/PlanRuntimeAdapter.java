@@ -5,6 +5,8 @@ import com.yanban.core.model.ChatMessage;
 import java.util.List;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
 
 /** Adapter boundary between the Coordinator and the existing persisted Plan scheduler. */
 @Component
@@ -32,7 +34,11 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
                         .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.COMPLETED, "PLAN_CREATED", false, null)
                         .withPlanId(created.id());
             } catch (RuntimeException ex) {
-                return new AgentRuntimeResult(false, null, List.of(), 0, ex.getMessage(), List.of(), List.of(),
+                String error = ex instanceof ResponseStatusException statusException
+                        && StringUtils.hasText(statusException.getReason())
+                        ? statusException.getReason()
+                        : (StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : ex.getClass().getSimpleName());
+                return new AgentRuntimeResult(false, null, List.of(), 0, error, List.of(), List.of(),
                         null, null, null)
                         .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.RUNTIME_FAILED, "FAILURE", false, null);
             }

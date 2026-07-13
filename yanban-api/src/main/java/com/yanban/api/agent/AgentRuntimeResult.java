@@ -108,6 +108,13 @@ public record AgentRuntimeResult(
                 runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet);
     }
 
+    /** A controlled partial has useful chat-visible content and is delivered normally without claiming verification. */
+    public AgentRuntimeResult asControlledPartial() {
+        return new AgentRuntimeResult(true, assistantContent, messages, steps, null, toolTrace, fallbacks,
+                promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet);
+    }
+
     public AgentRuntimeResult withTrustedEvidenceLedger(EvidenceLedger ledger) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,

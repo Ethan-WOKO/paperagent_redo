@@ -18,10 +18,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-/** One bounded, report-only audit over the section outputs. */
+/** One bounded whole-paper audit with optional verified prose-only repairs. */
 @Service
 public class PaperGlobalReviewService {
 
@@ -41,18 +42,37 @@ public class PaperGlobalReviewService {
     private final PaperPromptService promptService;
     private final PaperModelClient modelClient;
     private final ObjectMapper objectMapper;
+    private final PaperGlobalRepairService repairService;
 
     public PaperGlobalReviewService(PaperTaskAnalysisRepository analyses,
                                     PaperPromptService promptService,
                                     PaperModelClient modelClient,
                                     ObjectMapper objectMapper) {
+        this(analyses, promptService, modelClient, objectMapper, (PaperGlobalRepairService) null);
+    }
+
+    @Autowired
+    public PaperGlobalReviewService(PaperTaskAnalysisRepository analyses,
+                                    PaperPromptService promptService,
+                                    PaperModelClient modelClient,
+                                    ObjectMapper objectMapper,
+                                    ObjectProvider<PaperGlobalRepairService> repairServiceProvider) {
+        this(analyses, promptService, modelClient, objectMapper,
+                repairServiceProvider == null ? null : repairServiceProvider.getIfAvailable());
+    }
+
+    PaperGlobalReviewService(PaperTaskAnalysisRepository analyses,
+                             PaperPromptService promptService,
+                             PaperModelClient modelClient,
+                             ObjectMapper objectMapper,
+                             PaperGlobalRepairService repairService) {
         this.analyses = analyses;
         this.promptService = promptService;
         this.modelClient = modelClient;
         this.objectMapper = objectMapper;
+        this.repairService = repairService;
     }
 
-    @Transactional
     public Map<String, Object> reviewAndSave(PaperTask task,
                                              LatexDocument document,
                                              String finalDraftTex,
@@ -79,8 +99,34 @@ public class PaperGlobalReviewService {
         } catch (Exception ex) {
             result = fallback(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
         }
-        result.put("generatedBy", "paper-global-review-v2");
-        result.put("formulaPolicy", "FORMULA issues are report-only and never auto-fixed.");
+        List<Map<String, Object>> issues = issueMaps(result.get("issues"));
+        if (repairService != null && !issues.isEmpty()) {
+            try {
+                PaperGlobalRepairService.RepairSummary summary = repairService.repair(task, document, storedSections, issues);
+                result.put("issues", summary.issues());
+                result.put("repairAttemptedCount", summary.attemptedCount());
+                result.put("resolvedIssueCount", summary.resolvedCount());
+                result.put("remainingIssueCount", summary.remainingCount());
+                result.put("repairStatus", summary.resolvedCount() == 0 ? "REPORT_ONLY"
+                        : summary.remainingCount() == 0 ? "RESOLVED" : "PARTIAL");
+            } catch (Exception ex) {
+                result.put("repairAttemptedCount", 0);
+                result.put("resolvedIssueCount", 0);
+                result.put("remainingIssueCount", issues.size());
+                result.put("repairStatus", "DEGRADED");
+                result.put("repairWarning", "Focused global repair unavailable: "
+                        + truncate(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage(), 300));
+            }
+        } else {
+            result.put("repairAttemptedCount", 0);
+            result.put("resolvedIssueCount", 0);
+            result.put("remainingIssueCount", issues.size());
+            result.put("repairStatus", issues.isEmpty() ? "NOT_NEEDED" : "REPORT_ONLY");
+        }
+        result.put("generatedBy", "paper-global-review-v3-focused-repair");
+        result.put("maxRepairIssues", PaperGlobalRepairService.MAX_REPAIR_ISSUES);
+        result.put("maxRepairRoundsPerIssue", PaperGlobalRepairService.MAX_REPAIR_ROUNDS);
+        result.put("formulaPolicy", "Formulas and symbol/dimension notation remain report-only; only verified local prose repairs may be applied.");
         Map<String, Object> matrix = new LinkedHashMap<>(readMap(gapMatrix));
         matrix.put("globalReview", result);
         analysis.setGapMatrixJson(toJson(matrix));
@@ -232,6 +278,18 @@ public class PaperGlobalReviewService {
                 "issueCount", 0,
                 "warning", "Global review unavailable: " + truncate(message, 300),
                 "degraded", true));
+    }
+
+    private List<Map<String, Object>> issueMaps(Object value) {
+        if (!(value instanceof List<?> values)) return List.of();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : values) {
+            if (!(item instanceof Map<?, ?> map)) continue;
+            Map<String, Object> copy = new LinkedHashMap<>();
+            map.forEach((key, nested) -> copy.put(String.valueOf(key), nested));
+            result.add(copy);
+        }
+        return result;
     }
 
     private Map<String, Object> readMap(String text) {

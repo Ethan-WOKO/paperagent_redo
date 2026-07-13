@@ -2,6 +2,7 @@ package com.yanban.api.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -69,13 +70,16 @@ class PlanningAgentPlannerTest {
         ChatRequest request = requestCaptor.getValue();
         assertThat(request.provider()).isEqualTo("glm");
         assertThat(request.model()).isEqualTo("glm-4.5-air");
-        assertThat(request.maxTokens()).isEqualTo(1536);
+        assertThat(request.maxTokens()).isEqualTo(3072);
+        assertThat(request.tools()).isNull();
         assertThat(request.responseFormat()).isEqualTo(ChatRequest.ResponseFormat.jsonObject());
         assertThat(request.thinking()).isEqualTo(ChatRequest.Thinking.disabled());
         assertThat(request.messages().get(0).content()).contains("Return one JSON object only");
         assertThat(request.messages().get(0).content())
                 .contains("use [] when the step must not receive any tool")
-                .contains("Tools exposed to this plan:\n");
+                .contains("Tools exposed to this plan:\n")
+                .contains("at most 6 for complex tasks")
+                .contains("description <= 240");
     }
 
     @Test
@@ -102,7 +106,9 @@ class PlanningAgentPlannerTest {
     void plannerFailuresAreClassifiedWithoutExecutableFallback() {
         when(modelProvider.chat(any()))
                 .thenReturn(new ChatResponse(ChatMessage.assistant(""), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(""), "stop", null))
                 .thenReturn(new ChatResponse(ChatMessage.assistant("not json"), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("still not json"), "stop", null))
                 .thenReturn(new ChatResponse(ChatMessage.assistant("{\"summary\":\"none\",\"steps\":[]}"), "stop", null));
 
         PlanningAgentPlanner.PlanSpec empty = createPlan();
@@ -115,6 +121,99 @@ class PlanningAgentPlannerTest {
         assertThat(empty.steps()).isEmpty();
         assertThat(invalid.steps()).isEmpty();
         assertThat(noSteps.steps()).isEmpty();
+    }
+
+    @Test
+    void truncatedFirstAttemptIsReplannedOnceWithSameEndpointAndAllowlist() {
+        String truncated = """
+                {
+                  "summary": "Inspect Project",
+                  "steps": [{
+                    "id": "step_1",
+                    "title": "Inspect",
+                    "description": "Read the selected Project file
+                """;
+        String valid = """
+                {
+                  "summary": "Inspect Project safely",
+                  "steps": [{
+                    "id": "inspect",
+                    "title": "Inspect source",
+                    "description": "Read the authorized Project source and summarize relevant findings.",
+                    "type": "FILE_READ",
+                    "dependencies": [],
+                    "allowedTools": ["project_read_file", "write_file"],
+                    "successCriteria": "Findings cite the authorized Project source."
+                  }]
+                }
+                """;
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(truncated), "length", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(valid), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                "Inspect the Project source.", "deepseek", "deepseek-v4-flash",
+                "test-key", "https://api.example.test", "read-only Project",
+                List.of("project_read_file"));
+
+        assertThat(plan.executable()).isTrue();
+        assertThat(plan.steps()).singleElement().satisfies(step ->
+                assertThat(step.allowedTools()).containsExactly("project_read_file"));
+
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues().get(0).maxTokens()).isEqualTo(3072);
+        assertThat(requests.getAllValues().get(1).maxTokens()).isEqualTo(2048);
+        assertThat(requests.getAllValues()).allSatisfy(request -> {
+            assertThat(request.provider()).isEqualTo("deepseek");
+            assertThat(request.model()).isEqualTo("deepseek-v4-flash");
+            assertThat(request.apiKey()).isEqualTo("test-key");
+            assertThat(request.apiUrl()).isEqualTo("https://api.example.test");
+            assertThat(request.tools()).isNull();
+            assertThat(request.responseFormat()).isEqualTo(ChatRequest.ResponseFormat.jsonObject());
+            assertThat(request.thinking()).isEqualTo(ChatRequest.Thinking.disabled());
+            assertThat(request.messages().get(0).content()).contains("project_read_file");
+        });
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("compact JSON object")
+                .contains("exact resolved allowlist below")
+                .doesNotContain(truncated)
+                .contains("1-4 short steps")
+                .contains("\"deps\"")
+                .contains("\"tools\"");
+    }
+
+    @Test
+    void truncatedRepairAttemptDoesNotGetAcceptedOrRetriedAgain() {
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("{\"summary\":\"x\",\"steps\":[{\"id\":\"s1\""), "length", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("{\"summary\":\"y\",\"steps\":[{\"id\":\"s1\""), "length", null));
+
+        PlanningAgentPlanner.PlanSpec plan = createPlan();
+
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+        assertThat(plan.failureMessage()).contains("after one bounded retry", "first=INVALID_PLAN", "second=INVALID_PLAN");
+        verify(modelProvider, times(2)).chat(any());
+    }
+
+    @Test
+    void twoInvalidAttemptsFailDeterministicallyWithoutLeakingRawOutput() {
+        String unboundedRaw = "not-json-" + "private-output-".repeat(1000);
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(unboundedRaw), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(unboundedRaw), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = createPlan();
+
+        verify(modelProvider, times(2)).chat(any());
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+        assertThat(plan.failureMessage())
+                .contains("after one bounded retry", "first=INVALID_PLAN", "second=INVALID_PLAN")
+                .doesNotContain("Raw output", "private-output-private-output-private-output");
+        assertThat(plan.failureMessage().length()).isLessThanOrEqualTo(500);
+        assertThat(plan.steps()).isEmpty();
     }
 
     private PlanningAgentPlanner.PlanSpec createPlan() {

@@ -25,6 +25,17 @@ public final class ProjectCrossMaterialSearchToolExecutor extends AbstractResear
     public ProjectCrossMaterialSearchToolExecutor(ProjectService projects, ObjectMapper objectMapper) { super("project_cross_material_search", projects, objectMapper); }
 
     @Override protected ResearchToolOutcome analyze(ResearchContext context, JsonNode arguments) {
+        boolean scoped = arguments.has("relativePaths") && arguments.path("relativePaths").isArray()
+                && !arguments.path("relativePaths").isEmpty();
+        long manifestBytes = context.manifestFiles().stream().mapToLong(ProjectFileEntry::sizeBytes).sum();
+        if (!scoped && manifestBytes > contract().budget().maxBytesInspected()) {
+            throw new com.yanban.core.research.ResearchContractException(
+                    ResearchToolErrorCode.INVALID_ARGUMENT,
+                    "Large Project requires relativePaths for project_cross_material_search: "
+                            + "call project_manifest, select concrete relevant files, then retry with "
+                            + "{\"query\":\"literal concept\",\"relativePaths\":[\"paper.tex\",\"code.py\"],\"maxMatches\":10}. "
+                            + "Do not retry the whole-Project scope.");
+        }
         Map<ProjectRelativePath, ProjectFileEntry> files = requestedFiles(context, arguments, true);
         int maxMatches = arguments.path("maxMatches").asInt(20); String query = arguments.path("query").asText();
         List<ResearchEvidenceRef> matches = new ArrayList<>(); List<String> snippets = new ArrayList<>(); long bytes = 0; boolean truncated = false;

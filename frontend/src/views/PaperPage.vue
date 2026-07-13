@@ -247,12 +247,12 @@
               <article v-for="suggestion in visibleSuggestions" :key="suggestion.id" class="paper-suggestion-row-v2">
                 <div>
                   <strong>{{ suggestion.category }}</strong>
-                  <p>{{ suggestion.statement }}</p>
+                  <p>{{ suggestionCustomerText(suggestion.statement) }}</p>
                   <small v-if="suggestionDecisionReason(suggestion)" class="paper-suggestion-decision">
                     {{ suggestionDecisionReason(suggestion) }}
                   </small>
                 </div>
-                <span>{{ suggestion.evidenceCount }} evidence cards</span>
+                <span>{{ suggestion.evidenceCount }} supporting papers</span>
                 <NTag :type="suggestion.severity === 'HIGH' ? 'error' : suggestion.severity === 'LOW' ? 'success' : 'warning'" size="small">
                   {{ suggestion.severity || 'Info' }}
                 </NTag>
@@ -434,8 +434,8 @@
               </div>
               <div v-for="suggestion in suggestions" :key="suggestion.id" class="paper-suggestion-card" :class="`paper-suggestion-card--${suggestion.honestyGrade}`">
                 <strong>{{ suggestion.category }} · {{ suggestion.severity || '-' }}</strong>
-                <p>{{ suggestion.statement }}</p>
-                <small>{{ suggestion.honestyReason }} · evidence {{ suggestion.evidenceCount }} · {{ suggestion.track }} · {{ suggestion.status }}</small>
+                <p>{{ suggestionCustomerText(suggestion.statement) }}</p>
+                <small>{{ suggestionCustomerText(suggestion.honestyReason) }} · {{ suggestion.evidenceCount }} supporting papers · {{ suggestionStateLabel(suggestion) }}</small>
                 <br v-if="suggestionDecisionReason(suggestion)" />
                 <small v-if="suggestionDecisionReason(suggestion)" class="paper-suggestion-decision">{{ suggestionDecisionReason(suggestion) }}</small>
                 <pre v-if="suggestion.patchJson && previewMode === 'advanced'" class="paper-code-preview">{{ prettyJson(suggestion.patchJson) }}</pre>
@@ -446,6 +446,12 @@
 
           <NTabPane name="report" :tab="`Report (${bibliographyCards.length})`">
             <div class="paper-report-panel">
+              <div v-if="citationApplicationSummary" class="paper-citation-summary">
+                <div><span>New references</span><strong>{{ citationApplicationSummary.newReferences }}</strong></div>
+                <div><span>Existing references reused</span><strong>{{ citationApplicationSummary.reusedReferences }}</strong></div>
+                <div><span>Citation locations updated</span><strong>{{ citationApplicationSummary.locationsUpdated }}</strong></div>
+                <div><span>Existing locations verified</span><strong>{{ citationApplicationSummary.locationsVerified }}</strong></div>
+              </div>
               <div v-for="card in bibliographyCards" :key="`bib-${card.id}`" class="paper-bib-card">
                 <strong>{{ card.title }}</strong>
                 <small>{{ formatAuthors(card.authors) }} · {{ card.publicationYear || '-' }} · {{ card.venue || '-' }}</small>
@@ -757,8 +763,8 @@
                           <NTag :type="suggestion.honestyGrade === 'A' ? 'success' : 'warning'" size="small">{{ suggestion.honestyGrade }} 类</NTag>
                         </div>
                         <strong>{{ suggestion.category }} · {{ suggestion.severity || '-' }}</strong>
-                        <p>{{ suggestion.statement }}</p>
-                        <small>{{ suggestion.honestyReason }} · evidence {{ suggestion.evidenceCount }} · {{ suggestion.track }} · {{ suggestion.status }}</small>
+                        <p>{{ suggestionCustomerText(suggestion.statement) }}</p>
+                        <small>{{ suggestionCustomerText(suggestion.honestyReason) }} · {{ suggestion.evidenceCount }} supporting papers · {{ suggestionStateLabel(suggestion) }}</small>
                         <br v-if="suggestionDecisionReason(suggestion)" />
                         <small v-if="suggestionDecisionReason(suggestion)" class="paper-suggestion-decision">{{ suggestionDecisionReason(suggestion) }}</small>
                         <pre v-if="suggestion.patchJson && previewMode === 'advanced'" class="paper-code-preview">{{ prettyJson(suggestion.patchJson) }}</pre>
@@ -774,11 +780,17 @@
                         <strong>审查报告与 suggested.bib</strong>
                         <NTag size="small" :type="suggestions.length > 0 ? 'success' : 'default'">{{ suggestions.length }} 条建议</NTag>
                       </div>
+                      <div v-if="citationApplicationSummary" class="paper-citation-summary">
+                        <div><span>新增推荐文献</span><strong>{{ citationApplicationSummary.newReferences }}</strong></div>
+                        <div><span>复用已有文献</span><strong>{{ citationApplicationSummary.reusedReferences }}</strong></div>
+                        <div><span>更新引用位置</span><strong>{{ citationApplicationSummary.locationsUpdated }}</strong></div>
+                        <div><span>确认已有位置</span><strong>{{ citationApplicationSummary.locationsVerified }}</strong></div>
+                      </div>
                       <NEmpty v-if="suggestions.length === 0 && bibliographyCards.length === 0 && citationSlots.length === 0" description="暂无审查报告或推荐文献" />
                       <div v-if="citationSlots.length > 0" class="paper-report-item">
-                        <div class="paper-panel-heading"><strong>引言 Citation Slots</strong><span>按引言论证链检索文献</span></div>
+                        <div class="paper-panel-heading"><strong>引言待支持论断</strong><span>用于说明文献应支持的正文内容</span></div>
                         <div v-for="(slot, slotIndex) in citationSlots" :key="slot.id || slotIndex" class="paper-bib-card">
-                          <strong>{{ slot.category || `Slot ${slotIndex + 1}` }}</strong>
+                          <strong>{{ slot.category || `论断 ${slotIndex + 1}` }}</strong>
                           <p>{{ slot.claim }}</p>
                           <small>需要：{{ slot.citationNeed || 'NEEDS_SUPPORT' }} · 原有引用：{{ Array.isArray(slot.existingCitationKeys) && slot.existingCitationKeys.length ? slot.existingCitationKeys.join(', ') : '尚未识别' }}</small>
                           <div class="paper-bib-card__links">
@@ -789,13 +801,13 @@
                       <div v-for="suggestion in suggestions" :key="`report-${suggestion.id}`" class="paper-report-item">
                         <div class="paper-report-item__head">
                           <strong>{{ suggestion.severity || 'INFO' }} · {{ suggestion.category }}</strong>
-                          <NTag size="small" :type="suggestion.track === 'ADVOCACY' ? 'success' : 'warning'">{{ suggestion.track }}</NTag>
+                          <NTag size="small" :type="suggestion.track === 'ADVOCACY' ? 'success' : 'warning'">{{ suggestion.track === 'ADVOCACY' ? 'Citation recommendation' : 'Review note' }}</NTag>
                         </div>
-                        <p>{{ suggestion.statement }}</p>
+                        <p>{{ suggestionCustomerText(suggestion.statement) }}</p>
                         <div class="paper-report-evidence">
                           <span v-if="suggestion.evidenceCards.length === 0">无真实 evidence，禁止直接写入论文。</span>
                           <a v-for="card in suggestion.evidenceCards" :key="card.id" :href="card.url || doiUrl(card.doi) || undefined" target="_blank" rel="noreferrer">
-                            [card-{{ card.id }}] {{ card.title }}{{ card.publicationYear ? ` (${card.publicationYear})` : '' }}
+                            {{ card.title }}{{ card.publicationYear ? ` (${card.publicationYear})` : '' }}
                           </a>
                         </div>
                       </div>
@@ -1017,6 +1029,20 @@ const bibliographyCards = computed(() => {
     seen.add(card.id);
     return true;
   });
+});
+const citationApplicationSummary = computed(() => {
+  const artifact = activeArtifacts.value
+    .filter((item) => item.type === 'suggested_bib')
+    .sort((left, right) => right.version - left.version)[0];
+  if (!artifact?.metadataJson) return null;
+  const metadata = parseJson<Record<string, unknown>>(artifact.metadataJson, {});
+  if (metadata.newReferences == null && metadata.reusedReferences == null && metadata.citationLocationsUpdated == null) return null;
+  return {
+    newReferences: Number(metadata.newReferences || 0),
+    reusedReferences: Number(metadata.reusedReferences || 0),
+    locationsUpdated: Number(metadata.citationLocationsUpdated || 0),
+    locationsVerified: Number(metadata.existingCitationLocationsVerified || 0),
+  };
 });
 const visibleSuggestions = computed(() => suggestions.value);
 const literatureSupportCards = computed(() => bibliographyCards.value);
@@ -1702,18 +1728,18 @@ async function handleSectionRoleChange(sectionId: number, role: string) {
 function suggestionStateLabel(suggestion: PaperSuggestionResponse) {
   const closure = suggestionClosure(suggestion);
   if (closure?.status === 'SUPPORTED') {
-    return `Repaired (R${Number(closure.attempts || 1)})`;
+    return `Applied after review (R${Number(closure.attempts || 1)})`;
   }
   if (closure?.status === 'REPORT_ONLY') {
     return `Report only (R${Number(closure.attempts || 0)})`;
   }
   const decision = suggestionDecision(suggestion);
-  if (decision?.verdict === 'PARTIAL') return suggestion.status === 'ACCEPTED' ? 'Auto accepted: supported clause' : 'Critic: partial';
-  if (decision?.verdict === 'REJECTED') return 'Critic rejected';
+  if (decision?.verdict === 'PARTIAL') return suggestion.status === 'ACCEPTED' ? 'Applied with supporting evidence' : 'Partially supported';
+  if (decision?.verdict === 'REJECTED') return 'Not supported';
   if (decision?.verdict === 'UNREVIEWED') return 'Review unavailable';
-  if (suggestion.status === 'ACCEPTED') return 'Auto accepted';
+  if (suggestion.status === 'ACCEPTED') return 'Accepted for application';
   if (suggestion.status === 'REJECTED') return 'Not applied';
-  return suggestion.applicable ? 'Not auto-applied' : 'Report only';
+  return suggestion.applicable ? 'Pending application' : 'Report only';
 }
 
 function suggestionStateType(suggestion: PaperSuggestionResponse): 'success' | 'warning' | 'default' {
@@ -1749,7 +1775,17 @@ function suggestionClosure(suggestion: PaperSuggestionResponse): Record<string, 
 
 function suggestionDecisionReason(suggestion: PaperSuggestionResponse) {
   const decision = suggestionDecision(suggestion);
-  return typeof decision?.reason === 'string' ? decision.reason : '';
+  return typeof decision?.reason === 'string' ? suggestionCustomerText(decision.reason) : '';
+}
+
+function suggestionCustomerText(value: string | null | undefined) {
+  return (value || '')
+    .replace(/\bcard[-\s]?\d+\b/gi, 'the selected literature')
+    .replace(/\bslot[-\s]?\d+\b/gi, 'the target claim')
+    .replace(/citation critic/gi, 'evidence review')
+    .replace(/citation closure/gi, 'citation review')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function updateSectionRevisionStatus(section: PaperSectionResponse, status: string) {

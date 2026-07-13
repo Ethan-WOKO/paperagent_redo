@@ -11,6 +11,9 @@ For each suggestion:
 - Venue, year, method, population/system, and comparison qualifiers must not be contradicted.
 - Every explicitly named mechanism, method, example, and qualifier in `targetClaim` must be supported by at least one accepted paper. Evidence for a different example or a broader topic is not support for the named example.
 - Reject papers that are merely adjacent to the topic.
+- For a literature-positioning or research-gap statement, a paper may be accepted as representative evidence when it directly exemplifies one named prior-work strand or component of the contrast. Do not require one paper to prove an exhaustive field-wide absence of every possible joint design.
+- Representative papers support a positive description of what prior work covers; they do not directly prove a negative clause such as "is still lacking" or "no unified framework exists". For a gap statement, return or relocate to the positive prior-work clause and leave the broader negative conclusion uncited unless the supplied evidence directly establishes it.
+- When the same evidence card appears in several suggestions targeting the same paragraph, approve it only for the single most specific supported claim unless separate citations are genuinely necessary.
 - `SUPPORTED` means the accepted papers, together or individually as appropriate, support the whole target claim.
 - `PARTIAL` means some evidence is useful but the target claim is broader or more specific than the evidence. It is not approval for direct insertion; it will enter the bounded citation-repair loop.
 - For `PARTIAL`, keep only evidence that supports a complete clause of `targetClaim` and return that clause unchanged in `supportedAnchor`. It must be one exact contiguous substring of `targetClaim`; do not rewrite it. Leave it empty when no complete clause is safely supported.

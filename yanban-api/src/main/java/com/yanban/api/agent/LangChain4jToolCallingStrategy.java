@@ -43,12 +43,25 @@ public class LangChain4jToolCallingStrategy {
             """;
     private static final String PROJECT_READ_SYSTEM_PROMPT = """
             This request is bound to an authenticated read-only Project. Use only the Project tools
-            exposed for this request and only Project-relative paths. project_manifest provides safe
-            inventory metadata, but it is not file-content evidence. Before making Project conclusions,
-            capture at least one relevant current observation with project_read_file or project_search.
+            exposed for this request and only Project-relative paths. The server supplies Project identity;
+            never send or guess projectId in tool arguments. project_manifest provides safe
+            inventory metadata, but it is not file-content evidence. Prefer a specialized Project research
+            tool when its purpose matches the request; its typed evidence is current file-content evidence.
+            Otherwise, before making Project conclusions, capture at least one relevant current observation
+            with project_read_file or project_search. Follow each tool's JSON schema exactly, especially
+            array-valued relativePaths fields.
+            To inspect all applicable files, call project_manifest, select its concrete relative paths, and
+            pass those paths to the specialized tool. Never use ".", "*", "**", or "/" as a file path.
+            For project_cross_material_search on a large or unfamiliar Project, first use project_manifest,
+            pass selected concrete files through relativePaths, and normally keep maxMatches between 10 and 20.
+            After an input/result byte-budget error, narrow relativePaths instead of repeating a whole-Project search.
             For a directory overview, use the manifest to locate candidates, then inspect relevant files
             and clearly distinguish path-based inference from file-content findings. Never claim a complete
             review beyond the observations retrieved in this turn.
+
+            Treat typed research-tool items as the source of truth. Before stating any numeric count, derive
+            it from the matching typed items and verify that it equals the entries you enumerate. If the count
+            and enumeration cannot be reconciled, omit the numeric total and report the observed entries only.
 
             Return one coherent final answer rather than separate answers or concatenated drafts. When using
             Markdown, keep every heading to a short standalone phrase on its own line, put a space after the
@@ -61,9 +74,11 @@ public class LangChain4jToolCallingStrategy {
             Use only the conversation and tool results already available to produce the best final answer.
             If evidence is incomplete, say that briefly and explain what can be concluded from the retrieved results.
             """;
-    private static final String TOOL_BUDGET_SKIPPED_TOOL_RESULT = """
-            Tool call skipped because the tool-call budget has been reached.
-            Please answer from the tool results that are already present in the conversation.
+    private static final String NO_PROGRESS_FINAL_ANSWER_PROMPT = """
+            Every tool request in the latest assistant step duplicated an earlier invocation, so no new
+            tool execution was performed. Do not call any more tools. Use the tool results already present
+            in the conversation to produce the best final answer. If the evidence is incomplete, state the
+            limitation briefly instead of repeating a tool call.
             """;
     private final LangChain4jChatModelAdapter chatModel;
     private final LangChain4jToolProvider toolProvider;
@@ -147,8 +162,33 @@ public class LangChain4jToolCallingStrategy {
             }
 
             emitProcess(request, "已决定调用 " + requests.size() + " 个工具：" + summarizeToolNames(requests));
+            int newToolCallsThisStep = 0;
+            int reusedToolCallsThisStep = 0;
             for (int i = 0; i < requests.size(); i++) {
                 ToolExecutionRequest toolRequest = requests.get(i);
+                String signature = toolRequest.name() + "|" + normalizeArguments(toolRequest.arguments());
+                InvocationState previous = invocationStates.get(signature);
+                String repeatError = repeatError(toolRequest, previous, request.toolPolicy().maxDuplicateToolCalls());
+                if (repeatError != null) {
+                    String reason = repeatError + ": " + signature;
+                    String reusedContent = reusedToolResult(previous, reason);
+                    fallbacks.add("Tool result reused without re-execution: " + reason);
+                    toolTrace.add(buildReusedToolTraceLine(step + 1, toolRequest, previous, reason));
+                    messages.add(ToolExecutionResultMessage.from(
+                            toolRequest.id(),
+                            toolRequest.name(),
+                            reusedContent
+                    ));
+                    reusedToolCallsThisStep++;
+                    log.info("LangChain4j tool result reused step={} tool={} args={} priorSuccess={} originalToolCallId={} reason={}",
+                            step + 1,
+                            toolRequest.name(),
+                            abbreviate(defaultString(toolRequest.arguments(), "{}")),
+                            previous.outcome().success(),
+                            previous.sourceToolCallId(),
+                            repeatError);
+                    continue;
+                }
                 if (toolCalls >= request.toolPolicy().maxToolCalls()) {
                     String error = "Tool-call budget exceeded: maxToolCalls=" + request.toolPolicy().maxToolCalls();
                     fallbacks.add(error);
@@ -156,19 +196,12 @@ public class LangChain4jToolCallingStrategy {
                     return finalAnswerWithoutMoreTools(messages, toolTrace, fallbacks, step + 1, totalUsage, request, error)
                             .withRuntimeStopSignal(AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED);
                 }
-                String signature = toolRequest.name() + "|" + normalizeArguments(toolRequest.arguments());
-                InvocationState previous = invocationStates.get(signature);
-                String repeatError = repeatError(toolRequest, previous, request.toolPolicy().maxDuplicateToolCalls());
-                if (repeatError != null) {
-                    String error = repeatError + ": " + signature;
-                    fallbacks.add(error);
-                    return failure(messages, toolTrace, fallbacks, step + 1, totalUsage, error);
-                }
                 toolCalls++;
+                newToolCallsThisStep++;
 
                 emitProcess(request, "正在调用工具：" + toolRequest.name());
                 ToolExecutionOutcome toolResult = executeTool(toolProviderResult, toolRequest, request.userId(), allowedTools);
-                invocationStates.put(signature, InvocationState.after(previous, toolResult));
+                invocationStates.put(signature, InvocationState.after(previous, toolRequest.id(), toolResult));
                 log.info("LangChain4j tool step={} tool={} args={} success={} error={}",
                         step + 1,
                         toolRequest.name(),
@@ -185,11 +218,20 @@ public class LangChain4jToolCallingStrategy {
                         toolResult.content()
                 ));
             }
+            if (newToolCallsThisStep == 0 && reusedToolCallsThisStep > 0) {
+                String reason = "No new tool progress: all " + reusedToolCallsThisStep
+                        + " requested invocation(s) reused earlier results";
+                fallbacks.add(reason);
+                log.info("LangChain4j terminating repeated-tool loop step={} reusedToolCalls={} toolCalls={}",
+                        step + 1, reusedToolCallsThisStep, toolCalls);
+                return finalAnswerAfterNoProgress(
+                        messages, toolTrace, fallbacks, step + 1, totalUsage, request, reason);
+            }
         }
 
-        String error = "LangChain4j tool-calling exceeded maxSteps=" + request.maxSteps();
-        fallbacks.add(error);
-        return failure(messages, toolTrace, fallbacks, request.maxSteps(), totalUsage, error)
+        String reason = "Tool reasoning rounds reached maxSteps=" + request.maxSteps();
+        fallbacks.add(reason);
+        return finalAnswerWithoutMoreTools(messages, toolTrace, fallbacks, request.maxSteps(), totalUsage, request, reason)
                 .withRuntimeStopSignal(AgentRuntimeStopSignal.MAX_STEPS_BUDGET_EXHAUSTED);
     }
 
@@ -202,6 +244,69 @@ public class LangChain4jToolCallingStrategy {
                                                            String reason) {
         emitProcess(request, "Tool-call budget reached. Generating the final answer from existing results.");
         messages.add(SystemMessage.from(TOOL_BUDGET_FINAL_ANSWER_PROMPT));
+        ChatRequest finalRequest = ChatRequest.builder()
+                .messages(messages)
+                .parameters(ChatRequestParameters.builder()
+                        .modelName(request.model())
+                        .temperature(request.temperature())
+                        .maxOutputTokens(request.maxTokens())
+                        .build())
+                .build();
+        dev.langchain4j.model.chat.response.ChatResponse response;
+        try {
+            response = callModel(finalRequest, request);
+        } catch (RuntimeException ex) {
+            return synthesisTransportPartial(messages, toolTrace, fallbacks, steps, usage, request, reason, ex);
+        }
+        TokenUsage totalUsage = TokenUsage.sum(usage, response == null ? null : response.tokenUsage());
+        AiMessage aiMessage = response == null ? null : response.aiMessage();
+        if (aiMessage == null || !StringUtils.hasText(aiMessage.text())) {
+            return failure(messages, toolTrace, fallbacks, steps, totalUsage,
+                    "LangChain4j returned an empty final response after " + reason);
+        }
+        messages.add(aiMessage);
+        if (!isStreaming(request)) {
+            emitToken(request, aiMessage.text());
+        }
+        return success(messages, toolTrace, fallbacks, steps, totalUsage, aiMessage.text());
+    }
+
+    private AgentRuntimeResult synthesisTransportPartial(
+            List<dev.langchain4j.data.message.ChatMessage> messages,
+            List<String> toolTrace,
+            List<String> fallbacks,
+            int steps,
+            TokenUsage usage,
+            AgentRuntimeRequest request,
+            String reason,
+            RuntimeException exception) {
+        String diagnostic = "Final synthesis unavailable after controlled stop: "
+                + abbreviate(defaultString(exception.getMessage(), exception.getClass().getSimpleName()));
+        fallbacks.add(diagnostic);
+        long successfulCalls = toolTrace.stream().filter(trace -> trace != null && trace.contains("success=true")).count();
+        long failedCalls = toolTrace.stream().filter(trace -> trace != null && trace.contains("success=false")).count();
+        String content = "The tool phase stopped in a controlled manner after collecting available Project evidence. "
+                + "The final model synthesis timed out, so this step is only partially complete. "
+                + "Successful tool observations: " + successfulCalls + ", failed or skipped observations: " + failedCalls
+                + ". Limitation: " + reason;
+        messages.add(AiMessage.from(content));
+        if (!isStreaming(request)) {
+            emitToken(request, content);
+        }
+        log.warn("LangChain4j final synthesis transport failed after controlled stop sessionId={} steps={} successfulTools={} failedTools={} reason={}",
+                request.sessionId(), steps, successfulCalls, failedCalls, reason, exception);
+        return success(messages, toolTrace, fallbacks, steps, usage, content);
+    }
+
+    private AgentRuntimeResult finalAnswerAfterNoProgress(List<dev.langchain4j.data.message.ChatMessage> messages,
+                                                          List<String> toolTrace,
+                                                          List<String> fallbacks,
+                                                          int steps,
+                                                          TokenUsage usage,
+                                                          AgentRuntimeRequest request,
+                                                          String reason) {
+        emitProcess(request, "No new tool progress. Generating the final answer from existing results.");
+        messages.add(SystemMessage.from(NO_PROGRESS_FINAL_ANSWER_PROMPT));
         ChatRequest finalRequest = ChatRequest.builder()
                 .messages(messages)
                 .parameters(ChatRequestParameters.builder()
@@ -235,13 +340,27 @@ public class LangChain4jToolCallingStrategy {
             messages.add(ToolExecutionResultMessage.from(
                     request.id(),
                     request.name(),
-                    TOOL_BUDGET_SKIPPED_TOOL_RESULT
+                    budgetSkippedToolResult(reason)
             ));
             toolTrace.add("step=" + step
                     + " tool=" + request.name()
                     + " args=" + defaultString(request.arguments(), "{}")
                     + " success=false error=" + reason);
         }
+    }
+
+    private String budgetSkippedToolResult(String reason) {
+        var result = objectMapper.createObjectNode();
+        result.put("success", false);
+        result.put("executed", false);
+        result.put("skipped", true);
+        result.put("controlledStop", true);
+        result.put("errorCode", AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED.name());
+        result.put("stopReason", AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED.name());
+        result.put("outcome", CompletionStatus.PARTIAL.name());
+        result.put("retryable", false);
+        result.put("message", reason);
+        return result.toString();
     }
 
     private dev.langchain4j.model.chat.response.ChatResponse callModel(ChatRequest chatRequest, AgentRuntimeRequest request) {
@@ -333,7 +452,49 @@ public class LangChain4jToolCallingStrategy {
                 + " tool=" + toolRequest.name()
                 + " args=" + defaultString(toolRequest.arguments(), "{}")
                 + " success=" + toolResult.success()
-                + (toolResult.success() ? "" : " error=" + defaultString(toolResult.errorMessage(), "tool_failed"));
+                + (toolResult.success() ? summarizeToolObservation(toolResult.content())
+                : " error=" + defaultString(toolResult.errorMessage(), "tool_failed"));
+    }
+
+    private String summarizeToolObservation(String content) {
+        if (!StringUtils.hasText(content)) return "";
+        try {
+            JsonNode result = objectMapper.readTree(content);
+            if (result.path("hits").isArray()) return " observation=hits:" + result.path("hits").size();
+            if (result.path("items").isArray()) return " observation=items:" + result.path("items").size()
+                    + (result.has("status") ? ",status:" + result.path("status").asText() : "");
+            if (result.has("status")) return " observation=status:" + result.path("status").asText();
+        } catch (Exception ignored) {
+            // Tool content remains available in the transcript; trace summaries are best effort only.
+        }
+        return "";
+    }
+
+    private String reusedToolResult(InvocationState previous, String reason) {
+        var reused = objectMapper.createObjectNode();
+        reused.put("success", previous.outcome().success());
+        reused.put("reused", true);
+        reused.put("originalToolCallId", defaultString(previous.sourceToolCallId(), "unknown"));
+        reused.put("reason", reason);
+        reused.put("message", "Identical request was not re-executed; use the original tool result already present.");
+        if (!previous.outcome().success()) {
+            reused.put("errorMessage", defaultString(previous.outcome().errorMessage(), "tool_failed"));
+        }
+        return reused.toString();
+    }
+
+    private String buildReusedToolTraceLine(int step,
+                                            ToolExecutionRequest toolRequest,
+                                            InvocationState previous,
+                                            String reason) {
+        return "step=" + step
+                + " tool=" + toolRequest.name()
+                + " args=" + defaultString(toolRequest.arguments(), "{}")
+                + " success=" + previous.outcome().success()
+                + " reused=true originalToolCallId=" + defaultString(previous.sourceToolCallId(), "unknown")
+                + " reason=" + reason
+                + (previous.outcome().success() ? ""
+                : " error=" + defaultString(previous.outcome().errorMessage(), "tool_failed"));
     }
 
     private List<dev.langchain4j.data.message.ChatMessage> toLangChainMessages(List<ChatMessage> messages) {
@@ -636,10 +797,23 @@ public class LangChain4jToolCallingStrategy {
         TOOL_CALL
     }
 
-    private record InvocationState(int count, boolean success, boolean asyncStateObserved, boolean asyncTerminal) {
-        private static InvocationState after(InvocationState previous, ToolExecutionOutcome outcome) {
-            return new InvocationState(previous == null ? 1 : previous.count() + 1,
-                    outcome.success(), outcome.asyncStateObserved(), outcome.asyncTerminal());
+    private record InvocationState(int count, String sourceToolCallId, ToolExecutionOutcome outcome) {
+        private static InvocationState after(InvocationState previous,
+                                             String sourceToolCallId,
+                                             ToolExecutionOutcome outcome) {
+            return new InvocationState(previous == null ? 1 : previous.count() + 1, sourceToolCallId, outcome);
+        }
+
+        private boolean success() {
+            return outcome.success();
+        }
+
+        private boolean asyncStateObserved() {
+            return outcome.asyncStateObserved();
+        }
+
+        private boolean asyncTerminal() {
+            return outcome.asyncTerminal();
         }
     }
 

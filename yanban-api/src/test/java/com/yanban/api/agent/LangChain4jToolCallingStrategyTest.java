@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yanban.core.model.ChatChunk;
@@ -21,9 +22,12 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.output.TokenUsage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
@@ -65,6 +69,48 @@ class LangChain4jToolCallingStrategyTest {
     }
 
     @Test
+    void lastReasoningRoundToolCallStillGetsOneToolsDisabledSynthesis() {
+        ToolRegistry registry = new ToolRegistry().register(new StubToolExecutor("search_web", objectMapper));
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(toolCalls(toolRequest("call-1", "search_web", "{\"query\":\"radar\"}")))
+                .thenReturn(toolCalls(toolRequest("call-2", "search_web", "{\"query\":\"radar waveform\"}")))
+                .thenReturn(toolCalls(toolRequest("call-3", "search_web", "{\"query\":\"radar constraint\"}")))
+                .thenReturn(answer("Final synthesis from the completed tool result."));
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
+                .run(request(List.of("search_web"), 3, 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.runtimeStopSignal()).isEqualTo(AgentRuntimeStopSignal.MAX_STEPS_BUDGET_EXHAUSTED);
+        assertThat(result.assistantContent()).isEqualTo("Final synthesis from the completed tool result.");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModel, org.mockito.Mockito.times(4)).chat(requests.capture(), any(AgentRuntimeRequest.class));
+        assertThat(requests.getAllValues().get(3).parameters().toolSpecifications()).isEmpty();
+    }
+
+    @Test
+    void finalSynthesisTransportTimeoutPreservesToolEvidenceAsControlledPartial() {
+        ToolRegistry registry = new ToolRegistry().register(new StubToolExecutor("search_web", objectMapper));
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(toolCalls(toolRequest("call-1", "search_web", "{\"query\":\"radar\"}")))
+                .thenReturn(toolCalls(toolRequest("call-2", "search_web", "{\"query\":\"constraint\"}")))
+                .thenThrow(new IllegalStateException("Timeout on blocking read for 60000000000 NANOSECONDS"));
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
+                .run(request(List.of("search_web"), 1, 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.runtimeStopSignal()).isEqualTo(AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED);
+        assertThat(result.assistantContent())
+                .contains("only partially complete")
+                .contains("Successful tool observations: 1");
+        assertThat(result.toolTrace()).hasSize(2);
+        assertThat(result.fallbacks()).anyMatch(value -> value.contains("Final synthesis unavailable"));
+    }
+
+    @Test
     void projectRequestReceivesReadSearchEvidenceInstruction() {
         LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
         when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
@@ -82,8 +128,26 @@ class LangChain4jToolCallingStrategyTest {
                 .filter(message -> message instanceof dev.langchain4j.data.message.SystemMessage)
                 .map(message -> ((dev.langchain4j.data.message.SystemMessage) message).text())
                 .toList();
-        assertThat(systemPrompts).anySatisfy(prompt ->
-                assertThat(prompt).contains("project_manifest", "project_read_file", "project_search"));
+        assertThat(systemPrompts.stream().map(prompt -> prompt.replaceAll("\\s+", " ")).toList())
+                .anySatisfy(prompt -> assertThat(prompt)
+                        .contains("project_manifest", "project_read_file", "project_search", "specialized Project research tool")
+                        .contains("array-valued relativePaths")
+                        .contains("derive it from the matching typed items")
+                        .contains("equals the entries you enumerate")
+                        .contains("omit the numeric total"));
+    }
+
+    @Test
+    void preservesArrayParametersWhenConvertingRegistryToolSchema() {
+        ToolRegistry registry = new ToolRegistry().register(new ArrayStubToolExecutor(objectMapper));
+
+        var specification = toolProvider(registry)
+                .provideTools(request(List.of("array_tool"), 1, 1))
+                .tools().keySet().stream().findFirst().orElseThrow();
+
+        assertThat(specification.parameters().properties().get("relativePaths"))
+                .isInstanceOfSatisfying(JsonArraySchema.class, array ->
+                        assertThat(array.items()).isInstanceOf(JsonStringSchema.class));
     }
 
     @Test
@@ -115,7 +179,7 @@ class LangChain4jToolCallingStrategyTest {
     }
 
     @Test
-    void blocksDuplicateToolCallsBeyondBudget() {
+    void allDuplicateStepReusesResultAndTerminatesWithEvidenceBasedAnswer() {
         ToolRegistry registry = new ToolRegistry().register(new StubToolExecutor("search_web", objectMapper));
         LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
         when(chatModel.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
@@ -132,7 +196,8 @@ class LangChain4jToolCallingStrategyTest {
                                 .name("search_web")
                                 .arguments("{\"query\":\"latest radar paper\"}")
                                 .build())))
-                        .build());
+                        .build())
+                .thenReturn(answer("Answer from the first search result."));
         LangChain4jToolCallingStrategy strategy = new LangChain4jToolCallingStrategy(
                 chatModel,
                 toolProvider(registry),
@@ -141,9 +206,64 @@ class LangChain4jToolCallingStrategyTest {
 
         AgentRuntimeResult result = strategy.run(request(List.of("search_web"), 3, 1));
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.errorMessage()).contains("Duplicate tool call blocked");
-        assertThat(result.fallbacks()).isNotEmpty();
+        assertThat(result.success()).isTrue();
+        assertThat(result.assistantContent()).isEqualTo("Answer from the first search result.");
+        assertThat(result.toolTrace()).hasSize(2);
+        assertThat(result.toolTrace().get(1)).contains("reused=true", "Duplicate tool call blocked");
+        assertThat(result.fallbacks()).anyMatch(value -> value.contains("No new tool progress"));
+
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModel, org.mockito.Mockito.times(3)).chat(requests.capture(), any(AgentRuntimeRequest.class));
+        assertThat(requests.getAllValues().get(2).parameters().toolSpecifications()).isEmpty();
+    }
+
+    @Test
+    void mixedNewAndDuplicateCallsInOneAssistantStepPreserveNewResultsAndContinue() throws Exception {
+        ToolRegistry registry = new ToolRegistry()
+                .register(new ProjectResearchStubToolExecutor("project_latex_outline", objectMapper))
+                .register(new ProjectResearchStubToolExecutor("project_cross_material_search", objectMapper));
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(toolCalls(
+                        toolRequest("call-1", "project_latex_outline", "{\"query\":\"paper.tex\"}"),
+                        toolRequest("call-2", "project_cross_material_search", "{\"query\":\"objective function\"}"),
+                        toolRequest("call-3", "project_cross_material_search", "{\"query\":\"power constraint\"}")))
+                .thenReturn(toolCalls(
+                        toolRequest("call-4", "project_cross_material_search", "{\"query\":\"objective\"}"),
+                        toolRequest("call-5", "project_cross_material_search", "{\"query\":\"power constraint\"}")))
+                .thenReturn(answer("Synthesis from the outline and all distinct searches."));
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
+                .run(request(List.of("project_latex_outline", "project_cross_material_search"), 6, 1)
+                        .withProjectContext(new ProjectRuntimeContext(8L, 42L)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.assistantContent()).contains("all distinct searches");
+        assertThat(result.toolTrace()).hasSize(5);
+        assertThat(result.toolTrace()).filteredOn(value -> value.contains("reused=true"))
+                .singleElement().asString().contains("power constraint", "Duplicate tool call blocked");
+        assertThat(result.toolTrace()).filteredOn(value -> !value.contains("reused=true")).hasSize(4);
+        assertThat(result.errorMessage()).isNull();
+
+        EvidenceLedger evidence = ResearchProjectEvidenceAdapter.extract(objectMapper, result.messages(), 0,
+                new ProjectRuntimeContext(8L, 42L),
+                Set.of("project_latex_outline", "project_cross_material_search"));
+        assertThat(evidence.evidence()).hasSize(4);
+        assertThat(evidence.evidence()).extracting(EvidenceRef::chunk)
+                .containsExactlyInAnyOrder("tool:call-1", "tool:call-2", "tool:call-3", "tool:call-4");
+
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModel, org.mockito.Mockito.times(3)).chat(requests.capture(), any(AgentRuntimeRequest.class));
+        var reusedMessage = requests.getAllValues().get(2).messages().stream()
+                .filter(dev.langchain4j.data.message.ToolExecutionResultMessage.class::isInstance)
+                .map(dev.langchain4j.data.message.ToolExecutionResultMessage.class::cast)
+                .filter(message -> "call-5".equals(message.id()))
+                .findFirst().orElseThrow();
+        var reusedNode = objectMapper.readTree(reusedMessage.text());
+        assertThat(reusedNode.path("reused").asBoolean()).isTrue();
+        assertThat(reusedNode.path("originalToolCallId").asText()).isEqualTo("call-3");
+        assertThat(reusedNode.path("message").asText()).contains("original tool result");
+        assertThat(reusedNode.has("result")).isFalse();
     }
 
     @Test
@@ -168,13 +288,14 @@ class LangChain4jToolCallingStrategyTest {
         LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
         when(chatModel.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
                 .thenReturn(toolCall("call-1", "search_web", "{\"query\":\"x\",\"topK\":1}"))
-                .thenReturn(toolCall("call-2", "search_web", "{\"topK\":1,\"query\":\"x\"}"));
+                .thenReturn(toolCall("call-2", "search_web", "{\"topK\":1,\"query\":\"x\"}"))
+                .thenReturn(answer("Canonical duplicate reused."));
 
         AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
                 .run(request(List.of("search_web"), 3, 1));
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.errorMessage()).contains("Duplicate tool call blocked");
+        assertThat(result.success()).isTrue();
+        assertThat(result.toolTrace()).anyMatch(value -> value.contains("reused=true"));
     }
 
     @Test
@@ -218,13 +339,15 @@ class LangChain4jToolCallingStrategyTest {
         LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
         when(chatModel.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
                 .thenReturn(toolCall("call-1", "terminal_status", "{\"taskId\":3}"))
-                .thenReturn(toolCall("call-2", "terminal_status", "{\"taskId\":3}"));
+                .thenReturn(toolCall("call-2", "terminal_status", "{\"taskId\":3}"))
+                .thenReturn(answer("The task was already terminal."));
 
         AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
                 .run(request(List.of("terminal_status"), 3, 1));
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.errorMessage()).contains("after terminal state");
+        assertThat(result.success()).isTrue();
+        assertThat(result.toolTrace()).anyMatch(value -> value.contains("reused=true")
+                && value.contains("after terminal state"));
     }
 
     @Test
@@ -233,13 +356,15 @@ class LangChain4jToolCallingStrategyTest {
         LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
         when(chatModel.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
                 .thenReturn(toolCall("call-1", "unknown_status", "{\"taskId\":3}"))
-                .thenReturn(toolCall("call-2", "unknown_status", "{\"taskId\":3}"));
+                .thenReturn(toolCall("call-2", "unknown_status", "{\"taskId\":3}"))
+                .thenReturn(answer("The earlier unknown status is the only available observation."));
 
         AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
                 .run(request(List.of("unknown_status"), 3, 1));
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.errorMessage()).contains("no observable non-terminal state");
+        assertThat(result.success()).isTrue();
+        assertThat(result.toolTrace()).anyMatch(value -> value.contains("reused=true")
+                && value.contains("no observable non-terminal state"));
     }
 
     @Test
@@ -269,14 +394,15 @@ class LangChain4jToolCallingStrategyTest {
         when(chatModel.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
                 .thenReturn(toolCall("call-1", "start_export", "{\"clientRequestId\":\"retry-1\"}"))
                 .thenReturn(toolCall("call-2", "start_export", "{\"clientRequestId\":\"retry-1\"}"))
-                .thenReturn(toolCall("call-3", "start_export", "{\"clientRequestId\":\"retry-1\"}"));
+                .thenReturn(toolCall("call-3", "start_export", "{\"clientRequestId\":\"retry-1\"}"))
+                .thenReturn(answer("The bounded retry result is final."));
 
         AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
                 .run(request(List.of("start_export"), 4, 1));
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.toolTrace()).hasSize(2);
-        assertThat(result.errorMessage()).contains("Duplicate tool call blocked");
+        assertThat(result.success()).isTrue();
+        assertThat(result.toolTrace()).hasSize(3);
+        assertThat(result.toolTrace().get(2)).contains("reused=true", "Duplicate tool call blocked");
     }
 
     @Test
@@ -390,6 +516,58 @@ class LangChain4jToolCallingStrategyTest {
         assertThat(result.fallbacks()).contains("Tool-call budget exceeded: maxToolCalls=1");
         assertThat(result.toolTrace()).hasSize(2);
         assertThat(result.toolTrace().get(1)).contains("success=false error=Tool-call budget exceeded");
+    }
+
+    @Test
+    void batchLargerThanRemainingBudgetExecutesOnlyRemainingCallsAndSynthesizesFromEvidence() throws Exception {
+        ToolRegistry registry = new ToolRegistry().register(
+                new ProjectResearchStubToolExecutor("project_cross_material_search", objectMapper));
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(toolCalls(
+                        toolRequest("call-1", "project_cross_material_search", "{\"query\":\"q1\"}"),
+                        toolRequest("call-2", "project_cross_material_search", "{\"query\":\"q2\"}"),
+                        toolRequest("call-3", "project_cross_material_search", "{\"query\":\"q3\"}"),
+                        toolRequest("call-4", "project_cross_material_search", "{\"query\":\"q4\"}")))
+                .thenReturn(toolCalls(
+                        toolRequest("call-5", "project_cross_material_search", "{\"query\":\"q5\"}"),
+                        toolRequest("call-6", "project_cross_material_search", "{\"query\":\"q6\"}"),
+                        toolRequest("call-7", "project_cross_material_search", "{\"query\":\"q7\"}")))
+                .thenReturn(answer("Partial synthesis from the six completed observations; the seventh search was not executed."));
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
+                .run(request(List.of("project_cross_material_search"), 6, 1)
+                        .withProjectContext(new ProjectRuntimeContext(8L, 42L)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.runtimeStopSignal()).isEqualTo(AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED);
+        assertThat(result.toolTrace()).hasSize(7);
+        assertThat(result.toolTrace()).filteredOn(value -> value.contains("success=true")).hasSize(6);
+        assertThat(result.toolTrace()).filteredOn(value -> value.contains("success=false"))
+                .singleElement().asString().contains("q7", "Tool-call budget exceeded");
+
+        EvidenceLedger evidence = ResearchProjectEvidenceAdapter.extract(objectMapper, result.messages(), 0,
+                new ProjectRuntimeContext(8L, 42L), Set.of("project_cross_material_search"));
+        assertThat(evidence.evidence()).hasSize(6);
+        assertThat(evidence.evidence()).extracting(EvidenceRef::chunk)
+                .containsExactlyInAnyOrder("tool:call-1", "tool:call-2", "tool:call-3",
+                        "tool:call-4", "tool:call-5", "tool:call-6");
+
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModel, org.mockito.Mockito.times(3)).chat(requests.capture(), any(AgentRuntimeRequest.class));
+        ChatRequest synthesis = requests.getAllValues().get(2);
+        assertThat(synthesis.parameters().toolSpecifications()).isEmpty();
+        var skipped = synthesis.messages().stream()
+                .filter(dev.langchain4j.data.message.ToolExecutionResultMessage.class::isInstance)
+                .map(dev.langchain4j.data.message.ToolExecutionResultMessage.class::cast)
+                .filter(message -> "call-7".equals(message.id()))
+                .findFirst().orElseThrow();
+        JsonNode skippedResult = objectMapper.readTree(skipped.text());
+        assertThat(skippedResult.path("executed").asBoolean()).isFalse();
+        assertThat(skippedResult.path("skipped").asBoolean()).isTrue();
+        assertThat(skippedResult.path("controlledStop").asBoolean()).isTrue();
+        assertThat(skippedResult.path("errorCode").asText()).isEqualTo("TOOL_CALL_BUDGET_EXHAUSTED");
+        assertThat(skippedResult.path("outcome").asText()).isEqualTo("PARTIAL");
     }
 
     @Test
@@ -507,8 +685,15 @@ class LangChain4jToolCallingStrategyTest {
     }
 
     private ChatResponse toolCall(String id, String name, String arguments) {
-        return ChatResponse.builder().aiMessage(AiMessage.from(List.of(ToolExecutionRequest.builder()
-                .id(id).name(name).arguments(arguments).build()))).build();
+        return toolCalls(toolRequest(id, name, arguments));
+    }
+
+    private ChatResponse toolCalls(ToolExecutionRequest... requests) {
+        return ChatResponse.builder().aiMessage(AiMessage.from(List.of(requests))).build();
+    }
+
+    private ToolExecutionRequest toolRequest(String id, String name, String arguments) {
+        return ToolExecutionRequest.builder().id(id).name(name).arguments(arguments).build();
     }
 
     private ChatResponse answer(String content) {
@@ -557,6 +742,57 @@ class LangChain4jToolCallingStrategyTest {
                 output.put("status", definition.name().startsWith("terminal_") ? "DONE"
                         : definition.name().startsWith("unknown_") ? "MYSTERY" : "RUNNING");
             }
+            return ToolResult.success(call.id(), call.name(), output);
+        }
+    }
+
+    private static final class ArrayStubToolExecutor implements ToolExecutor {
+        private final ToolDefinition definition;
+
+        private ArrayStubToolExecutor(ObjectMapper objectMapper) {
+            ObjectNode parameters = objectMapper.createObjectNode();
+            parameters.put("type", "object");
+            parameters.putObject("properties").putObject("relativePaths")
+                    .put("type", "array").putObject("items").put("type", "string");
+            parameters.putArray("required").add("relativePaths");
+            this.definition = new ToolDefinition("array_tool", "array schema tool", parameters);
+        }
+
+        @Override public ToolDefinition definition() { return definition; }
+        @Override public ToolDescriptor descriptor() { return visibleSyncDescriptor(definition.name()); }
+        @Override public ToolResult execute(ToolCall call) {
+            return ToolResult.success(call.id(), call.name(), call.arguments());
+        }
+    }
+
+    private static final class ProjectResearchStubToolExecutor implements ToolExecutor {
+        private final ToolDefinition definition;
+        private final ObjectMapper objectMapper;
+
+        private ProjectResearchStubToolExecutor(String name, ObjectMapper objectMapper) {
+            this.objectMapper = objectMapper;
+            ObjectNode parameters = objectMapper.createObjectNode();
+            parameters.put("type", "object");
+            parameters.putObject("properties").putObject("query").put("type", "string");
+            parameters.putArray("required").add("query");
+            this.definition = new ToolDefinition(name, "project research stub", parameters);
+        }
+
+        @Override public ToolDefinition definition() { return definition; }
+        @Override public ToolDescriptor descriptor() { return visibleSyncDescriptor(definition.name()); }
+
+        @Override
+        public ToolResult execute(ToolCall call) {
+            ObjectNode output = objectMapper.createObjectNode();
+            output.put("status", "COMPLETE");
+            output.putArray("items");
+            ObjectNode evidence = output.putArray("evidenceRefs").addObject();
+            evidence.put("projectVersion", "a".repeat(64));
+            evidence.put("relativePath", definition.name().equals("project_latex_outline") ? "paper.tex" : "notes.txt");
+            evidence.put("fileHash", "b".repeat(64));
+            evidence.putObject("range").put("startLine", 1).put("endLine", 1);
+            evidence.put("parserVersion", "test@1");
+            evidence.put("trustLabel", "SERVER_ATTESTED_METADATA");
             return ToolResult.success(call.id(), call.name(), output);
         }
     }

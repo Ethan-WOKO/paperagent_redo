@@ -16,9 +16,10 @@ public class ProjectReadFileToolExecutor extends AbstractProjectReadToolExecutor
     public ProjectReadFileToolExecutor(ProjectService projects, ObjectMapper objectMapper) {
         super(projects, objectMapper);
         ObjectNode schema = objectMapper.createObjectNode(); schema.put("type", "object"); ObjectNode p = schema.putObject("properties");
-        p.putObject("projectId").put("type", "integer");
         p.putObject("relativePath").put("type", "string").put("description", "A Project-relative readable text path; absolute paths and traversal are rejected.");
-        schema.putArray("required").add("projectId").add("relativePath"); schema.put("additionalProperties", false);
+        p.putObject("startLine").put("type", "integer").put("minimum", 1).put("description", "Optional 1-based inclusive first line.");
+        p.putObject("endLine").put("type", "integer").put("minimum", 1).put("description", "Optional 1-based inclusive last line; must be >= startLine.");
+        schema.putArray("required").add("relativePath"); schema.put("additionalProperties", false);
         definition = new ToolDefinition("project_read_file", "Read one safe text file from the authorized Project using only a relative path.", schema);
     }
     @Override public ToolDefinition definition() { return definition; }
@@ -27,8 +28,18 @@ public class ProjectReadFileToolExecutor extends AbstractProjectReadToolExecutor
         String relativePath = call.arguments() == null ? null : call.arguments().path("relativePath").asText(null);
         if (projectId == null || !StringUtils.hasText(relativePath)) return rejected(call);
         ProjectFileResponse file = projects.readFile(com.yanban.core.tool.ToolExecutionContext.getCurrentUserId(), projectId, relativePath);
+        int startLine = call.arguments().has("startLine") ? call.arguments().path("startLine").asInt() : 1;
+        String[] lines = file.content().split("\\R", -1);
+        int endLine = call.arguments().has("endLine") ? call.arguments().path("endLine").asInt() : lines.length;
+        if (startLine < 1 || endLine < startLine || startLine > lines.length) {
+            return ToolResult.failure(call.id(), definition().name(), com.yanban.core.tool.ToolErrorCode.VALIDATION_ERROR,
+                    "Line range must be 1-based, startLine <= endLine, and startLine must exist in the file.");
+        }
+        endLine = Math.min(endLine, lines.length);
+        String content = String.join("\n", java.util.Arrays.copyOfRange(lines, startLine - 1, endLine));
         ObjectNode output = objectMapper.createObjectNode(); evidence(output, projectId, file.path(), file.sha256());
-        output.put("sizeBytes", file.sizeBytes()); output.put("modifiedAt", file.modifiedAt().toString()); output.put("content", file.content());
+        output.put("sizeBytes", file.sizeBytes()); output.put("modifiedAt", file.modifiedAt().toString());
+        output.put("startLine", startLine); output.put("endLine", endLine); output.put("content", content);
         return success(call, output, projectId, file.path(), file.sha256());
     }
 }

@@ -53,6 +53,9 @@ class ProjectReactVerticalTest {
     @Test
     void modelCannotSwitchProjectIdDuringActualReactToolCall() {
         ProjectService projects = mock(ProjectService.class);
+        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, "m1", List.of()));
+        when(projects.readFile(7L, 42L, "x.txt"))
+                .thenReturn(new ProjectFileResponse("x.txt", "trusted project", 15, Instant.EPOCH, "h42"));
         ToolRegistry registry = new ToolRegistry().register(new ProjectReadFileToolExecutor(projects, json));
         LangChain4jChatModelAdapter model = mock(LangChain4jChatModelAdapter.class);
         when(model.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
@@ -62,8 +65,10 @@ class ProjectReactVerticalTest {
         LangChain4jToolCallingStrategy strategy = new LangChain4jToolCallingStrategy(model,
                 new LangChain4jToolProvider(registry, json, new AgentLangChain4jTools(registry, json)), json);
         AgentRuntimeResult result = strategy.run(request().withProjectContext(new ProjectRuntimeContext(7L, 42L)).withStrategy(AgentStrategy.SINGLE_STEP_REACT));
-        assertThat(result.toolTrace().get(0)).contains("success=false");
-        org.mockito.Mockito.verifyNoInteractions(projects);
+        assertThat(result.toolTrace().get(0)).contains("success=true");
+        org.mockito.Mockito.verify(projects).manifest(7L, 42L);
+        org.mockito.Mockito.verify(projects).readFile(7L, 42L, "x.txt");
+        org.mockito.Mockito.verify(projects, org.mockito.Mockito.never()).manifest(7L, 99L);
     }
 
     private AgentRuntimeRequest request() {

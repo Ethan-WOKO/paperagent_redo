@@ -1,5 +1,6 @@
 package com.yanban.api.agent;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -20,10 +22,13 @@ import org.springframework.util.StringUtils;
 @Component
 public class PlanningAgentPlanner {
 
-    private static final int DEFAULT_MAX_PLAN_STEPS = 10;
+    private static final int DEFAULT_MAX_PLAN_STEPS = 6;
     private static final int DEFAULT_MAX_RECOVERY_STEPS = 3;
-    private static final int PLANNER_MAX_TOKENS = 1536;
+    private static final int PLANNER_MAX_TOKENS = 3072;
+    private static final int PLANNER_RETRY_MAX_TOKENS = 2048;
+    private static final int COMPACT_RETRY_MAX_STEPS = 4;
     private static final int RECOVERY_PLANNER_MAX_TOKENS = 1024;
+    private static final int MAX_FAILURE_DIAGNOSTIC_LENGTH = 500;
 
     private final ChatModelProvider modelProvider;
     private final ObjectMapper objectMapper;
@@ -41,36 +46,74 @@ public class PlanningAgentPlanner {
                                String apiUrl,
                                String skillPrompt,
                                List<String> skillAllowedTools) {
+        PlannerAttempt first = requestPlan(
+                goal, provider, model, apiKey, apiUrl,
+                buildPlannerSystemPrompt(skillPrompt, skillAllowedTools),
+                "Create an executable plan for this user task:\n" + goal,
+                PLANNER_MAX_TOKENS, DEFAULT_MAX_PLAN_STEPS, skillAllowedTools, "Planner");
+        if (first.spec().executable() || !first.retryable()) {
+            return first.spec();
+        }
+
+        PlannerAttempt second = requestPlan(
+                goal, provider, model, apiKey, apiUrl,
+                buildCompactRepairPrompt(skillPrompt, skillAllowedTools, first.spec().failureCode()),
+                "Create a fresh, complete replacement plan for this user task:\n" + goal,
+                PLANNER_RETRY_MAX_TOKENS, COMPACT_RETRY_MAX_STEPS, skillAllowedTools, "Planner retry");
+        if (second.spec().executable()) {
+            return second.spec();
+        }
+        PlannerFailureCode finalCode = second.spec().failureCode() == null
+                ? PlannerFailureCode.INVALID_PLAN : second.spec().failureCode();
+        String diagnostic = "Planner failed after one bounded retry [first="
+                + first.spec().failureCode() + ", second=" + finalCode + "]: "
+                + abbreviate(second.spec().failureMessage(), 300);
+        return PlanSpec.failure(finalCode, abbreviate(diagnostic, MAX_FAILURE_DIAGNOSTIC_LENGTH));
+    }
+
+    private PlannerAttempt requestPlan(String goal,
+                                       String provider,
+                                       String model,
+                                       String apiKey,
+                                       String apiUrl,
+                                       String systemPrompt,
+                                       String userPrompt,
+                                       int maxTokens,
+                                       int maxSteps,
+                                       List<String> skillAllowedTools,
+                                       String attemptLabel) {
         ChatResponse response;
         try {
             response = modelProvider.chat(structuredJsonRequest(
                     provider,
                     model,
-                    List.of(
-                            ChatMessage.system(buildPlannerSystemPrompt(skillPrompt, skillAllowedTools)),
-                            ChatMessage.user("Create an executable plan for this user task:\n" + goal)
-                    ),
+                    List.of(ChatMessage.system(systemPrompt), ChatMessage.user(userPrompt)),
                     0.2,
-                    PLANNER_MAX_TOKENS,
+                    maxTokens,
                     apiKey,
                     apiUrl
             ));
         } catch (RuntimeException ex) {
-            return PlanSpec.failure(PlannerFailureCode.MODEL_CALL_FAILED,
-                    "Planner model call failed: " + abbreviate(ex.getMessage(), 300));
+            return PlannerAttempt.of(PlanSpec.failure(PlannerFailureCode.MODEL_CALL_FAILED,
+                    attemptLabel + " model call failed: " + abbreviate(ex.getMessage(), 300)));
         }
 
         String content = response == null || response.message() == null ? null : response.message().content();
         if (!StringUtils.hasText(content)) {
-            return PlanSpec.failure(PlannerFailureCode.EMPTY_RESPONSE, "Planner returned an empty plan.");
+            return PlannerAttempt.of(PlanSpec.failure(PlannerFailureCode.EMPTY_RESPONSE,
+                    attemptLabel + " returned an empty plan" + finishReasonSuffix(response) + "."));
+        }
+        if (indicatesTruncation(response == null ? null : response.finishReason())) {
+            return PlannerAttempt.of(PlanSpec.failure(PlannerFailureCode.INVALID_PLAN,
+                    attemptLabel + " output was truncated by the model" + finishReasonSuffix(response) + "."));
         }
         try {
-            return parsePlan(goal, content, DEFAULT_MAX_PLAN_STEPS, skillAllowedTools);
+            return PlannerAttempt.of(parsePlan(goal, content, maxSteps, skillAllowedTools));
         } catch (PlannerFailureException ex) {
-            return PlanSpec.failure(ex.code, ex.getMessage());
+            return PlannerAttempt.of(PlanSpec.failure(ex.code, abbreviate(ex.getMessage(), 300)));
         } catch (Exception ex) {
-            return PlanSpec.failure(PlannerFailureCode.INVALID_PLAN, "Plan JSON parse failed: " + ex.getMessage()
-                    + "\nRaw output: " + abbreviate(content, 1200));
+            return PlannerAttempt.of(PlanSpec.failure(PlannerFailureCode.INVALID_PLAN,
+                    attemptLabel + " JSON parse failed: " + jsonParseDiagnostic(ex)));
         }
     }
 
@@ -111,7 +154,7 @@ public class PlanningAgentPlanner {
             return PlanSpec.failure(ex.code, ex.getMessage());
         } catch (Exception ex) {
             return PlanSpec.failure(PlannerFailureCode.INVALID_PLAN,
-                    "Recovery plan JSON parse failed: " + ex.getMessage());
+                    "Recovery plan JSON parse failed: " + jsonParseDiagnostic(ex));
         }
     }
 
@@ -163,7 +206,7 @@ public class PlanningAgentPlanner {
                 }
 
                 Planning rules:
-                1. Simple tasks should use 1-3 steps. Complex tasks should use 4-10 steps. Never exceed 10 steps.
+                1. Use the fewest steps needed: 1-3 for simple tasks and at most 6 for complex tasks.
                 2. Use dependencies only when a step truly needs another step's result. Independent research steps should not depend on each other.
                 3. Each description must be directly executable and say what to read, search, call, compare, synthesize, or verify.
                 4. Do not invent tools. allowedTools may only contain the tools exposed below. It is an explicit per-step allowlist:
@@ -173,6 +216,8 @@ public class PlanningAgentPlanner {
                 7. Use search_knowledge only for user-uploaded/private knowledge base or project-local knowledge.
                 8. Avoid repeated search-only loops. Prefer search, synthesis, and verification steps.
                 9. If search may fail or return degraded results, plan a fallback using model knowledge with a clear limitation note.
+                10. Keep JSON compact: summary <= 120 characters, title <= 80, description <= 240, and successCriteria <= 160.
+                    Do not repeat the goal or tool documentation inside step fields.
 
                 Tools exposed to this plan:
                 """)
@@ -189,6 +234,27 @@ public class PlanningAgentPlanner {
                     .append("\n");
         }
         return sb.toString();
+    }
+
+    private String buildCompactRepairPrompt(String skillPrompt,
+                                            List<String> skillAllowedTools,
+                                            PlannerFailureCode firstFailureCode) {
+        StringBuilder prompt = new StringBuilder("""
+                You are repairing a failed plan generation. Return exactly one compact JSON object and nothing else.
+                Do not quote or repair the previous fragment; generate a fresh replacement from the user goal.
+                Use only this shape:
+                {"summary":"...","steps":[{"id":"s1","type":"ANALYSIS","title":"...","description":"...","deps":[],"tools":[],"success":"..."}]}
+                Use 1-4 short steps. Each string must be one short sentence: summary <=80, title <=40,
+                description <=120, success <=80 characters. Do not emit any other keys, Markdown, commentary,
+                or repeated goal/tool documentation. deps contains prior step ids; tools must be selected only
+                from the exact resolved allowlist below. Never add write/command tools to a Project read-only plan.
+                Resolved allowlist: """);
+        prompt.append(String.join(", ", skillAllowedTools == null ? List.of() : skillAllowedTools))
+                .append("\nThe first attempt failed with code ").append(firstFailureCode).append(".\n");
+        if (StringUtils.hasText(skillPrompt)) {
+            prompt.append("Keep these active skill constraints:\n").append(skillPrompt.trim()).append("\n");
+        }
+        return prompt.toString();
     }
 
     private String buildRecoveryPlannerSystemPrompt(String skillPrompt, List<String> skillAllowedTools) {
@@ -222,7 +288,8 @@ public class PlanningAgentPlanner {
         if (root == null || !root.isObject()) {
             throw new PlannerFailureException(PlannerFailureCode.INVALID_PLAN, "Planner output must be a JSON object.");
         }
-        String summary = textOrDefault(root.path("summary"), "Execute task: " + abbreviate(goal, 80));
+        String summary = abbreviate(textOrDefault(
+                root.path("summary"), "Execute task: " + abbreviate(goal, 80)), 120);
         JsonNode stepsNode = root.path("steps");
         if (!stepsNode.isArray() || stepsNode.isEmpty()) {
             stepsNode = root.path("tasks");
@@ -253,21 +320,57 @@ public class PlanningAgentPlanner {
                         "Planner step " + (i + 1) + " must be a JSON object.");
             }
             String stepId = "step_" + (i + 1);
-            String title = textOrDefault(node.path("title"), textOrDefault(node.path("name"), "Step " + (i + 1)));
-            String description = textOrDefault(node.path("description"), title);
+            String title = abbreviate(
+                    textOrDefault(node.path("title"), textOrDefault(node.path("name"), "Step " + (i + 1))), 80);
+            String description = abbreviate(textOrDefault(node.path("description"), title), 240);
             String type = normalizeType(textOrDefault(node.path("type"), "ANALYSIS"));
             List<String> dependencies = normalizeDependencies(node.path("dependencies"), idMapping, stepId);
+            if (dependencies.isEmpty() && node.path("deps").isArray()) {
+                dependencies = normalizeDependencies(node.path("deps"), idMapping, stepId);
+            }
             List<String> allowedTools = normalizeAllowedTools(node.path("allowedTools"), registeredTools);
             if (!node.has("allowedTools")) {
                 allowedTools = normalizeAllowedTools(node.path("allowed_tools"), registeredTools);
             }
-            String successCriteria = textOrDefault(
+            if (!node.has("allowedTools") && !node.has("allowed_tools")) {
+                allowedTools = normalizeAllowedTools(node.path("tools"), registeredTools);
+            }
+            String successCriteria = abbreviate(textOrDefault(
                     node.path("successCriteria"),
-                    textOrDefault(node.path("success_criteria"), "The step goal is completed with a verifiable result.")
-            );
+                    textOrDefault(node.path("success_criteria"),
+                            textOrDefault(node.path("success"), "The step goal is completed with a verifiable result."))
+            ), 160);
             steps.add(new StepSpec(stepId, title, description, type, dependencies, allowedTools, successCriteria));
         }
         return new PlanSpec(summary, steps, cleaned);
+    }
+
+    private boolean indicatesTruncation(String finishReason) {
+        if (!StringUtils.hasText(finishReason)) {
+            return false;
+        }
+        String normalized = finishReason.trim().toLowerCase(Locale.ROOT);
+        return normalized.equals("length")
+                || normalized.contains("max_token")
+                || normalized.contains("token_limit")
+                || normalized.contains("output_limit");
+    }
+
+    private String finishReasonSuffix(ChatResponse response) {
+        String finishReason = response == null ? null : response.finishReason();
+        return StringUtils.hasText(finishReason)
+                ? " (finishReason=" + abbreviate(finishReason, 40) + ")"
+                : "";
+    }
+
+    private String jsonParseDiagnostic(Exception exception) {
+        if (exception instanceof JsonProcessingException jsonException) {
+            var location = jsonException.getLocation();
+            return jsonException.getClass().getSimpleName()
+                    + (location == null ? "" : " at line " + location.getLineNr()
+                    + ", column " + location.getColumnNr());
+        }
+        return exception.getClass().getSimpleName() + ": " + abbreviate(exception.getMessage(), 160);
     }
 
     private String stripCodeFence(String raw) {
@@ -366,6 +469,17 @@ public class PlanningAgentPlanner {
             List<String> allowedTools,
             String successCriteria
     ) {
+    }
+
+    private record PlannerAttempt(PlanSpec spec) {
+        private static PlannerAttempt of(PlanSpec spec) {
+            return new PlannerAttempt(spec);
+        }
+
+        private boolean retryable() {
+            return spec != null && (spec.failureCode() == PlannerFailureCode.EMPTY_RESPONSE
+                    || spec.failureCode() == PlannerFailureCode.INVALID_PLAN);
+        }
     }
 
     private static final class PlannerFailureException extends Exception {

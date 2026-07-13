@@ -54,6 +54,35 @@ class CompletionVerifierTest {
     }
 
     @Test
+    void toolBudgetStopWithUsefulAnswerAndTrustedEvidenceIsNormallyDeliveredAsPartial() {
+        AgentRuntimeResult raw = success("Partial answer from completed Project reads.",
+                List.of(tool(42, "src/Main.java", "h1")))
+                .withRuntimeStopSignal(AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED);
+
+        AgentRuntimeResult result = verifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT), raw);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.errorMessage()).isNull();
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.PARTIAL);
+        assertThat(result.stopReason()).isEqualTo(AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED);
+        assertThat(result.outcome()).isEqualTo("PARTIAL");
+        assertThat(result.trustedEvidenceLedger().evidence()).singleElement();
+    }
+
+    @Test
+    void toolBudgetStopWithoutRequiredProjectEvidenceRemainsFailClosed() {
+        AgentRuntimeResult raw = success("Unsupported partial Project claim.", List.of())
+                .withRuntimeStopSignal(AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED);
+
+        AgentRuntimeResult result = verifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT), raw);
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.PARTIAL);
+        assertThat(result.stopReason()).isEqualTo(AgentStopReason.PLAN_PARTIAL);
+        assertThat(result.outcome()).isEqualTo("PARTIAL");
+    }
+
+    @Test
     void governedResearchEnvelopeClosesCompletionEvidenceLoopAndStaleHashIsDiscarded() {
         ProjectService researchProjects = mock(ProjectService.class);
         String hash = "a".repeat(64);
@@ -309,12 +338,40 @@ class CompletionVerifierTest {
         assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.VERIFIED);
     }
 
+    @Test
+    void pureProjectToolInventoryDoesNotRequireFileEvidence() {
+        AgentRuntimeResult result = verifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT, "你现在有哪些工具？"),
+                success("当前可用工具为 project_manifest 和 project_read_file。", List.of()));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.outcome()).isEqualTo("VERIFIED");
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.VERIFIED);
+    }
+
+    @Test
+    void projectContentQuestionMentioningToolsStillRequiresFileEvidence() {
+        AgentRuntimeResult result = verifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT, "分析项目中有哪些工具函数"),
+                success("项目中有多个工具函数。", List.of()));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.outcome()).isEqualTo("INSUFFICIENT_EVIDENCE");
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.INSUFFICIENT_EVIDENCE);
+    }
+
     private AgentRuntimeRequest projectRequest(AgentStrategy strategy) {
         return projectRequest(strategy, List.of());
     }
 
+    private AgentRuntimeRequest projectRequest(AgentStrategy strategy, String userMessage) {
+        return projectRequest(strategy, List.of(), userMessage);
+    }
+
     private AgentRuntimeRequest projectRequest(AgentStrategy strategy, List<ChatMessage> history) {
-        return new AgentRuntimeRequest(strategy, 1L, history, 7L, "审查代码", "test", "model", null, null, 2,
+        return projectRequest(strategy, history, "审查代码");
+    }
+
+    private AgentRuntimeRequest projectRequest(AgentStrategy strategy, List<ChatMessage> history, String userMessage) {
+        return new AgentRuntimeRequest(strategy, 1L, history, 7L, userMessage, "test", "model", null, null, 2,
                 true, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J, AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
                 new ResolvedToolPolicy(List.of("project_read_file"), 2, 1, "project"), null, null, "trace", null, null)
                 .withProjectContext(new ProjectRuntimeContext(7L, 42L));

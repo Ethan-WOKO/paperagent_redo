@@ -71,7 +71,8 @@ public class CompletionVerifier {
             reasons.add("at least one governed tool call failed");
             return new CompletionVerification(CompletionStatus.PARTIAL, reasons, ids(ledger), reflectionAttempts == 0, reflectionAttempts);
         }
-        if (request.projectContext() != null && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId())) {
+        if (request.projectContext() != null && requiresProjectFileEvidence(request.userMessage())
+                && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId())) {
             reasons.add("no current authorized Project file evidence for projectId=" + request.projectContext().projectId());
             return new CompletionVerification(CompletionStatus.INSUFFICIENT_EVIDENCE, reasons, ids(ledger),
                     reflectionAttempts == 0, reflectionAttempts);
@@ -89,12 +90,26 @@ public class CompletionVerifier {
         return switch (verification.status()) {
             case VERIFIED -> result.withCompletionVerification(verification).withCandidateChangeSet(candidate)
                     .withCoordination(result.selectedStrategy(), AgentStopReason.COMPLETED, "VERIFIED", result.degraded(), result.degradedFrom());
-            case PARTIAL -> failure(result, verification, AgentStopReason.PLAN_PARTIAL, "PARTIAL", candidate);
+            case PARTIAL -> controlledBudgetPartial(request, result)
+                    ? result.asControlledPartial().withCompletionVerification(verification).withCandidateChangeSet(candidate)
+                    .withCoordination(result.selectedStrategy(), AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED,
+                            "PARTIAL", result.degraded(), result.degradedFrom())
+                    : failure(result, verification, AgentStopReason.PLAN_PARTIAL, "PARTIAL", candidate);
             case INSUFFICIENT_EVIDENCE -> failure(request.projectContext() == null
                             ? result : result.insufficientProjectEvidence(result.evidenceLedger(), request.history().size()), verification,
                     AgentStopReason.PLAN_PARTIAL, "INSUFFICIENT_EVIDENCE", candidate);
             case FAILED -> failure(result, verification, AgentStopReason.RUNTIME_FAILED, "FAILED", candidate);
         };
+    }
+
+    private boolean controlledBudgetPartial(AgentRuntimeRequest request, AgentRuntimeResult result) {
+        if (result.runtimeStopSignal() != AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED
+                || !result.success() || !StringUtils.hasText(result.assistantContent())) {
+            return false;
+        }
+        return request.projectContext() == null
+                || !requiresProjectFileEvidence(request.userMessage())
+                || hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId());
     }
 
     private AgentRuntimeResult failure(AgentRuntimeResult result, CompletionVerification verification,
@@ -172,6 +187,25 @@ public class CompletionVerifier {
     private boolean hasCurrentProjectFileEvidence(EvidenceLedger ledger, Long projectId) {
         return ledger.evidence().stream().anyMatch(ref -> ref.sourceType() == EvidenceSourceType.PROJECT
                 && !"manifest".equals(ref.file()) && StringUtils.hasText(ref.version()) && ProjectEvidenceValidator.isTrusted(ref));
+    }
+
+    /**
+     * A narrowly-scoped capability inventory describes the server-resolved allow-list, not Project
+     * content, so requiring a file observation would produce a false failure. Keep this anchored
+     * to tool/capability wording; any request to inspect, analyze, or conclude about Project files
+     * continues to require current attested file evidence.
+     */
+    static boolean requiresProjectFileEvidence(String task) {
+        return !isPureProjectCapabilityInquiry(task);
+    }
+
+    private static boolean isPureProjectCapabilityInquiry(String task) {
+        if (!StringUtils.hasText(task)) {
+            return false;
+        }
+        String normalized = task.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.matches("(?:请|麻烦|帮我|告诉我|说明一下|介绍一下)?\\s*(?:你|当前|现在|本项目助手|这个助手|project)?\\s*(?:现在)?\\s*(?:有哪些|有什么|哪些|列出|介绍|说明|查看)\\s*(?:可用的?)?\\s*(?:工具|能力|功能)\\s*[？?。.!！]*")
+                || normalized.matches("(?:please\\s+)?(?:list|show|describe|what\\s+are)\\s+(?:your\\s+|the\\s+)?(?:available\\s+)?(?:tools|capabilities)\\s*[?.!]*");
     }
 
     private boolean requestsModification(String task) {

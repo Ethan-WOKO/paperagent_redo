@@ -3,6 +3,8 @@ import http from './http';
 export interface AgentSessionResponse {
   id: number;
   userId: number;
+  scope: 'WORKSPACE' | 'PROJECT';
+  projectId: number | null;
   title: string;
   modelProvider: string;
   model: string;
@@ -35,7 +37,15 @@ export interface UpdateSessionPayload {
   ragDisabled?: boolean;
 }
 
-export function createSession(payload: { title?: string; modelProvider?: string; model?: string; maxSteps?: number; ragDisabled?: boolean }) {
+export interface CreateSessionPayload {
+  title?: string;
+  modelProvider?: string;
+  model?: string;
+  maxSteps?: number;
+  ragDisabled?: boolean;
+}
+
+export function createSession(payload: CreateSessionPayload) {
   return http.post<AgentSessionResponse>('/agent/sessions', payload);
 }
 
@@ -144,6 +154,9 @@ export interface SendMessageResponse {
   messages: AgentMessageResponse[];
   debug: AgentDebugPayload | null;
   projectEvidence: Array<{ id: string; relativePath: string; hash: string; version: string; chunk: string; trusted: boolean; current: boolean }>;
+  completionStatus: 'VERIFIED' | 'PARTIAL' | 'INSUFFICIENT_EVIDENCE' | 'FAILED' | null;
+  stopReason: string | null;
+  outcome: string | null;
 }
 
 export function sendMessage(sessionId: number, payload: SendMessageRequestPayload) {

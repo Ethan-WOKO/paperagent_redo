@@ -11,6 +11,7 @@ import com.yanban.api.skills.SkillsService;
 import com.yanban.core.agent.AgentMessage;
 import com.yanban.core.agent.AgentMessageRepository;
 import com.yanban.core.agent.AgentSession;
+import com.yanban.core.agent.AgentSessionScope;
 import com.yanban.core.agent.AgentSessionRepository;
 import com.yanban.core.agent.AgentSessionSummary;
 import com.yanban.core.agent.AgentSessionSummaryService;
@@ -132,7 +133,32 @@ public class AgentService {
                 endpoint.providerKey(),
                 endpoint.modelName(),
                 request.maxSteps() == null ? settings.getMaxSteps() : request.maxSteps(),
-                request.ragDisabled() != null ? request.ragDisabled() : !Boolean.TRUE.equals(settings.getRagDefaultEnabled())
+                request.ragDisabled() != null ? request.ragDisabled() : !Boolean.TRUE.equals(settings.getRagDefaultEnabled()),
+                AgentSessionScope.WORKSPACE,
+                null
+        );
+        AgentSession saved = sessions.saveAndFlush(session);
+        messageCache.evictSession(userId, saved.getId());
+        return AgentSessionResponse.from(saved);
+    }
+
+    @Transactional
+    public AgentSessionResponse createProjectSession(Long userId, Long projectId, CreateSessionRequest request, String fallbackTitle) {
+        SysUserSettings settings = userSettingsService.getOrCreate(userId);
+        String requestedProvider = StringUtils.hasText(request.modelProvider()) ? request.modelProvider().trim() : settings.getDefaultProvider();
+        UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
+                userId,
+                requestedProvider,
+                StringUtils.hasText(request.model()) ? request.model().trim() : null);
+        AgentSession session = new AgentSession(
+                userId,
+                StringUtils.hasText(request.title()) ? request.title().trim() : fallbackTitle,
+                endpoint.providerKey(),
+                endpoint.modelName(),
+                request.maxSteps() == null ? settings.getMaxSteps() : request.maxSteps(),
+                request.ragDisabled() != null ? request.ragDisabled() : !Boolean.TRUE.equals(settings.getRagDefaultEnabled()),
+                AgentSessionScope.PROJECT,
+                projectId
         );
         AgentSession saved = sessions.saveAndFlush(session);
         messageCache.evictSession(userId, saved.getId());
@@ -141,7 +167,15 @@ public class AgentService {
 
     @Transactional(readOnly = true)
     public List<AgentSessionResponse> listSessions(Long userId) {
-        return sessions.findByUserIdOrderByUpdatedAtDesc(userId).stream()
+        return sessions.findByUserIdAndScopeOrderByUpdatedAtDesc(userId, AgentSessionScope.WORKSPACE).stream()
+                .map(AgentSessionResponse::from)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<AgentSessionResponse> listProjectSessions(Long userId, Long projectId) {
+        return sessions.findByUserIdAndScopeAndProjectIdOrderByUpdatedAtDesc(
+                        userId, AgentSessionScope.PROJECT, projectId).stream()
                 .map(AgentSessionResponse::from)
                 .toList();
     }
@@ -481,13 +515,8 @@ public class AgentService {
                     ? AgentCoordinationRequest.legacyPlanReflect(runtimeRequest)
                     : AgentCoordinationRequest.chat(runtimeRequest);
             AgentCoordinationResult coordination = agentRuntimeCoordinator.coordinate(coordinationRequest);
-            AgentRuntimeResult result = coordination.runtimeResult();
-            if (projectContext != null && result.success()
-                    && !hasProjectFileEvidence(result.trustedEvidenceLedger())) {
-                // Defense in depth: Project success is never projected without the verifier's
-                // current, trusted file ledger. Do not reconstruct trust from persisted history.
-                result = result.insufficientProjectEvidence(result.trustedEvidenceLedger(), effectiveHistory.size());
-            }
+            AgentRuntimeResult result = enforceProjectEvidenceRequirement(projectContext, request.content(),
+                    coordination.runtimeResult(), effectiveHistory.size());
 
             AgentMessage processMessage = saveProcessSummaryIfNeeded(session.getId(), userId, result, experimentContext);
             if (processMessage != null) {
@@ -551,7 +580,10 @@ public class AgentService {
                         null,
                         sendResponseMessages(saved),
                         debugPayload,
-                        projectEvidence(result)
+                        projectEvidence(result),
+                        completionStatus(result),
+                        result.stopReason(),
+                        result.outcome()
                 );
             }
 
@@ -567,7 +599,8 @@ public class AgentService {
                         result.errorMessage(), elapsedMillis(startedAtNanos), modelSource);
                 return new SendMessageResponse(
                         false, result.assistantContent(), result.steps(), result.errorMessage(), null,
-                        sendResponseMessages(saved), debugPayload, projectEvidence(result));
+                        sendResponseMessages(saved), debugPayload, projectEvidence(result),
+                        completionStatus(result), result.stopReason(), result.outcome());
             }
 
             return failTurn(
@@ -652,7 +685,19 @@ public class AgentService {
         return new EvidenceLedger(List.copyOf(refs.values()));
     }
 
-    private boolean hasProjectFileEvidence(EvidenceLedger ledger) {
+    static AgentRuntimeResult enforceProjectEvidenceRequirement(ProjectRuntimeContext context, String userMessage,
+                                                                AgentRuntimeResult result, int historySize) {
+        if (context != null && result != null && result.success()
+                && CompletionVerifier.requiresProjectFileEvidence(userMessage)
+                && !hasProjectFileEvidence(result.trustedEvidenceLedger())) {
+            // Defense in depth: content claims are never projected without the verifier's current,
+            // trusted file ledger. Capability inventory is server-runtime metadata, not file content.
+            return result.insufficientProjectEvidence(result.trustedEvidenceLedger(), historySize);
+        }
+        return result;
+    }
+
+    private static boolean hasProjectFileEvidence(EvidenceLedger ledger) {
         return ledger.evidence().stream().anyMatch(ref -> ref.sourceType() == EvidenceSourceType.PROJECT
                 && !"manifest".equals(ref.file()) && StringUtils.hasText(ref.version())
                 && ProjectEvidenceValidator.isTrusted(ref));
@@ -665,6 +710,13 @@ public class AgentService {
                 .filter(ref -> ref.sourceType() == EvidenceSourceType.PROJECT && ProjectEvidenceValidator.isTrusted(ref))
                 .map(ref -> new ProjectEvidenceResponse(ref.id(), ref.file(), ref.version(), ref.version(), ref.chunk(), true, false))
                 .toList();
+    }
+
+    private CompletionStatus completionStatus(AgentRuntimeResult result) {
+        if (result != null && result.completionVerification() != null) {
+            return result.completionVerification().status();
+        }
+        return result != null && result.success() ? CompletionStatus.VERIFIED : CompletionStatus.FAILED;
     }
 
     private String loadSessionSummaryText(Long sessionId, Long userId) {
@@ -1334,6 +1386,13 @@ public class AgentService {
     public AgentSession getOwnedSession(Long userId, Long sessionId) {
         return sessions.findByIdAndUserId(sessionId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "会话不存在"));
+    }
+
+    @Transactional(readOnly = true)
+    public AgentSession getOwnedProjectSession(Long userId, Long projectId, Long sessionId) {
+        return sessions.findByIdAndUserIdAndScopeAndProjectId(
+                        sessionId, userId, AgentSessionScope.PROJECT, projectId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project session does not exist."));
     }
 
     @Transactional(readOnly = true)

@@ -32,6 +32,7 @@
           </template>
 
 
+          <div class="chat-session-list-scroll">
           <NSpace vertical :size="8">
             <NEmpty v-if="sessions.length === 0" description="还没有会话" size="small" />
             <div
@@ -53,6 +54,7 @@
               </NDropdown>
             </div>
           </NSpace>
+          </div>
         </NCard>
       </aside>
 

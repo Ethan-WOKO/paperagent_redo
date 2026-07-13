@@ -17,15 +17,20 @@ public class ProjectSearchToolExecutor extends AbstractProjectReadToolExecutor {
     public ProjectSearchToolExecutor(ProjectService projects, ObjectMapper objectMapper) {
         super(projects, objectMapper);
         ObjectNode schema = objectMapper.createObjectNode(); schema.put("type", "object"); ObjectNode p = schema.putObject("properties");
-        p.putObject("projectId").put("type", "integer"); p.putObject("query").put("type", "string").put("description", "Literal bounded text query; no glob or filesystem expression.");
+        p.putObject("query").put("type", "string").put("description", "Literal bounded text query only. Regex operators and glob expressions are not supported; search one exact substring such as P_total.");
         p.putObject("maxResults").put("type", "integer").put("description", "Bounded result count.");
-        schema.putArray("required").add("projectId").add("query"); schema.put("additionalProperties", false);
-        definition = new ToolDefinition("project_search", "Search safe text files in the authorized Project with a literal query.", schema);
+        schema.putArray("required").add("query"); schema.put("additionalProperties", false);
+        definition = new ToolDefinition("project_search", "Search safe text files in the authorized Project using one literal substring. This is not regex or glob search.", schema);
     }
     @Override public ToolDefinition definition() { return definition; }
     @Override public ToolResult execute(ToolCall call) {
         Long projectId = requireTrustedProject(call); String query = call.arguments() == null ? null : call.arguments().path("query").asText(null);
-        if (projectId == null || !StringUtils.hasText(query) || !isLiteralQuery(query)) return rejected(call);
+        if (projectId == null) return rejected(call);
+        if (!StringUtils.hasText(query) || !isLiteralQuery(query)) {
+            return ToolResult.failure(call.id(), definition().name(), com.yanban.core.tool.ToolErrorCode.VALIDATION_ERROR,
+                    "Project search accepts one literal query substring only; regex/glob expressions are unsupported. "
+                            + "Replace the expression with a concrete token such as P_total or trace(Q).");
+        }
         Integer max = call.arguments().has("maxResults") ? call.arguments().path("maxResults").asInt() : null;
         List<ProjectSearchHit> hits = projects.search(com.yanban.core.tool.ToolExecutionContext.getCurrentUserId(), projectId, query, max);
         ObjectNode output = objectMapper.createObjectNode(); output.put("projectId", projectId); output.put("query", query); output.put("trust", "UNTRUSTED");
@@ -36,7 +41,7 @@ public class ProjectSearchToolExecutor extends AbstractProjectReadToolExecutor {
     }
 
     private boolean isLiteralQuery(String query) {
-        return query.indexOf('\0') < 0 && query.chars().noneMatch(ch -> ch == '*' || ch == '?' || ch == '[' || ch == ']'
-                || ch == '{' || ch == '}');
+        return query.chars().noneMatch(ch -> Character.isISOControl(ch)
+                || ch == '*' || ch == '?' || ch == '[' || ch == ']');
     }
 }

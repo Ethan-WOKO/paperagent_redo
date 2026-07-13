@@ -19,6 +19,9 @@ Rules:
 - Preserve every existing LaTeX citation, reference, label, math expression, and protected command exactly.
 - Do not modify formulas, numerical results, contribution claims, novelty claims, or claims about the absence of all prior work.
 - Do not add bibliographic facts or new scientific assertions.
+- You may add one minimal positive prior-work clause when it is exactly grounded by the critic's `supportedFact`; this is not permission to add any unsupported assertion.
+- For research-gap rhetoric, attach citations to that positive prior-work clause, then preserve the broader negative gap as an uncited contrast (for example, "Prior work addresses X [citation]. However, Y remains unresolved."). Never use "is still lacking", "is missing", "remains unexplored", or an equivalent absence clause as `citationAnchor` when the papers only exemplify partial prior work.
+- Avoid citing the same evidence repeatedly within one paragraph; choose the most specific supported location unless two independent claims truly require it.
 - Use `NO_SAFE_PATCH` when the critic's fact cannot be placed without distorting the paper.
 
 Return strict JSON only:

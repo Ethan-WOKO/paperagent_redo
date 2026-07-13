@@ -99,4 +99,31 @@ class ProjectAgentRuntimeStreamingTest {
 
         verifyNoInteractions(agentService);
     }
+
+    @Test
+    void controlledBudgetPartialStreamsCanonicalAnswerAndPreservesTypedCompletion() {
+        ProjectService projects = mock(ProjectService.class);
+        AgentService agentService = mock(AgentService.class);
+        ProjectAgentRuntimeService service = new ProjectAgentRuntimeService(
+                projects, agentService, mock(PlanAgentService.class));
+        when(projects.manifest(7L, 18L)).thenReturn(
+                new ProjectManifestResponse(18L, "manifest-hash", List.of()));
+        SendMessageRequest request = new SendMessageRequest("inspect broadly", true, null, "request-partial", null);
+        when(agentService.sendProjectMessageStreaming(
+                eq(7L), eq(34L), eq(request), any(ProjectRuntimeContext.class),
+                org.mockito.Mockito.<Consumer<String>>any(), org.mockito.Mockito.<Consumer<String>>any()))
+                .thenReturn(new SendMessageResponse(true, "Useful bounded partial answer.", 3, null, null,
+                        List.of(), null, List.of(), CompletionStatus.PARTIAL,
+                        AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED, "PARTIAL"));
+
+        List<String> chunks = new ArrayList<>();
+        SendMessageResponse response = service.sendStreaming(
+                7L, 18L, 34L, request, chunks::add, ignored -> { });
+
+        assertThat(String.join("", chunks)).isEqualTo("Useful bounded partial answer.");
+        assertThat(response.success()).isTrue();
+        assertThat(response.completionStatus()).isEqualTo(CompletionStatus.PARTIAL);
+        assertThat(response.stopReason()).isEqualTo(AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED);
+        assertThat(response.outcome()).isEqualTo("PARTIAL");
+    }
 }

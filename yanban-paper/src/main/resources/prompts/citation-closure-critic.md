@@ -13,6 +13,9 @@ Batch envelope with `expectedSuggestionIds` and candidates:
 For every expected suggestion id:
 - Judge only from the supplied title, abstract, and stored evidence analysis.
 - Do not force a paper into the Introduction merely because it is topically related.
+- For literature positioning and research-gap language, direct evidence for one named prior-work strand is enough to support that representative contrast; a single paper does not need to prove an exhaustive field-wide absence.
+- For a research gap, place representative evidence on a positive clause describing what prior work does. Do not treat a negative absence clause itself as supported merely because the cited papers cover only part of the field.
+- If the same paper would be cited repeatedly in one paragraph, choose the single most specific evidence target unless the claims are independently distinct.
 - Identify the smallest atomic fact that the accepted evidence really supports.
 - `CURRENT_SUPPORTED` means the current anchor is already fully supported.
 - `RELOCATE` means another existing Introduction sentence is a better evidence target.

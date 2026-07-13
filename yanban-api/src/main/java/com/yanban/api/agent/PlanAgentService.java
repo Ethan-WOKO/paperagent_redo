@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yanban.api.settings.SysUserSettings;
+import com.yanban.api.project.ProjectFileEntry;
+import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
 import com.yanban.api.settings.UserSettingsService;
 import com.yanban.api.skills.ResolvedSkill;
@@ -32,6 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -40,6 +43,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -50,8 +55,8 @@ public class PlanAgentService {
     private static final int MAX_STEP_ATTEMPTS = 2;
     private static final int MAX_REPAIR_STEPS = 3;
     private static final int MAX_PARALLEL_STEPS = 3;
-    private static final int MAX_RUNTIME_STEPS_PER_PLAN_STEP = 3;
-    private static final int MAX_TOOL_CALLS_PER_PLAN_STEP = 3;
+    private static final int MAX_RUNTIME_STEPS_PER_PLAN_STEP = 8;
+    private static final int MAX_TOOL_CALLS_PER_PLAN_STEP = 8;
     private static final int MAX_DUPLICATE_TOOL_CALLS_PER_PLAN_STEP = 1;
     private static final int PLAN_EXECUTOR_THREADS = 2;
     private static final int PLAN_BUDGET_SECONDS = 240;
@@ -165,6 +170,9 @@ public class PlanAgentService {
     /** Only the authenticated Project facade calls this; no caller-supplied evidence is trusted. */
     @Transactional
     public AgentPlanResponse createProjectPlan(Long userId, Long projectId, Long sessionId, CreateAgentPlanRequest request) {
+        String traceId = newPlanTraceId(null);
+        log.info("Project Plan create start traceId={} userId={} projectId={} sessionId={} autoExecute={}",
+                traceId, userId, projectId, sessionId, request == null ? null : request.autoExecute());
         ProjectRuntimeContext context = revalidateProject(userId, projectId);
         AgentSession session = agentService.getOwnedSession(userId, sessionId);
         boolean ragDisabled = request.ragDisabled() != null ? request.ragDisabled() : Boolean.TRUE.equals(session.getRagDisabled());
@@ -175,14 +183,28 @@ public class PlanAgentService {
                 endpoint.providerKey(), endpoint.modelName(), null, null, 1, ragDisabled, skill == null ? null : skill.id(),
                 endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(), AgentRuntimeMode.LANGCHAIN4J,
                 AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved(),
-                null, null, newPlanTraceId(null), null, null).withProjectContext(context);
+                null, null, traceId, null, null).withProjectContext(context);
+        log.info("Project Plan runtime resolved traceId={} userId={} projectId={} sessionId={} provider={} model={} allowedTools={}",
+                traceId, userId, projectId, sessionId, endpoint.providerKey(), endpoint.modelName(),
+                runtimeRequest.toolPolicy().allowedTools());
         AgentCoordinationResult coordination = runtimeCoordinator == null
                 ? null : runtimeCoordinator.coordinate(AgentCoordinationRequest.trustedProjectPlanCreate(runtimeRequest));
-        if (coordination == null || coordination.runtimeResult().planId() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, coordination == null
-                    ? "Project Plan runtime is unavailable." : blankToDefault(coordination.runtimeResult().errorMessage(), "Project planner failed."));
+        AgentRuntimeResult runtimeResult = coordination == null ? null : coordination.runtimeResult();
+        if (runtimeResult == null || runtimeResult.planId() == null) {
+            String error = runtimeResult == null
+                    ? "Project Plan runtime is unavailable."
+                    : blankToDefault(runtimeResult.errorMessage(), "Project planner failed.");
+            log.warn("Project Plan create failed traceId={} userId={} projectId={} sessionId={} stopReason={} outcome={} error={}",
+                    traceId, userId, projectId, sessionId,
+                    runtimeResult == null ? null : runtimeResult.stopReason(),
+                    runtimeResult == null ? null : runtimeResult.outcome(),
+                    abbreviate(error, 500));
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "Project Plan creation failed [traceId=" + traceId + "]: " + error);
         }
-        AgentPlanResponse created = getPlan(userId, coordination.runtimeResult().planId());
+        AgentPlanResponse created = getPlan(userId, runtimeResult.planId());
+        log.info("Project Plan created traceId={} userId={} projectId={} sessionId={} planId={} autoExecute={}",
+                traceId, userId, projectId, sessionId, created.id(), request.autoExecute());
         return Boolean.TRUE.equals(request.autoExecute()) ? executePlanAsync(userId, created.id()) : created;
     }
 
@@ -301,7 +323,7 @@ public class PlanAgentService {
         recordEvent(plan.getId(), null, "plan_queued", Map.of("traceId", traceId, "mode", "async"));
         plan.markRunning();
         plans.saveAndFlush(plan);
-        planExecutor.submit(() -> runPlanAsyncWorker(userId, planId, traceId));
+        scheduleAsyncExecution(userId, planId, traceId);
         return toResponse(plan, steps.findByPlanIdOrderBySortOrderAsc(plan.getId()));
     }
 
@@ -357,6 +379,25 @@ public class PlanAgentService {
         } finally {
             restoreTraceId(previousTraceId);
         }
+    }
+
+    void scheduleAsyncExecution(Long userId, Long planId, String traceId) {
+        Runnable task = () -> submitAsyncExecutionTask(userId, planId, traceId);
+        if (TransactionSynchronizationManager.isSynchronizationActive()
+                && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+            });
+            return;
+        }
+        task.run();
+    }
+
+    void submitAsyncExecutionTask(Long userId, Long planId, String traceId) {
+        planExecutor.submit(() -> runPlanAsyncWorker(userId, planId, traceId));
     }
 
     public AgentPlanResponse executePlan(Long userId, Long planId) {
@@ -439,6 +480,9 @@ public class PlanAgentService {
             AgentSession session = agentService.getOwnedSession(userId, plan.getSessionId());
             ResolvedSkill skill = resolveSkill(userId, plan.getSkillId());
             ProjectRuntimeContext projectContext = restoreProjectContext(plan, userId);
+            String projectManifestSummary = projectContext == null ? ""
+                    : buildPlanManifestSummary(userId, projectContext.projectId());
+            Map<String, String> sharedExecutionState = new ConcurrentHashMap<>();
             plan.markRunning();
             plans.saveAndFlush(plan);
             LocalDateTime deadlineAt = LocalDateTime.now().plusSeconds(PLAN_BUDGET_SECONDS);
@@ -495,7 +539,8 @@ public class PlanAgentService {
                 List<AgentPlanStep> batch = executable.stream()
                         .limit(MAX_PARALLEL_STEPS)
                         .toList();
-                executeStepBatch(plan, session, allSteps, batch, skill, projectContext, deadlineAt, traceId);
+                executeStepBatch(plan, session, allSteps, batch, skill, projectContext, projectManifestSummary,
+                        sharedExecutionState, deadlineAt, traceId);
                 allSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
             }
 
@@ -586,6 +631,8 @@ public class PlanAgentService {
                              AgentPlanStep step,
                              ResolvedSkill skill,
                              ProjectRuntimeContext projectContext,
+                             String projectManifestSummary,
+                             Map<String, String> sharedExecutionState,
                              LocalDateTime deadlineAt,
                              String traceId) {
         recordEvent(plan.getId(), step.getId(), "step_started", Map.of(
@@ -594,6 +641,7 @@ public class PlanAgentService {
                 "traceId", traceId
         ));
         String previousError = step.getErrorMessage();
+        String executionStateSummary = "";
         for (int attempt = Math.max(0, step.getAttemptCount()); attempt < MAX_STEP_ATTEMPTS; attempt++) {
             if (deadlineExceeded(deadlineAt)) {
                 step.markFailed("Plan execution budget exceeded before this step completed.");
@@ -611,7 +659,8 @@ public class PlanAgentService {
             AgentRuntimeRequest runtimeRequest = new AgentRuntimeRequest(
                     AgentStrategy.SINGLE_STEP_REACT,
                     session.getId(),
-                    List.of(ChatMessage.system(buildStepSystemPrompt(plan, allSteps, step, previousError))),
+                    List.of(ChatMessage.system(buildStepSystemPrompt(plan, allSteps, step, previousError,
+                            executionStateSummary, projectManifestSummary, sharedExecutionState))),
                     plan.getUserId(),
                     buildStepUserMessage(step),
                     endpoint.providerKey(),
@@ -655,6 +704,9 @@ public class PlanAgentService {
                         null
                 );
             }
+            recordToolObservations(plan, step, result, projectContext, traceId, attempt + 1);
+            executionStateSummary = mergeExecutionState(executionStateSummary, result);
+            sharedExecutionState.put(step.getStepKey(), executionStateSummary);
             if (result.success()) {
                 String content = StringUtils.hasText(result.assistantContent())
                         ? result.assistantContent()
@@ -680,6 +732,22 @@ public class PlanAgentService {
                             "stepKey", step.getStepKey(), "projectId", projectContext.projectId(),
                             "evidenceRefs", projectEvidenceRefs, "evidence", typedEvidence, "traceId", traceId));
                 }
+                if (result.runtimeStopSignal() != AgentRuntimeStopSignal.NONE
+                        || "PARTIAL".equalsIgnoreCase(result.outcome())) {
+                    String limitation = StringUtils.hasText(result.errorMessage())
+                            ? result.errorMessage()
+                            : result.fallbacks().stream().reduce((first, second) -> second)
+                            .orElse("Runtime stopped after preserving available evidence.");
+                    step.markDegraded(content, "CONTROLLED_PARTIAL: " + abbreviate(limitation, 1200));
+                    recordEvent(plan.getId(), step.getId(), "step_completed_partial", Map.of(
+                            "stepKey", step.getStepKey(),
+                            "result", abbreviate(content, 1200),
+                            "reason", abbreviate(limitation, 1200),
+                            "stopSignal", result.runtimeStopSignal().name(),
+                            "traceId", traceId
+                    ));
+                    return;
+                }
                 PlanStepVerifier.VerificationResult verification = stepVerifier.verify(new PlanStepVerifier.VerificationRequest(
                         plan,
                         session,
@@ -700,6 +768,15 @@ public class PlanAgentService {
                             "candidateResult", abbreviate(content, 1200),
                             "traceId", traceId
                     ));
+                    step.markDegraded(content, "VERIFIER_INCONCLUSIVE: "
+                            + blankToDefault(verification.reason(), "Verifier could not make a reliable decision."));
+                    recordEvent(plan.getId(), step.getId(), "step_completed_unverified", Map.of(
+                            "stepKey", step.getStepKey(),
+                            "result", abbreviate(content, 1200),
+                            "reason", blankToDefault(verification.reason(), "Verifier could not make a reliable decision."),
+                            "traceId", traceId
+                    ));
+                    return;
                 }
                 if (!verification.passed()) {
                     String error = buildVerificationFailureMessage(verification);
@@ -764,13 +841,16 @@ public class PlanAgentService {
                                   List<AgentPlanStep> batch,
                                   ResolvedSkill skill,
                                   ProjectRuntimeContext projectContext,
+                                  String projectManifestSummary,
+                                  Map<String, String> sharedExecutionState,
                                   LocalDateTime deadlineAt,
                                   String traceId) {
         if (batch.isEmpty()) {
             return;
         }
         if (batch.size() == 1) {
-            executeStepSafely(plan, session, allSteps, batch.get(0), skill, projectContext, deadlineAt, traceId);
+            executeStepSafely(plan, session, allSteps, batch.get(0), skill, projectContext,
+                    projectManifestSummary, sharedExecutionState, deadlineAt, traceId);
             return;
         }
 
@@ -785,7 +865,8 @@ public class PlanAgentService {
             List<Future<?>> futures = new ArrayList<>();
             for (AgentPlanStep step : batch) {
                 futures.add(executor.submit(withMdc(parentMdc,
-                        () -> executeStepSafely(plan, session, allSteps, step, skill, projectContext, deadlineAt, traceId))));
+                        () -> executeStepSafely(plan, session, allSteps, step, skill, projectContext,
+                                projectManifestSummary, sharedExecutionState, deadlineAt, traceId))));
             }
             for (Future<?> future : futures) {
                 try {
@@ -834,10 +915,13 @@ public class PlanAgentService {
                                    AgentPlanStep step,
                                    ResolvedSkill skill,
                                    ProjectRuntimeContext projectContext,
+                                   String projectManifestSummary,
+                                   Map<String, String> sharedExecutionState,
                                    LocalDateTime deadlineAt,
                                    String traceId) {
         try {
-            executeStep(plan, session, allSteps, step, skill, projectContext, deadlineAt, traceId);
+            executeStep(plan, session, allSteps, step, skill, projectContext, projectManifestSummary,
+                    sharedExecutionState, deadlineAt, traceId);
             steps.saveAndFlush(step);
         } catch (Exception ex) {
             String error = "Step worker failed unexpectedly: "
@@ -1220,8 +1304,11 @@ public class PlanAgentService {
                                                          ProjectRuntimeContext projectContext) {
         ResolvedToolPolicy inheritedPolicy = projectContext == null ? resolvePlanToolPolicy(
                 plan.getGoal(), Boolean.TRUE.equals(plan.getRagDisabled()), skill)
-                : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(),
-                StringUtils.hasText(step.getAllowedToolsJson()) ? new LinkedHashSet<>(readStringList(step.getAllowedToolsJson())) : null).resolved();
+                : toolPolicyEngine.decideProject(null, null).resolved();
+        if (projectContext != null) {
+            return new ResolvedToolPolicy(inheritedPolicy.allowedTools(), MAX_TOOL_CALLS_PER_PLAN_STEP,
+                    MAX_DUPLICATE_TOOL_CALLS_PER_PLAN_STEP, "project_plan_low_risk_read_only_tools");
+        }
         List<String> stepAllowed = readStringList(step.getAllowedToolsJson());
         if (StringUtils.hasText(step.getAllowedToolsJson())) {
             return new ResolvedToolPolicy(resolvePersistedAllowedTools(stepAllowed, inheritedPolicy), MAX_TOOL_CALLS_PER_PLAN_STEP,
@@ -1240,7 +1327,10 @@ public class PlanAgentService {
     private String buildStepSystemPrompt(AgentPlan plan,
                                          List<AgentPlanStep> allSteps,
                                          AgentPlanStep step,
-                                         String previousError) {
+                                         String previousError,
+                                         String executionStateSummary,
+                                         String projectManifestSummary,
+                                         Map<String, String> sharedExecutionState) {
         StringBuilder sb = new StringBuilder();
         sb.append("""
                 You are an isolated worker sub-agent for a Plan-and-Execute system.
@@ -1249,6 +1339,8 @@ public class PlanAgentService {
                 Use tools sparingly: one or two focused searches are usually enough, then synthesize.
                 Stop as soon as the current step success criteria are met.
                 Return a concise reusable result for downstream steps.
+                When completed dependency results already cover the success criteria, synthesize them directly
+                without new tools. Do not repeat their reads or searches. Call a tool only for a specific missing fact.
                 If evidence is incomplete, state the limitation clearly instead of looping.
 
                 Overall goal:
@@ -1259,8 +1351,14 @@ public class PlanAgentService {
                 .append("- title: ").append(blankToDefault(step.getTitle(), "")).append("\n")
                 .append("- type: ").append(blankToDefault(step.getType(), "")).append("\n")
                 .append("- description: ").append(step.getDescription()).append("\n")
-                .append("- success criteria: ").append(blankToDefault(step.getSuccessCriteria(), "")).append("\n\n")
+                .append("- success criteria: ").append(blankToDefault(step.getSuccessCriteria(), "")).append("\n")
+                .append("- preferred tools: ").append(readStringList(step.getAllowedToolsJson())).append("\n")
+                .append("  The preferred tools are planning hints, not the complete tool set. You may use any exposed read-only Project tool needed to complete this step.\n\n")
                 .append("Completed dependency results:\n");
+        if (StringUtils.hasText(projectManifestSummary)) {
+            sb.append("\nServer-cached Project manifest (reuse this inventory; do not call project_manifest again unless it is explicitly stale):\n")
+                    .append(projectManifestSummary).append("\n\n");
+        }
         List<String> deps = readStringList(step.getDependenciesJson());
         boolean hasDependencyResult = false;
         for (AgentPlanStep item : allSteps) {
@@ -1269,6 +1367,12 @@ public class PlanAgentService {
                 sb.append("## ").append(item.getStepKey()).append(" ")
                         .append(blankToDefault(item.getTitle(), "")).append("\n")
                         .append(abbreviate(item.getResult(), 1800)).append("\n\n");
+                String dependencyState = sharedExecutionState.get(item.getStepKey());
+                if (StringUtils.hasText(dependencyState)) {
+                    sb.append("Reusable tool observations from ").append(item.getStepKey()).append(":\n")
+                            .append(abbreviate(dependencyState, 1800))
+                            .append("\nDo not repeat successful or zero-result searches; narrow or change the query only for a stated gap.\n\n");
+                }
             }
         }
         if (!hasDependencyResult) {
@@ -1279,12 +1383,71 @@ public class PlanAgentService {
                     .append(abbreviate(previousError, 1200))
                     .append("\n");
         }
+        if (StringUtils.hasText(executionStateSummary)) {
+            sb.append("\nReusable observations from earlier attempts:\n")
+                    .append(abbreviate(executionStateSummary, 2400))
+                    .append("\nDo not repeat successful calls. Do not retry a deterministic failure with the same effective scope.\n");
+        }
         return sb.toString();
+    }
+
+    private String buildPlanManifestSummary(Long userId, Long projectId) {
+        ProjectManifestResponse manifest = projectService.manifest(userId, projectId);
+        StringBuilder summary = new StringBuilder("version=")
+                .append(blankToDefault(manifest.version(), "unknown"))
+                .append(", files=").append(manifest.files().size()).append("\n");
+        for (ProjectFileEntry file : manifest.files()) {
+            String line = "- " + file.path() + " (" + file.sizeBytes() + " bytes)\n";
+            if (summary.length() + line.length() > 6000) {
+                summary.append("- ... additional files omitted from prompt; use a focused manifest call only if required.\n");
+                break;
+            }
+            summary.append(line);
+        }
+        return summary.toString();
     }
 
     private String buildStepUserMessage(AgentPlanStep step) {
         return "Execute the current plan step:\n" + step.getDescription()
                 + "\n\nSuccess criteria:\n" + blankToDefault(step.getSuccessCriteria(), "");
+    }
+
+    private void recordToolObservations(AgentPlan plan,
+                                        AgentPlanStep step,
+                                        AgentRuntimeResult result,
+                                        ProjectRuntimeContext projectContext,
+                                        String traceId,
+                                        int attempt) {
+        if (result == null || result.toolTrace() == null) return;
+        for (String trace : result.toolTrace()) {
+            if (!StringUtils.hasText(trace) || !trace.contains(" tool=")) continue;
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("stepKey", step.getStepKey());
+            payload.put("attempt", attempt);
+            payload.put("observationFingerprint", Integer.toHexString(trace.hashCode()));
+            payload.put("success", trace.contains(" success=true"));
+            payload.put("reused", trace.contains(" reused=true"));
+            payload.put("trace", abbreviate(trace, 1600));
+            payload.put("traceId", traceId);
+            if (projectContext != null) payload.put("projectId", projectContext.projectId());
+            recordEvent(plan.getId(), step.getId(), "step_tool_observation", payload);
+        }
+    }
+
+    private String mergeExecutionState(String existing, AgentRuntimeResult result) {
+        StringBuilder state = new StringBuilder(StringUtils.hasText(existing) ? existing.trim() + "\n" : "");
+        if (result != null && result.toolTrace() != null) {
+            for (String trace : result.toolTrace()) {
+                if (!StringUtils.hasText(trace)) continue;
+                state.append(trace.contains(" success=true") ? "- SUCCESS: " : "- FAILED: ")
+                        .append(abbreviate(trace, 600)).append("\n");
+            }
+        }
+        if (result != null && StringUtils.hasText(result.assistantContent())) {
+            state.append("- Candidate result already produced: ")
+                    .append(abbreviate(result.assistantContent(), 800)).append("\n");
+        }
+        return abbreviate(state.toString(), 3200);
     }
 
     private String buildFinalSummary(AgentPlan plan, List<AgentPlanStep> allSteps) {

@@ -180,6 +180,41 @@ class PaperSectionPolishServiceTest {
         assertThat(saved.getReviewJson()).contains("model_call_failed", "\"keptOriginal\":true");
     }
 
+    @Test
+    void inheritedDocumentBoundaryDoesNotRejectConclusionPolish() {
+        modelClient.alwaysPassReview = true;
+        modelClient.customPolishOutput = "\\section{CONCLUSION}\nThe revised conclusion is clearer.\n"
+                + "\\bibliographystyle{IEEEtran}\n\\bibliography{refs}\n\\end{document}";
+        PaperTask task = tasks.save(new PaperTask(1L, "Demo", "main.tex", "paper/main.tex", "RUNNING", "en", "POLISH", null));
+        sections.save(new PaperSection(task.getId(), "main.tex", 0, 2, "CONCLUSION", "CONCLUSION", 1.0, "test", 0, 120));
+        LatexSection latexSection = new LatexSection(0, 2, "section", true, "CONCLUSION", LatexSectionRole.CONCLUSION, 0, 120,
+                "\\section{CONCLUSION}\nThe original conclusion.\n"
+                        + "\\bibliographystyle{IEEEtran}\n\\bibliography{refs}\n\\end{document}");
+
+        SectionPolishResult result = polishService.polishSection(task.getId(), latexSection, "en", 80, 1, 1);
+
+        assertThat(result.status()).isEqualTo("POLISHED");
+        assertThat(result.polishedText()).contains("The revised conclusion is clearer.", "\\end{document}");
+        assertThat(result.lintIssues()).isEmpty();
+    }
+
+    @Test
+    void newlyIntroducedFragmentLintBlockerIsStillRejected() {
+        modelClient.alwaysPassReview = true;
+        modelClient.customPolishOutput = "\\section{CONCLUSION}\nThe revised conclusion.\\begin{quote}\n"
+                + "\\bibliographystyle{IEEEtran}\n\\bibliography{refs}\n\\end{document}";
+        PaperTask task = tasks.save(new PaperTask(1L, "Demo", "main.tex", "paper/main.tex", "RUNNING", "en", "POLISH", null));
+        sections.save(new PaperSection(task.getId(), "main.tex", 0, 2, "CONCLUSION", "CONCLUSION", 1.0, "test", 0, 120));
+        LatexSection latexSection = new LatexSection(0, 2, "section", true, "CONCLUSION", LatexSectionRole.CONCLUSION, 0, 120,
+                "\\section{CONCLUSION}\nThe original conclusion.\n"
+                        + "\\bibliographystyle{IEEEtran}\n\\bibliography{refs}\n\\end{document}");
+
+        SectionPolishResult result = polishService.polishSection(task.getId(), latexSection, "en", 80, 1, 1);
+
+        assertThat(result.status()).isEqualTo("PROTECTION_REJECTED");
+        assertThat(result.polishedText()).isEqualTo(latexSection.rawText());
+    }
+
     static final class EmptyMinioProvider implements ObjectProvider<io.minio.MinioClient> {
         @Override
         public io.minio.MinioClient getObject(Object... args) {
@@ -210,6 +245,7 @@ class PaperSectionPolishServiceTest {
         private boolean alwaysPassReview;
         private boolean returnRatioScore;
         private boolean failPolishCall;
+        private String customPolishOutput;
         private int finalReviewScore = 88;
 
         void reset() {
@@ -220,6 +256,7 @@ class PaperSectionPolishServiceTest {
             alwaysPassReview = false;
             returnRatioScore = false;
             failPolishCall = false;
+            customPolishOutput = null;
             finalReviewScore = 88;
         }
 
@@ -244,6 +281,9 @@ class PaperSectionPolishServiceTest {
             }
             if (userPrompt.contains("Current polished section text:")) {
                 return "<output>\\section{Introduction} This paper presents a clearer RAG motivation \\cite{rag2020}.</output><explanation>x</explanation>";
+            }
+            if (customPolishOutput != null) {
+                return "<output>" + customPolishOutput + "</output><explanation>x</explanation>";
             }
             if (returnExtraLabel) {
                 return "<output>\\section{Introduction} This paper uses RAG. \\label{fig:new}</output>";

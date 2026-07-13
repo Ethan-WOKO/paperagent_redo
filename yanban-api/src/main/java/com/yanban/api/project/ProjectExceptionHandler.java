@@ -1,9 +1,12 @@
 package com.yanban.api.project;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice(assignableTypes = ProjectController.class)
 class ProjectExceptionHandler {
@@ -18,5 +21,16 @@ class ProjectExceptionHandler {
     @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)
     ProjectErrorResponse traversalLimit() {
         return new ProjectErrorResponse("PROJECT_LIMIT_EXCEEDED", "Project traversal limit exceeded");
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    ResponseEntity<ProjectErrorResponse> responseStatus(ResponseStatusException exception) {
+        int status = exception.getStatusCode().value();
+        String code = status == HttpStatus.BAD_GATEWAY.value()
+                ? "PROJECT_PLAN_FAILED" : "PROJECT_REQUEST_FAILED";
+        String message = StringUtils.hasText(exception.getReason())
+                ? exception.getReason() : "Project request failed (HTTP " + status + ").";
+        return ResponseEntity.status(exception.getStatusCode())
+                .body(new ProjectErrorResponse(code, message));
     }
 }

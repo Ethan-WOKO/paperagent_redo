@@ -87,18 +87,30 @@ public class LiteratureService {
                                                         int minSelectionLimit,
                                                         int selectionLimit,
                                                         LiteratureCardAnalysisService.ProgressListener progressListener) {
+        return retrieveForTask(taskId, profile, perQueryLimit, minSelectionLimit, selectionLimit, null, progressListener);
+    }
+
+    public List<LiteratureSearchResult> retrieveForTask(Long taskId,
+                                                        ResearchProfileResult profile,
+                                                        int perQueryLimit,
+                                                        int minSelectionLimit,
+                                                        int selectionLimit,
+                                                        String existingBibtex,
+                                                        LiteratureCardAnalysisService.ProgressListener progressListener) {
         LiteratureRecommendationService recommendationService = recommendationServiceProvider == null ? null : recommendationServiceProvider.getIfAvailable();
         if (recommendationService != null) {
-            return retrieveForTaskWithRecommendationService(recommendationService, taskId, profile, selectionLimit, progressListener);
+            return retrieveForTaskWithRecommendationService(
+                    recommendationService, taskId, profile, selectionLimit, existingBibtex, progressListener);
         }
         return retrieveForTaskLegacy(taskId, profile, perQueryLimit, minSelectionLimit, selectionLimit, progressListener);
     }
 
     private List<LiteratureSearchResult> retrieveForTaskWithRecommendationService(LiteratureRecommendationService recommendationService,
-                                                                                  Long taskId,
-                                                                                  ResearchProfileResult profile,
-                                                                                  int selectionLimit,
-                                                                                  LiteratureCardAnalysisService.ProgressListener progressListener) {
+                                                                                   Long taskId,
+                                                                                   ResearchProfileResult profile,
+                                                                                   int selectionLimit,
+                                                                                   String existingBibtex,
+                                                                                   LiteratureCardAnalysisService.ProgressListener progressListener) {
         PaperTask task = tasks.findById(taskId).orElse(null);
         Map<String, SlotQuery> slotQueries = slotQueries(taskId);
         LiteratureRecommendationService.RecommendationRequest request = new LiteratureRecommendationService.RecommendationRequest(
@@ -110,7 +122,7 @@ public class LiteratureService {
                 Math.max(30, Math.min(50, Math.max(1, selectionLimit) * 4)),
                 Math.min(6, Math.max(3, slotQueries.isEmpty() ? 4 : slotQueries.size())),
                 true,
-                null,
+                existingBibtex,
                 30
         );
         LiteratureRecommendationService.RecommendationResult recommendation = progressListener == null

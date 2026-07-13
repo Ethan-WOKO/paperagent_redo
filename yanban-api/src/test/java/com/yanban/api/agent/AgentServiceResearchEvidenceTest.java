@@ -45,6 +45,20 @@ class AgentServiceResearchEvidenceTest {
         assertThat(AgentService.projectEvidenceFromRuntime(json, badTrust, new ProjectRuntimeContext(7L,42L), 0).evidence()).isEmpty();
     }
 
+    @Test
+    void finalProjectionRequiresEvidenceOnlyForProjectContentClaims() {
+        ProjectRuntimeContext context = new ProjectRuntimeContext(7L, 42L);
+
+        AgentRuntimeResult inventory = AgentService.enforceProjectEvidenceRequirement(
+                context, "你现在有哪些工具？", runtime(List.of()), 0);
+        AgentRuntimeResult contentClaim = AgentService.enforceProjectEvidenceRequirement(
+                context, "分析项目中有哪些工具函数", runtime(List.of()), 0);
+
+        assertThat(inventory.success()).isTrue();
+        assertThat(contentClaim.success()).isFalse();
+        assertThat(contentClaim.outcome()).isEqualTo("INSUFFICIENT_EVIDENCE");
+    }
+
     private AgentRuntimeResult runtime(List<ChatMessage> messages) { return new AgentRuntimeResult(true,"ok",messages,1,null,List.of(),List.of(),null,null,null); }
     private ChatMessage request(String id) { return new ChatMessage("assistant", null, List.of(new ToolCall(id,"function",new ToolCall.FunctionCall("project_latex_outline","{}"))),null); }
     private String envelope(String hash, String trust) { return "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\""+"c".repeat(64)+"\",\"relativePath\":\"paper.tex\",\"fileHash\":\""+hash+"\",\"range\":{\"startLine\":1,\"endLine\":1},\"parserVersion\":\"latex-outline@1\",\"trustLabel\":\""+trust+"\"}]}"; }

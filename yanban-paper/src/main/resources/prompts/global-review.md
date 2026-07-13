@@ -23,7 +23,9 @@ Review the paper as a whole. Check only cross-section concerns: transition and n
 Rules:
 - Do not rewrite any section.
 - Do not propose or invent equations, results, citations, experiments, or claims.
-- Formula issues are report-only and must have autoFixAllowed=false.
+- Formula issues and symbol/dimension notation issues are report-only and must have autoFixAllowed=false.
+- Set autoFixAllowed=true only for a problem that can be fixed by one small prose replacement without changing formulas, citations, references, labels, LaTeX environments, technical claims, numbers, or results. Safe examples include a missing transition, duplicated prose explanation, terminology wording, or a local claim/result wording mismatch.
+- Duplicated equations or mathematical definitions must have autoFixAllowed=false even when their surrounding prose is repetitive.
 - Review only the final polished draft represented above, not assumptions about an earlier manuscript version.
 - Every issue must include one or more short evidence objects whose `quote` is copied verbatim from the supplied draft or technical fact index.
 - A NOTATION dimension conflict requires evidence for both the symbol declaration and the expression whose dimensions conflict.

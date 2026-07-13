@@ -84,6 +84,9 @@ public class AgentToolPolicyEngine {
     private boolean isEligible(ToolDescriptor descriptor, ToolPolicyRequest request) {
         return descriptor.modelVisible()
                 && descriptor.sideEffectType() != ToolDescriptor.SideEffectType.UNKNOWN
+                && (request.capabilityProfile() != ToolDescriptor.CapabilityProfile.PROJECT
+                    || descriptor.sideEffectType() == ToolDescriptor.SideEffectType.NONE
+                    || descriptor.sideEffectType() == ToolDescriptor.SideEffectType.READ_ONLY)
                 && descriptor.confirmationPolicy() == ToolDescriptor.ConfirmationPolicy.NEVER
                 && descriptor.supportedProfiles().contains(request.capabilityProfile())
                 && request.userPermissions().containsAll(descriptor.requiredPermissions())

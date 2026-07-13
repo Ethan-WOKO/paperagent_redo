@@ -64,7 +64,7 @@ class PlanStepVerifierTest {
         assertThat(request.provider()).isEqualTo(UserSettingsService.DEFAULT_PROVIDER);
         assertThat(request.model()).isEqualTo(UserSettingsService.DEFAULT_DEEPSEEK_MODEL);
         assertThat(request.temperature()).isEqualTo(0.0);
-        assertThat(request.maxTokens()).isEqualTo(768);
+        assertThat(request.maxTokens()).isEqualTo(256);
         assertThat(request.responseFormat()).isEqualTo(ChatRequest.ResponseFormat.jsonObject());
         assertThat(request.thinking()).isEqualTo(ChatRequest.Thinking.disabled());
         assertThat(request.messages()).hasSize(2);
@@ -114,6 +114,26 @@ class PlanStepVerifierTest {
         assertThat(result.passed()).isTrue();
         assertThat(result.conclusive()).isFalse();
         assertThat(result.reason()).contains("invalid JSON");
+        verify(modelProvider, org.mockito.Mockito.times(2)).chat(any());
+    }
+
+    @Test
+    void verifyRepairsOneTruncatedResponseWithoutReexecutingTheStep() {
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("{\"passed\":true,\"reason\":\"truncated"),
+                        "length", new ChatResponse.Usage(100, 256, 356)))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(
+                        "{\"passed\":true,\"reason\":\"Required observations are present\",\"missing\":[]}"),
+                        "stop", new ChatResponse.Usage(80, 30, 110)));
+
+        PlanStepVerifier.VerificationResult result = verifier.verify(newRequest("candidate result"));
+
+        assertThat(result.passed()).isTrue();
+        assertThat(result.conclusive()).isTrue();
+        assertThat(result.reason()).contains("Required observations");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, org.mockito.Mockito.times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues()).extracting(ChatRequest::maxTokens).containsExactly(256, 160);
     }
 
     private PlanStepVerifier.VerificationRequest newRequest(String candidateResult) {

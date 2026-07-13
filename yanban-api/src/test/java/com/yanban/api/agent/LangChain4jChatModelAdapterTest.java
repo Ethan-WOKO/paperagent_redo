@@ -14,11 +14,16 @@ import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatResponse;
 import com.yanban.core.model.ModelProviderException;
+import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
 
 class LangChain4jChatModelAdapterTest {
@@ -59,6 +64,40 @@ class LangChain4jChatModelAdapterTest {
                 .isInstanceOf(ModelProviderException.class)
                 .hasMessageContaining("DeepSeek API stream failed");
         verify(provider, never()).chat(any());
+    }
+
+    @Test
+    void preservesArrayToolSchemaInCoreModelRequest() {
+        ChatModelProvider provider = mock(ChatModelProvider.class);
+        when(provider.chat(any())).thenReturn(new ChatResponse(ChatMessage.assistant("done"), "stop", null));
+        LangChain4jChatModelAdapter adapter = new LangChain4jChatModelAdapter(provider, new ObjectMapper());
+        ToolSpecification tool = ToolSpecification.builder()
+                .name("project_latex_outline")
+                .description("outline")
+                .parameters(JsonObjectSchema.builder()
+                        .addProperty("relativePaths", JsonArraySchema.builder()
+                                .items(JsonStringSchema.builder().build())
+                                .build())
+                        .required("relativePaths")
+                        .build())
+                .build();
+        ChatRequest request = ChatRequest.builder()
+                .messages(List.of(UserMessage.from("outline the paper")))
+                .parameters(ChatRequestParameters.builder()
+                        .modelName("deepseek-v4-flash")
+                        .toolSpecifications(List.of(tool))
+                        .build())
+                .build();
+
+        adapter.chat(request, runtimeRequest());
+
+        ArgumentCaptor<com.yanban.core.model.ChatRequest> requestCaptor =
+                ArgumentCaptor.forClass(com.yanban.core.model.ChatRequest.class);
+        verify(provider).chat(requestCaptor.capture());
+        var relativePaths = requestCaptor.getValue().tools().get(0).function().parameters()
+                .path("properties").path("relativePaths");
+        assertThat(relativePaths.path("type").asText()).isEqualTo("array");
+        assertThat(relativePaths.path("items").path("type").asText()).isEqualTo("string");
     }
 
     private ChatRequest request() {

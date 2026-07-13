@@ -10,6 +10,8 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yanban.api.agent.AgentStopReason;
+import com.yanban.api.agent.CompletionStatus;
 import com.yanban.api.agent.ProjectAgentRuntimeService;
 import com.yanban.api.agent.ProjectEvidenceResponse;
 import com.yanban.api.agent.SendMessageResponse;
@@ -106,6 +108,35 @@ class ProjectChatWebSocketHandlerTest {
         assertThat(outbound.get(1)).contains("\"type\":\"error\"")
                 .contains("Project conversation failed")
                 .doesNotContain("C:\\\\private");
+    }
+
+    @Test
+    void controlledBudgetPartialUsesDoneTransportWithTypedStatusInsteadOfError() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        ProjectAgentRuntimeService runtime = mock(ProjectAgentRuntimeService.class);
+        ProjectChatWebSocketHandler handler = new ProjectChatWebSocketHandler(objectMapper, runtime);
+        when(runtime.sendStreaming(
+                eq(7L), eq(18L), eq(34L), any(),
+                Mockito.<Consumer<String>>any(), Mockito.<Consumer<String>>any()))
+                .thenAnswer(invocation -> {
+                    Consumer<String> canonical = invocation.getArgument(4);
+                    canonical.accept("Useful bounded partial answer.");
+                    return new SendMessageResponse(true, "Useful bounded partial answer.", 3, null, null,
+                            List.of(), null, List.of(), CompletionStatus.PARTIAL,
+                            AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED, "PARTIAL");
+                });
+        List<String> outbound = new ArrayList<>();
+        WebSocketSession session = session(7L, 18L, outbound);
+
+        handler.handleTextMessage(session, new TextMessage(
+                "{\"sessionId\":34,\"content\":\"inspect broadly\",\"clientRequestId\":\"request-partial\"}"));
+
+        assertThat(outbound).hasSize(3);
+        assertThat(outbound.get(2)).contains("\"type\":\"done\"")
+                .contains("\"completionStatus\":\"PARTIAL\"")
+                .contains("\"stopReason\":\"TOOL_CALL_BUDGET_EXHAUSTED\"")
+                .contains("\"outcome\":\"PARTIAL\"")
+                .doesNotContain("\"type\":\"error\"");
     }
 
     private WebSocketSession session(Long userId, Long projectId, List<String> outbound) throws Exception {

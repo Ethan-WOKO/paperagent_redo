@@ -109,7 +109,8 @@ public class OpenAiCompatibleModelProvider implements ChatModelProvider {
         List<OpenAiMessage> messages = request.messages().stream()
                 .map(message -> new OpenAiMessage(message.role(), message.content(), message.toolCalls(), message.toolCallId()))
                 .toList();
-        return new OpenAiChatRequest(request.model(), messages, request.temperature(), request.maxTokens(), stream, request.tools());
+        return new OpenAiChatRequest(request.model(), messages, request.temperature(), request.maxTokens(), stream,
+                request.tools(), request.responseFormat());
     }
 
     private ChatResponse fromResponse(OpenAiChatResponse response) {
@@ -226,7 +227,8 @@ public class OpenAiCompatibleModelProvider implements ChatModelProvider {
             Double temperature,
             @JsonProperty("max_tokens") Integer maxTokens,
             Boolean stream,
-            List<ToolSpec> tools
+            List<ToolSpec> tools,
+            @JsonProperty("response_format") ChatRequest.ResponseFormat responseFormat
     ) {
     }
 

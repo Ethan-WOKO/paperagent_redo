@@ -72,7 +72,9 @@ class PaperCitationClosureServiceTest {
     void unresolvedSuggestionsStopAfterThreeBatchRounds() {
         AtomicInteger criticCalls = new AtomicInteger();
         PaperModelClient invalidModel = (system, prompt, temperature, maxTokens) -> {
-            assertThat(prompt).startsWith("# Full-Introduction Citation Closure Critic");
+            assertThat(prompt)
+                    .startsWith("# Full-Introduction Citation Closure Critic")
+                    .contains("positive clause describing what prior work does");
             criticCalls.incrementAndGet();
             return "{}";
         };

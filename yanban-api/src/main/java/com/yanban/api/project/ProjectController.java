@@ -7,6 +7,8 @@ import com.yanban.api.agent.SendMessageResponse;
 import com.yanban.api.agent.AgentPlanResponse;
 import com.yanban.api.agent.CreateAgentPlanRequest;
 import com.yanban.api.agent.ProjectEvidenceResponse;
+import com.yanban.api.agent.AgentSessionResponse;
+import com.yanban.api.agent.CreateSessionRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -73,6 +75,22 @@ public class ProjectController {
     public ProjectManifestResponse manifest(@AuthenticationPrincipal(expression = "id") Long userId,
                                             @PathVariable Long projectId) {
         return projectService.manifest(userId, projectId);
+    }
+
+    @GetMapping("/{projectId}/agent/sessions")
+    public List<AgentSessionResponse> listProjectSessions(@AuthenticationPrincipal(expression = "id") Long userId,
+                                                          @PathVariable Long projectId) {
+        if (projectAgentRuntimeService == null) throw new IllegalStateException("Project runtime is not configured");
+        return projectAgentRuntimeService.listSessions(userId, projectId);
+    }
+
+    @org.springframework.web.bind.annotation.PostMapping("/{projectId}/agent/sessions")
+    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.CREATED)
+    public AgentSessionResponse createProjectSession(@AuthenticationPrincipal(expression = "id") Long userId,
+                                                     @PathVariable Long projectId,
+                                                     @Valid @org.springframework.web.bind.annotation.RequestBody CreateSessionRequest request) {
+        if (projectAgentRuntimeService == null) throw new IllegalStateException("Project runtime is not configured");
+        return projectAgentRuntimeService.createSession(userId, projectId, request);
     }
 
     @GetMapping("/{projectId}/files/read")

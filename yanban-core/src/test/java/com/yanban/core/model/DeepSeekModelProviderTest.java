@@ -84,6 +84,27 @@ class DeepSeekModelProviderTest {
     }
 
     @Test
+    void chatTransmitsStructuredJsonResponseFormat() throws Exception {
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        startServer(exchange -> {
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] bytes = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"{}\"},\"finish_reason\":\"stop\"}]}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+        });
+
+        DeepSeekModelProvider provider = new DeepSeekModelProvider(properties());
+        provider.chat(new ChatRequest(
+                "deepseek", "deepseek-chat", List.of(ChatMessage.user("plan")),
+                0.2, 2048, null, "test-key", null,
+                ChatRequest.ResponseFormat.jsonObject(), ChatRequest.Thinking.disabled(), null));
+
+        assertThat(requestBody.get()).contains("\"response_format\":{\"type\":\"json_object\"}");
+        assertThat(requestBody.get()).contains("\"thinking\":{\"type\":\"disabled\"}");
+    }
+
+    @Test
     void streamChatParsesMultipleSseChunks() throws Exception {
         startServer(exchange -> {
             byte[] bytes = """

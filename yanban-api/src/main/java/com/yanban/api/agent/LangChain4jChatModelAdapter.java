@@ -17,6 +17,7 @@ import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
 import dev.langchain4j.model.chat.request.json.JsonNumberSchema;
@@ -198,6 +199,14 @@ public class LangChain4jChatModelAdapter implements ChatModel {
 
     private Object toJsonSchemaElement(JsonSchemaElement element) {
         Map<String, Object> schema = new LinkedHashMap<>();
+        if (element instanceof JsonArraySchema arraySchema) {
+            schema.put("type", "array");
+            if (StringUtils.hasText(arraySchema.description())) {
+                schema.put("description", arraySchema.description());
+            }
+            schema.put("items", toJsonSchemaElement(arraySchema.items()));
+            return schema;
+        }
         if (element instanceof JsonStringSchema stringSchema) {
             schema.put("type", "string");
             if (StringUtils.hasText(stringSchema.description())) {

@@ -38,32 +38,33 @@ public class PlanStepVerifier {
             return VerificationResult.passed("No explicit success criteria were provided.");
         }
         try {
-            ChatResponse response = modelProvider.chat(new ChatRequest(
-                    request.session().getModelProviderSnapshot(),
-                    request.session().getModelSnapshot(),
-                    List.of(
-                            ChatMessage.system(buildVerifierSystemPrompt()),
-                            ChatMessage.user(buildVerifierUserMessage(request))
-                    ),
-                    0.0,
-                    768,
-                    null,
-                    request.apiKey(),
-                    request.apiUrl(),
-                    ChatRequest.ResponseFormat.jsonObject(),
-                    ChatRequest.Thinking.disabled(),
-                    request.traceId()
-            ));
+            ChatResponse response = callVerifier(request, List.of(
+                    ChatMessage.system(buildVerifierSystemPrompt()),
+                    ChatMessage.user(buildVerifierUserMessage(request))), 256);
             String content = response == null || response.message() == null ? null : response.message().content();
+            logVerifierResponse(request, response, content, 1);
             if (!StringUtils.hasText(content)) {
                 return VerificationResult.inconclusive("Verifier returned an empty response.");
             }
             try {
                 return parseVerification(content);
             } catch (Exception ex) {
-                log.warn("Plan step verifier returned invalid JSON stepKey={} error={}",
-                        request.step().getStepKey(), ex.getMessage());
-                return VerificationResult.inconclusive("Verifier returned invalid JSON.");
+                log.warn("Plan step verifier returned invalid JSON stepKey={} attempt=1 finishReason={} error={}",
+                        request.step().getStepKey(), response == null ? null : response.finishReason(), abbreviate(ex.getMessage(), 300));
+                ChatResponse repaired = callVerifier(request, List.of(
+                        ChatMessage.system(buildRepairSystemPrompt()),
+                        ChatMessage.user(buildRepairUserMessage(request, content))), 160);
+                String repairedContent = repaired == null || repaired.message() == null ? null : repaired.message().content();
+                logVerifierResponse(request, repaired, repairedContent, 2);
+                try {
+                    return parseVerification(repairedContent);
+                } catch (Exception repairError) {
+                    log.warn("Plan step verifier repair returned invalid JSON stepKey={} attempt=2 finishReason={} error={}",
+                            request.step().getStepKey(), repaired == null ? null : repaired.finishReason(),
+                            abbreviate(repairError.getMessage(), 300));
+                    return VerificationResult.inconclusive("Verifier returned invalid JSON after one bounded repair."
+                            + finishReasonSuffix(response, repaired));
+                }
             }
         } catch (Exception ex) {
             log.warn("Plan step verification failed stepKey={}", request.step().getStepKey(), ex);
@@ -77,14 +78,45 @@ public class PlanStepVerifier {
                 Judge only whether the candidate result satisfies the current step success criteria.
                 Do not require future steps to be completed.
                 Be strict about missing evidence, missing requested artifacts, and vague placeholder answers.
-                Return JSON only:
-                {
-                  "passed": true,
-                  "reason": "brief reason",
-                  "evidence": "specific evidence from the candidate result",
-                  "missingItems": []
-                }
+                Return one compact JSON object only. Keep reason under 120 characters and at most 3 missing items:
+                {"passed":true,"reason":"brief reason","missing":[]}
                 """;
+    }
+
+    private String buildRepairSystemPrompt() {
+        return """
+                Repair a verifier decision into one compact JSON object only.
+                Do not repeat the candidate result. Use exactly these fields:
+                {"passed":true,"reason":"under 120 characters","missing":[]}
+                """;
+    }
+
+    private String buildRepairUserMessage(VerificationRequest request, String invalidOutput) {
+        return "Success criteria:\n" + abbreviate(request.successCriteria(), 500)
+                + "\n\nCandidate summary:\n" + abbreviate(request.candidateResult(), 1400)
+                + "\n\nInvalid verifier output to repair:\n" + abbreviate(invalidOutput, 400);
+    }
+
+    private ChatResponse callVerifier(VerificationRequest request, List<ChatMessage> messages, int maxTokens) {
+        return modelProvider.chat(new ChatRequest(
+                request.session().getModelProviderSnapshot(), request.session().getModelSnapshot(), messages,
+                0.0, maxTokens, null, request.apiKey(), request.apiUrl(), ChatRequest.ResponseFormat.jsonObject(),
+                ChatRequest.Thinking.disabled(), request.traceId()));
+    }
+
+    private void logVerifierResponse(VerificationRequest request, ChatResponse response, String content, int attempt) {
+        ChatResponse.Usage usage = response == null ? null : response.usage();
+        log.info("Plan step verifier response stepKey={} attempt={} finishReason={} promptTokens={} completionTokens={} contentLength={}",
+                request.step().getStepKey(), attempt, response == null ? null : response.finishReason(),
+                usage == null ? null : usage.promptTokens(), usage == null ? null : usage.completionTokens(),
+                content == null ? 0 : content.length());
+    }
+
+    private String finishReasonSuffix(ChatResponse first, ChatResponse second) {
+        String firstReason = first == null ? null : first.finishReason();
+        String secondReason = second == null ? null : second.finishReason();
+        return " [firstFinishReason=" + blankToDefault(firstReason, "unknown")
+                + ", repairFinishReason=" + blankToDefault(secondReason, "unknown") + "]";
     }
 
     private String buildVerifierUserMessage(VerificationRequest request) {
@@ -123,8 +155,11 @@ public class PlanStepVerifier {
             return VerificationResult.inconclusive("Verifier response did not include a boolean passed field.");
         }
         String reason = firstText(root, "reason", "rationale", "explanation");
-        String evidence = firstText(root, "evidence", "supportingEvidence");
-        String missingItems = readMissingItems(root.path("missingItems"));
+        String evidence = abbreviate(firstText(root, "evidence", "supportingEvidence"), 240);
+        String missingItems = readMissingItems(root.path("missing"));
+        if (!StringUtils.hasText(missingItems)) {
+            missingItems = readMissingItems(root.path("missingItems"));
+        }
         if (!StringUtils.hasText(missingItems)) {
             missingItems = readMissingItems(root.path("missing_items"));
         }
@@ -135,7 +170,7 @@ public class PlanStepVerifier {
             reason = passed ? "Candidate result satisfies the success criteria."
                     : "Candidate result does not satisfy the success criteria.";
         }
-        return new VerificationResult(passed, true, reason, evidence);
+        return new VerificationResult(passed, true, abbreviate(reason, 240), evidence);
     }
 
     private List<AgentPlanStep> completedDependencyResults(VerificationRequest request) {

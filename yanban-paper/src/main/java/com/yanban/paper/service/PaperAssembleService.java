@@ -134,8 +134,17 @@ public class PaperAssembleService {
         if (advancedMode) {
             artifactResults.add(saveArtifact(task, "polished_tex", "polished.tex", polishedTex, "application/x-tex; charset=UTF-8", Map.of("advancedMode", true, "lintCodes", lintCodes, "finalAuditStatus", finalAudit.status())));
         }
-        artifactResults.add(saveArtifact(task, "suggested_bib", citationResult.bibFilename(), suggestedBib, "text/x-bibtex; charset=UTF-8", Map.of("source", "uploaded-bib-plus-accepted-citations", "dedup", "doi-or-title", "appliedPatches", citationResult.appliedPatches().size(), "manualPatches", citationResult.manualPatches().size())));
-        artifactResults.add(saveArtifact(task, "suggested_bib_novel", "suggested-novel.bib", bibResult.novelBib(), "text/x-bibtex; charset=UTF-8", Map.of("source", "real-literature-cards", "dedup", "uploaded-bib")));
+        artifactResults.add(saveArtifact(task, "suggested_bib", citationResult.bibFilename(), suggestedBib, "text/x-bibtex; charset=UTF-8", Map.of(
+                "source", "uploaded-bib-plus-accepted-citations",
+                "dedup", "doi-or-title",
+                "citationRecommendations", citationResult.appliedPatches().size(),
+                "newReferences", citationResult.newReferenceCount(),
+                "reusedReferences", citationResult.reusedExistingReferenceCount(),
+                "citationLocationsUpdated", citationResult.changedCitationLocationCount(),
+                "existingCitationLocationsVerified", citationResult.verifiedExistingCitationLocationCount(),
+                "unappliedRecommendations", citationResult.manualPatches().size())));
+        artifactResults.add(saveArtifact(task, "suggested_bib_novel", "suggested-novel.bib", bibResult.novelBib(), "text/x-bibtex; charset=UTF-8", Map.of(
+                "source", "real-literature-cards", "dedup", "uploaded-bib", "newReferences", citationResult.newReferenceCount())));
         artifactResults.add(saveArtifact(task, "review_report", "review-report.md", reviewReport, "text/markdown; charset=UTF-8", Map.of("advancedMode", advancedMode, "suggestionCount", taskSuggestions.size(), "finalAuditStatus", finalAudit.status())));
         if (advancedMode && !artifactResults.isEmpty()) {
             task.setFinalObjectKey(String.valueOf(artifactResults.get(0).get("objectKey")));
@@ -169,8 +178,20 @@ public class PaperAssembleService {
     }
 
     private BibBuildResult toBibBuildResult(PaperCitationApplyService.CitationApplyResult result) {
-        return new BibBuildResult(result.mergedBib(), result.novelBib(), result.novelCards(), List.of(),
-                result.existingBibliographyCount(), result.appliedPatches(), result.manualPatches(), result.bibFilename());
+        return new BibBuildResult(result.mergedBib(), result.novelBib(), result.novelCards(),
+                versionReuseSummaries(result.bibliography()),
+                result.existingBibliographyCount(), result.appliedPatches(), result.manualPatches(), result.bibFilename(),
+                result.newReferenceCount(), result.reusedExistingReferenceCount(), result.changedCitationLocationCount(),
+                result.verifiedExistingCitationLocationCount());
+    }
+
+    private List<Map<String, Object>> versionReuseSummaries(List<Map<String, Object>> bibliography) {
+        Map<String, Map<String, Object>> byKey = new LinkedHashMap<>();
+        for (Map<String, Object> item : bibliography == null ? List.<Map<String, Object>>of() : bibliography) {
+            if (!"POSSIBLE_CONFERENCE_JOURNAL_VERSION".equals(item.get("reuseReason"))) continue;
+            byKey.putIfAbsent(String.valueOf(item.get("bibKey")), new LinkedHashMap<>(item));
+        }
+        return List.copyOf(byKey.values());
     }
 
     private PaperCitationApplyService.CitationApplyResult legacyCitationResult(Long taskId,
@@ -436,10 +457,15 @@ public class PaperAssembleService {
                                   int existingBibliographyCount,
                                   List<Map<String, Object>> appliedPatches,
                                   List<Map<String, Object>> manualPatches,
-                                  String bibFilename) {
+                                  String bibFilename,
+                                  int newReferenceCount,
+                                  int reusedReferenceCount,
+                                  int changedCitationLocationCount,
+                                  int verifiedExistingCitationLocationCount) {
         private BibBuildResult(String allBib, String novelBib, List<Map<String, Object>> novelCards,
                                 List<Map<String, Object>> duplicateCards, int existingBibliographyCount) {
-            this(allBib, novelBib, novelCards, duplicateCards, existingBibliographyCount, List.of(), List.of(), "references.bib");
+            this(allBib, novelBib, novelCards, duplicateCards, existingBibliographyCount, List.of(), List.of(),
+                    "references.bib", novelCards.size(), duplicateCards.size(), 0, 0);
         }
     }
 
@@ -489,18 +515,27 @@ public class PaperAssembleService {
         appendUploadedBibDedupSummary(report, bibResult);
         report.append("\n## Citation Application\n\n")
                 .append("- Merged bibliography filename: `").append(bibResult.bibFilename()).append("`\n")
-                .append("- Automatically accepted citation patches applied: ").append(bibResult.appliedPatches().size()).append("\n")
-                .append("- Automatic citation patches not applied: ").append(bibResult.manualPatches().size()).append("\n");
+                .append("- New recommended references added: ").append(bibResult.newReferenceCount()).append("\n")
+                .append("- Existing uploaded references reused: ").append(bibResult.reusedReferenceCount()).append("\n")
+                .append("- Citation recommendations accepted: ").append(bibResult.appliedPatches().size()).append("\n")
+                .append("- Citation locations updated: ").append(bibResult.changedCitationLocationCount()).append("\n")
+                .append("- Existing citation locations verified: ").append(bibResult.verifiedExistingCitationLocationCount()).append("\n")
+                .append("- Approved recommendations that could not be applied: ").append(bibResult.manualPatches().size()).append("\n");
+        Map<Long, Suggestion> suggestionById = taskSuggestions.stream()
+                .filter(item -> item.getId() != null)
+                .collect(Collectors.toMap(Suggestion::getId, Function.identity(), (left, right) -> left, LinkedHashMap::new));
         for (Map<String, Object> patch : bibResult.appliedPatches()) {
-            report.append("- Applied suggestion #").append(patch.get("suggestionId"))
-                    .append(" with keys ").append(patch.get("bibKeys"))
-                    .append(" using ").append(valueOrDefault(patch, "matchMode", "EXACT"))
-                    .append(" anchor matching at `").append(patch.get("anchor")).append("`\n");
+            Suggestion suggestion = suggestionById.get(longValue(patch.get("suggestionId")));
+            report.append("- ").append(Boolean.TRUE.equals(patch.get("citationChanged"))
+                            ? "Added citations for: " : "Confirmed existing citations for: ")
+                    .append(customerText(suggestion == null ? "Citation recommendation" : suggestion.getStatement()))
+                    .append(" (keys ").append(patch.get("bibKeys")).append(")\n");
         }
         for (Map<String, Object> patch : bibResult.manualPatches()) {
-            report.append("- Unapplied suggestion #").append(patch.get("suggestionId"))
-                    .append(" (").append(patch.get("status")).append("): ")
-                    .append(patch.get("message")).append("\n");
+            Suggestion suggestion = suggestionById.get(longValue(patch.get("suggestionId")));
+            report.append("- Not applied: ")
+                    .append(customerText(suggestion == null ? "Citation recommendation" : suggestion.getStatement()))
+                    .append(" - ").append(customerText(String.valueOf(patch.get("message")))).append("\n");
         }
         report.append('\n');
         appendCitationClosure(report, task.getId(), bibResult);
@@ -511,19 +546,20 @@ public class PaperAssembleService {
             report.append("No suggestions generated. Check Retrieval Diagnostics above to distinguish empty query, source failure, or zero selected candidates.\n\n");
         }
         for (Suggestion suggestion : taskSuggestions) {
-            report.append("### #").append(suggestion.getId()).append(" ").append(suggestion.getCategory()).append("\n")
-                    .append("- Track: ").append(suggestion.getTrack()).append("\n")
+            report.append("### ").append(suggestion.getCategory()).append("\n")
+                    .append("- Purpose: ").append("ADVOCACY".equalsIgnoreCase(suggestion.getTrack())
+                            ? "Citation recommendation" : "Review note").append("\n")
                     .append("- Severity: ").append(suggestion.getSeverity()).append("\n")
                     .append("- Status: ").append(suggestion.getStatus()).append("\n")
                     .append("- Applicable: ").append(suggestion.getApplicable()).append("\n")
-                    .append("- Statement: ").append(suggestion.getStatement()).append("\n")
+                    .append("- Recommendation: ").append(customerText(suggestion.getStatement())).append("\n")
                     .append("- Evidence:\n");
             List<LiteratureCard> cards = evidenceCards.getOrDefault(suggestion.getId(), List.of());
             if (cards.isEmpty()) {
                 report.append("  - None (not grounded; do not patch into paper)\n");
             } else {
                 for (LiteratureCard card : cards) {
-                    report.append("  - [card-").append(card.getId()).append("] ").append(card.getTitle())
+                    report.append("  - ").append(card.getTitle())
                             .append(card.getPublicationYear() == null ? "" : " (" + card.getPublicationYear() + ")")
                             .append("\n");
                 }
@@ -537,10 +573,10 @@ public class PaperAssembleService {
     }
 
     private void appendCitationClosure(StringBuilder report, Long taskId, BibBuildResult bibResult) {
-        report.append("## Citation Closure\n\n");
+        report.append("## Citation Review and Application\n\n");
         PaperTaskAnalysis analysis = analyses.findByTaskId(taskId).orElse(null);
         if (analysis == null || analysis.getGapMatrixJson() == null || analysis.getGapMatrixJson().isBlank()) {
-            report.append("- Status: NOT_RUN\n- No citation critic diagnostics recorded.\n\n");
+            report.append("- Status: NOT_RUN\n- No evidence-review diagnostics recorded.\n\n");
             return;
         }
         try {
@@ -551,7 +587,7 @@ public class PaperAssembleService {
             Map<?, ?> criticMap = critic instanceof Map<?, ?> value ? value : Map.of();
             Map<?, ?> loopMap = closureLoop instanceof Map<?, ?> value ? value : Map.of();
             if (criticMap.isEmpty() && loopMap.isEmpty()) {
-                report.append("- Status: NOT_RUN\n- No citation critic diagnostics recorded.\n\n");
+                report.append("- Status: NOT_RUN\n- No evidence-review diagnostics recorded.\n\n");
                 return;
             }
             String criticStatus = String.valueOf(valueOrDefault(criticMap, "closureStatus", "NOT_RUN"));
@@ -566,24 +602,28 @@ public class PaperAssembleService {
                     : ("PARTIAL".equals(criticStatus) || hasWithheldCandidates || !bibResult.manualPatches().isEmpty()
                     ? "PARTIAL" : criticStatus));
             report.append("- Status: ").append(closureStatus).append("\n")
-                    .append("- Initial critic status: ").append(criticStatus).append("\n")
-                    .append("- Candidates: ").append(valueOrDefault(criticMap, "candidateCount", 0)).append("\n")
-                    .append("- Supported candidates: ").append(valueOrDefault(criticMap, "supportedCount", 0)).append("\n")
-                    .append("- Withheld candidates: ").append(valueOrDefault(criticMap, "withheldCount", 0)).append("\n")
-                    .append("- Batches: ").append(valueOrDefault(criticMap, "batchCount", 0)).append("\n")
-                    .append("- Successful batches: ").append(valueOrDefault(criticMap, "successfulBatchCount", 0)).append("\n")
-                    .append("- Failed batches: ").append(valueOrDefault(criticMap, "failedBatchCount", 0)).append("\n")
-                    .append("- Retried batches: ").append(valueOrDefault(criticMap, "retriedBatchCount", 0)).append("\n")
-                    .append("- Applied citation patches: ").append(bibResult.appliedPatches().size()).append("\n")
-                    .append("- Unapplied citation patches: ").append(bibResult.manualPatches().size()).append("\n");
+                    .append("- Initial evidence-review status: ").append(criticStatus).append("\n")
+                    .append("- Recommendations reviewed: ").append(valueOrDefault(criticMap, "candidateCount", 0)).append("\n")
+                    .append("- Supported recommendations: ").append(valueOrDefault(criticMap, "supportedCount", 0)).append("\n")
+                    .append("- Recommendations held for focused review: ").append(valueOrDefault(criticMap, "withheldCount", 0)).append("\n")
+                    .append("- Review batches: ").append(valueOrDefault(criticMap, "batchCount", 0)).append("\n")
+                    .append("- Successful review batches: ").append(valueOrDefault(criticMap, "successfulBatchCount", 0)).append("\n")
+                    .append("- Failed review batches: ").append(valueOrDefault(criticMap, "failedBatchCount", 0)).append("\n")
+                    .append("- Retried review batches: ").append(valueOrDefault(criticMap, "retriedBatchCount", 0)).append("\n")
+                    .append("- Citation recommendations accepted: ").append(bibResult.appliedPatches().size()).append("\n")
+                    .append("- New recommended references: ").append(bibResult.newReferenceCount()).append("\n")
+                    .append("- Existing references reused: ").append(bibResult.reusedReferenceCount()).append("\n")
+                    .append("- Citation locations updated: ").append(bibResult.changedCitationLocationCount()).append("\n")
+                    .append("- Existing citation locations verified: ").append(bibResult.verifiedExistingCitationLocationCount()).append("\n")
+                    .append("- Approved recommendations that could not be applied: ").append(bibResult.manualPatches().size()).append("\n");
             if (!loopMap.isEmpty()) {
-                report.append("- Repair loop status: ").append(loopStatus).append("\n")
-                        .append("- Repair loop eligible suggestions: ").append(valueOrDefault(loopMap, "eligibleCount", 0)).append("\n")
-                        .append("- Repaired and accepted: ").append(valueOrDefault(loopMap, "acceptedCount", 0)).append("\n")
-                        .append("- Report only after repair: ").append(valueOrDefault(loopMap, "reportOnlyCount", 0)).append("\n")
+                report.append("- Focused citation review status: ").append(loopStatus).append("\n")
+                        .append("- Recommendations sent for focused review: ").append(valueOrDefault(loopMap, "eligibleCount", 0)).append("\n")
+                        .append("- Revised and accepted: ").append(valueOrDefault(loopMap, "acceptedCount", 0)).append("\n")
+                        .append("- Recommendations not approved after evidence review: ").append(valueOrDefault(loopMap, "reportOnlyCount", 0)).append("\n")
                         .append("- Maximum rounds per suggestion: ").append(valueOrDefault(loopMap, "maxRounds", 0)).append("\n")
-                        .append("- Repair batches: ").append(valueOrDefault(loopMap, "batchCount", 0)).append("\n")
-                        .append("- Repair message: ").append(valueOrDefault(loopMap, "message", "")).append("\n");
+                        .append("- Focused review batches: ").append(valueOrDefault(loopMap, "batchCount", 0)).append("\n")
+                        .append("- Review message: ").append(customerText(String.valueOf(valueOrDefault(loopMap, "message", "")))).append("\n");
             } else {
                 report.append("- Message: ").append(valueOrDefault(criticMap, "message", "")).append("\n");
             }
@@ -591,16 +631,15 @@ public class PaperAssembleService {
             if (batches instanceof List<?> values) {
                 for (Object value : values) {
                     if (!(value instanceof Map<?, ?> batch) || Boolean.TRUE.equals(batch.get("success"))) continue;
-                    report.append("- Failed batch #").append(valueOrDefault(batch, "batchIndex", "?"))
-                            .append(" suggestions=").append(valueOrDefault(batch, "suggestionIds", List.of()))
-                            .append(" attempts=").append(valueOrDefault(batch, "attemptCount", 0))
-                            .append(": ").append(valueOrDefault(batch, "errorReason", "Unknown batch failure."))
+                    report.append("- Review batch #").append(valueOrDefault(batch, "batchIndex", "?"))
+                            .append(" could not be completed after ").append(valueOrDefault(batch, "attemptCount", 0))
+                            .append(" attempts: ").append(valueOrDefault(batch, "errorReason", "Unknown batch failure."))
                             .append("\n");
                 }
             }
             report.append('\n');
         } catch (Exception ex) {
-            report.append("- Status: DEGRADED\n- Failed to parse citation critic diagnostics: ")
+            report.append("- Status: DEGRADED\n- Failed to parse evidence-review diagnostics: ")
                     .append(ex.getMessage()).append("\n\n");
         }
     }
@@ -627,24 +666,23 @@ public class PaperAssembleService {
             Map<String, Object> patch = objectMapper.readValue(suggestion.getPatchJson(), new TypeReference<Map<String, Object>>() {});
             Object closure = patch.get("citationClosure");
             if (closure instanceof Map<?, ?> decision) {
-                report.append("- Citation closure: ").append(valueOrDefault(decision, "status", "REPORT_ONLY"))
+                report.append("- Evidence review: ").append(valueOrDefault(decision, "status", "REPORT_ONLY"))
                         .append(" after ").append(valueOrDefault(decision, "attempts", 0)).append(" round(s)")
-                        .append("; operation=").append(valueOrDefault(decision, "operation", "NONE"))
-                        .append(" - ").append(valueOrDefault(decision, "reason", "No reason recorded."))
+                        .append(" - ").append(customerText(String.valueOf(valueOrDefault(decision, "reason", "No reason recorded."))))
                         .append("\n");
                 return;
             }
             Object critic = patch.get("citationCritic");
             if (critic instanceof Map<?, ?> decision) {
-                report.append("- Citation critic: ").append(valueOrDefault(decision, "verdict", "UNREVIEWED"))
-                        .append(" - ").append(valueOrDefault(decision, "reason", "No reason recorded."))
+                report.append("- Evidence review: ").append(valueOrDefault(decision, "verdict", "UNREVIEWED"))
+                        .append(" - ").append(customerText(String.valueOf(valueOrDefault(decision, "reason", "No reason recorded."))))
                         .append("\n");
                 return;
             }
             Object application = patch.get("applicationDecision");
             if (application instanceof Map<?, ?> decision) {
-                report.append("- Application decision: ").append(valueOrDefault(decision, "status", "REPORT_ONLY"))
-                        .append(" - ").append(valueOrDefault(decision, "reason", "No reason recorded."))
+                report.append("- Application result: ").append(valueOrDefault(decision, "status", "REPORT_ONLY"))
+                        .append(" - ").append(customerText(String.valueOf(valueOrDefault(decision, "reason", "No reason recorded."))))
                         .append("\n");
             }
         } catch (Exception ignored) {
@@ -669,6 +707,33 @@ public class PaperAssembleService {
         }
         report.append("\n### Section Failure Reasons\n\n");
         distribution.forEach((reason, count) -> report.append("- ").append(reason).append(": ").append(count).append("\n"));
+        for (PaperSection section : sections) {
+            if ("POLISHED".equalsIgnoreCase(section.getPolishStatus())) continue;
+            List<String> lintCodes = sectionLintCodes(section);
+            if (!lintCodes.isEmpty()) {
+                report.append("- ").append(section.getTitle()).append(" lint blockers: ")
+                        .append(lintCodes).append("\n");
+            }
+        }
+    }
+
+    private List<String> sectionLintCodes(PaperSection section) {
+        if (section.getReviewJson() == null || section.getReviewJson().isBlank()) return List.of();
+        try {
+            Map<String, Object> review = objectMapper.readValue(
+                    section.getReviewJson(), new TypeReference<Map<String, Object>>() {});
+            Object rawIssues = review.get("lintIssues");
+            if (!(rawIssues instanceof List<?> issues)) return List.of();
+            Set<String> codes = new LinkedHashSet<>();
+            for (Object value : issues) {
+                if (value instanceof Map<?, ?> issue) {
+                    codes.add(String.valueOf(valueOrDefault(issue, "code", "UNKNOWN")));
+                }
+            }
+            return List.copyOf(codes);
+        } catch (Exception ignored) {
+            return List.of();
+        }
     }
 
     private String sectionReasonCode(PaperSection section) {
@@ -738,9 +803,13 @@ public class PaperAssembleService {
                 report.append("- No global review recorded.\n\n");
                 return;
             }
-            report.append("- Issues: ").append(valueOrDefault(reviewMap, "issueCount", "unknown")).append("\n")
+            report.append("- Issues detected: ").append(valueOrDefault(reviewMap, "issueCount", "unknown")).append("\n")
+                    .append("- Safe repairs attempted: ").append(valueOrDefault(reviewMap, "repairAttemptedCount", 0)).append("\n")
+                    .append("- Issues resolved automatically: ").append(valueOrDefault(reviewMap, "resolvedIssueCount", 0)).append("\n")
+                    .append("- Issues remaining in the report: ").append(valueOrDefault(reviewMap, "remainingIssueCount", valueOrDefault(reviewMap, "issueCount", "unknown"))).append("\n")
+                    .append("- Repair status: ").append(valueOrDefault(reviewMap, "repairStatus", "REPORT_ONLY")).append("\n")
                     .append("- Suppressed unverified candidates: ").append(valueOrDefault(reviewMap, "suppressedIssueCount", 0)).append("\n")
-                    .append("- Global-review formula policy: report-only; this stage did not change formulas. Section polishing may still contain accepted formula edits.\n\n");
+                    .append("- Formula and symbol/dimension findings remain report-only; only verified local prose repairs may be applied.\n\n");
             Object warning = reviewMap.get("warning");
             if (warning != null && !String.valueOf(warning).isBlank()) {
                 report.append("- Warning: ").append(warning).append("\n\n");
@@ -750,10 +819,15 @@ public class PaperAssembleService {
                 for (Object item : list) {
                     if (!(item instanceof Map<?, ?> issue)) continue;
                     report.append("- [").append(valueOrDefault(issue, "severity", "minor")).append("] ")
+                            .append("[").append(valueOrDefault(issue, "resolutionStatus", "REPORT_ONLY")).append("] ")
                             .append(valueOrDefault(issue, "type", "LOGIC"))
                             .append(" sections=").append(valueOrDefault(issue, "sectionIds", List.of()))
                             .append(": ").append(valueOrDefault(issue, "message", "")).append("\n")
                             .append("  - Suggested fix: ").append(valueOrDefault(issue, "suggestedFix", "Manual review.")).append("\n");
+                    Object resolutionReason = issue.get("resolutionReason");
+                    if (resolutionReason != null && !String.valueOf(resolutionReason).isBlank()) {
+                        report.append("  - Resolution: ").append(resolutionReason).append("\n");
+                    }
                     Object evidence = issue.get("evidence");
                     if (evidence instanceof List<?> evidenceItems) {
                         for (Object evidenceItem : evidenceItems) {
@@ -799,14 +873,15 @@ public class PaperAssembleService {
     private void appendUploadedBibDedupSummary(StringBuilder report, BibBuildResult bibResult) {
         report.append("\n## Uploaded Bibliography Deduplication\n\n")
                 .append("- Uploaded bibliography entries parsed: ").append(bibResult.existingBibliographyCount()).append("\n")
-                .append("- Selected recommendations before uploaded-bib dedup: ").append(bibResult.novelCards().size() + bibResult.duplicateCards().size()).append("\n")
-                .append("- Novel recommendations after uploaded-bib dedup: ").append(bibResult.novelCards().size()).append("\n")
-                .append("- Already present in uploaded bibliography: ").append(bibResult.duplicateCards().size()).append("\n\n");
+                .append("- References used by accepted recommendations: ").append(bibResult.newReferenceCount() + bibResult.reusedReferenceCount()).append("\n")
+                .append("- New references after DOI/title deduplication: ").append(bibResult.newReferenceCount()).append("\n")
+                .append("- Existing uploaded references reused: ").append(bibResult.reusedReferenceCount()).append("\n\n");
         if (!bibResult.duplicateCards().isEmpty()) {
-            report.append("Already-present recommendations are kept in `suggested.bib` for transparency, but excluded from `suggested-novel.bib`.\n\n");
+            report.append("Already-present or likely conference/journal versions reuse the uploaded bibliography entry and are excluded from `suggested-novel.bib`.\n\n");
             for (Map<String, Object> item : bibResult.duplicateCards()) {
-                report.append("- [card-").append(item.get("cardId")).append("] ").append(item.get("title"))
+                report.append("- ").append(item.get("title"))
                         .append(item.get("year") == null ? "" : " (" + item.get("year") + ")")
+                        .append(item.get("bibKey") == null ? "" : " -> reused `" + item.get("bibKey") + "`")
                         .append("\n");
             }
             report.append('\n');
@@ -832,7 +907,7 @@ public class PaperAssembleService {
         for (PaperTaskLiterature item : supplemental) {
             LiteratureCard card = cardsById.get(item.getCardId());
             if (card == null) continue;
-            report.append("- [card-").append(card.getId()).append("] ").append(card.getTitle())
+            report.append("- ").append(card.getTitle())
                     .append(card.getPublicationYear() == null ? "" : " (" + card.getPublicationYear() + ")")
                     .append(" — score ").append(String.format(java.util.Locale.ROOT, "%.2f", item.getRelevanceScore()))
                     .append(", query: `").append(item.getSourceQuery() == null ? "" : item.getSourceQuery()).append("`\n");
@@ -867,6 +942,29 @@ public class PaperAssembleService {
     private Object valueOrDefault(Map<?, ?> map, String key, Object fallback) {
         Object value = map.get(key);
         return value == null ? fallback : value;
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return value == null ? null : Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private String customerText(String value) {
+        if (value == null) return "";
+        return value
+                .replaceAll("(?i)\\bevidence cards?\\s+\\d+(?:\\s*(?:,|and)\\s*\\d+)*", "the selected supporting papers")
+                .replaceAll("(?i)\\bcards?\\s+\\d+(?:\\s*(?:,|and)\\s*\\d+)*", "the selected literature")
+                .replaceAll("(?i)\\bcard[-\\s]?\\d+\\b", "the selected literature")
+                .replaceAll("(?i)\\bslot[-\\s]?\\d+\\b", "the target claim")
+                .replaceAll("(?i)the selected literature(?:\\s*(?:,|and)\\s*the selected literature)+", "the selected literature")
+                .replaceAll("(?i)citation critic", "evidence review")
+                .replaceAll("(?i)citation closure", "citation review")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private List<LatexLintIssue> validateAssembledTex(String tex, Set<String> existingBibKeys) {

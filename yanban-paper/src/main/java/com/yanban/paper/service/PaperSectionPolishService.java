@@ -32,7 +32,7 @@ public class PaperSectionPolishService {
     private static final Pattern OUTPUT_TAG = Pattern.compile("<output>(.*?)</output>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     private static final Pattern STRUCTURAL_COMMAND = Pattern.compile(
             "\\\\(?:cite|citep|citet|citeauthor|citeyear|parencite|textcite|autocite|ref|eqref|cref|Cref|autoref|pageref|label|includegraphics|bibliography|section|subsection|subsubsection|paragraph|subparagraph)\\*?(?:\\s*\\[[^]]*]){0,2}\\s*\\{([^{}]+)}"
-                    + "|\\\\(?:begin|end)\\s*\\{(?:equation|equation\\*|align|align\\*|aligned|figure|figure\\*|table|table\\*|algorithm|algorithmic|enumerate|itemize|cases|split|gather|gather\\*|multline|multline\\*|IEEEeqnarray)\\}"
+                    + "|\\\\(?:begin|end)\\s*\\{(?:document|equation|equation\\*|align|align\\*|aligned|figure|figure\\*|table|table\\*|algorithm|algorithmic|enumerate|itemize|cases|split|gather|gather\\*|multline|multline\\*|IEEEeqnarray)\\}"
                     + "|\\\\yanbancitationslot\\s*\\{\\d+}");
 
     private final PaperTaskRepository tasks;
@@ -277,11 +277,35 @@ public class PaperSectionPolishService {
             return new CandidateValidation(false, "structural_command_changed",
                     "The candidate changed protected LaTeX structure, labels, refs, cites, or environments.", List.of());
         }
-        List<LatexLintIssue> lintIssues = maskingService.lint(polished);
+        List<LatexLintIssue> lintIssues = subtractInheritedLintIssues(
+                maskingService.lint(original), maskingService.lint(polished));
         if (hasBlocker(lintIssues)) {
             return new CandidateValidation(false, "latex_lint_failed", "LaTeX lint blockers were found: " + lintIssues, lintIssues);
         }
         return new CandidateValidation(true, "", "", lintIssues);
+    }
+
+    private List<LatexLintIssue> subtractInheritedLintIssues(List<LatexLintIssue> original,
+                                                             List<LatexLintIssue> candidate) {
+        Map<String, Integer> inherited = new LinkedHashMap<>();
+        for (LatexLintIssue issue : original == null ? List.<LatexLintIssue>of() : original) {
+            inherited.merge(lintIdentity(issue), 1, Integer::sum);
+        }
+        List<LatexLintIssue> remaining = new ArrayList<>();
+        for (LatexLintIssue issue : candidate == null ? List.<LatexLintIssue>of() : candidate) {
+            String identity = lintIdentity(issue);
+            int count = inherited.getOrDefault(identity, 0);
+            if (count > 0) {
+                inherited.put(identity, count - 1);
+            } else {
+                remaining.add(issue);
+            }
+        }
+        return remaining;
+    }
+
+    private String lintIdentity(LatexLintIssue issue) {
+        return issue.severity() + "\u0000" + issue.code() + "\u0000" + issue.message();
     }
 
     private Review review(PaperTask task, LatexSection section, String researchProfile, String originalText,

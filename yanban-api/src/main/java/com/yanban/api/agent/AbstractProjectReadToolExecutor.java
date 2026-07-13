@@ -34,10 +34,7 @@ abstract class AbstractProjectReadToolExecutor implements ToolExecutor {
     protected Long requireTrustedProject(ToolCall call) {
         Long userId = ToolExecutionContext.getCurrentUserId();
         Long trustedProjectId = ToolExecutionContext.getCurrentProjectId();
-        Long requestedProjectId = call.arguments() == null || !call.arguments().path("projectId").canConvertToLong()
-                ? null : call.arguments().path("projectId").longValue();
-        if (userId == null || trustedProjectId == null || requestedProjectId == null
-                || !trustedProjectId.equals(requestedProjectId)) {
+        if (userId == null || trustedProjectId == null) {
             return null;
         }
         // Re-assert ownership/read-only state at the executor boundary on every call.
@@ -47,7 +44,7 @@ abstract class AbstractProjectReadToolExecutor implements ToolExecutor {
 
     protected ToolResult rejected(ToolCall call) {
         return ToolResult.failure(call.id(), definition().name(), ToolErrorCode.PERMISSION_DENIED,
-                "Project tool requires the authenticated project context and matching projectId.");
+                "Project tool requires an authenticated server-attested Project context.");
     }
 
     protected ObjectNode evidence(ObjectNode output, Long projectId, String relativePath, String version) {

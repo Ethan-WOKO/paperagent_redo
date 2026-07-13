@@ -112,6 +112,25 @@ class AgentToolPolicyEngineTest {
     }
 
     @Test
+    void projectPolicyExposesAllReadOnlyToolsButNotFutureSideEffects() {
+        ToolRegistry registry = new ToolRegistry()
+                .register(new StubTool("project_read", ToolDescriptor.CapabilityProfile.PROJECT,
+                        Set.of("project:read"), Set.of(ToolDescriptor.ResourceScope.PROJECT), true,
+                        ToolDescriptor.SideEffectType.NONE))
+                .register(new StubTool("project_audit", ToolDescriptor.CapabilityProfile.PROJECT,
+                        Set.of("research:project-read"), Set.of(ToolDescriptor.ResourceScope.PROJECT), true,
+                        ToolDescriptor.SideEffectType.READ_ONLY))
+                .register(new StubTool("project_write", ToolDescriptor.CapabilityProfile.PROJECT,
+                        Set.of("project:read"), Set.of(ToolDescriptor.ResourceScope.PROJECT), true,
+                        ToolDescriptor.SideEffectType.MODIFY));
+
+        AgentToolPolicyEngine.Decision decision = new AgentToolPolicyEngine(registry).decideProject(null, null);
+
+        assertThat(decision.allowedTools()).containsExactly("project_read", "project_audit");
+        assertThat(decision.allowedTools()).doesNotContain("project_write");
+    }
+
+    @Test
     void unknownSideEffectsAndHiddenInternalNamesFailClosed() {
         ToolRegistry registry = new ToolRegistry()
                 .register(new StubTool("unknown", ToolDescriptor.CapabilityProfile.CHAT,

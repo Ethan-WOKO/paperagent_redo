@@ -18,6 +18,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -33,13 +35,27 @@ public class PaperCitationApplyService {
     private static final Pattern SAFE_ANCHOR = Pattern.compile("(?s).{8,}");
     private static final Pattern SECTION_COMMAND = Pattern.compile("\\\\(?:section|subsection|subsubsection)\\*?\\s*\\{([^{}]+)}");
     private static final Pattern WORD = Pattern.compile("[\\p{L}\\p{N}]+");
+    private static final Set<String> TITLE_STOPWORDS = Set.of(
+            "a", "an", "and", "for", "in", "of", "on", "the", "to", "toward", "towards", "using", "via", "with");
     private static final double FUZZY_MATCH_THRESHOLD = 0.92;
     private static final double FUZZY_MATCH_MARGIN = 0.05;
 
     private final ObjectMapper objectMapper;
+    private final PaperBibMetadataResolver metadataResolver;
 
     public PaperCitationApplyService(ObjectMapper objectMapper) {
+        this(objectMapper, (PaperBibMetadataResolver) null);
+    }
+
+    @Autowired
+    public PaperCitationApplyService(ObjectMapper objectMapper,
+                                     ObjectProvider<PaperBibMetadataResolver> metadataResolverProvider) {
+        this(objectMapper, metadataResolverProvider == null ? null : metadataResolverProvider.getIfAvailable());
+    }
+
+    PaperCitationApplyService(ObjectMapper objectMapper, PaperBibMetadataResolver metadataResolver) {
         this.objectMapper = objectMapper;
+        this.metadataResolver = metadataResolver;
     }
 
     public CitationApplyResult apply(String polishedTex,
@@ -79,6 +95,8 @@ public class PaperCitationApplyService {
         Map<Long, List<String>> keysBySuggestion = new LinkedHashMap<>();
         Map<String, CardProvenance> newEntries = new LinkedHashMap<>();
         Map<String, String> resolvedNewKeys = new LinkedHashMap<>();
+        Map<String, LiteratureCard> resolvedCards = new LinkedHashMap<>();
+        Map<String, String> reuseReasons = new LinkedHashMap<>();
         List<Map<String, Object>> applied = new ArrayList<>();
         List<Map<String, Object>> manual = new ArrayList<>();
         Set<Long> appliedSuggestionIds = new LinkedHashSet<>();
@@ -91,11 +109,17 @@ public class PaperCitationApplyService {
                 String identity = cardIdentity(card);
                 String key = resolvedNewKeys.get(identity);
                 if (key == null) {
-                    key = resolveKey(card, existingByDoi, existingByTitle, usedKeys);
+                    ResolvedKey resolved = resolveKey(
+                            card, existingByDoi, existingByTitle, existingBibliography, usedKeys);
+                    key = resolved.key();
+                    if ("WORK_FAMILY".equals(resolved.mode())) {
+                        reuseReasons.putIfAbsent(key, "POSSIBLE_CONFERENCE_JOURNAL_VERSION");
+                    }
                     if (!existingByDoi.containsValue(key) && !existingByTitle.containsValue(key)) {
                         resolvedNewKeys.put(identity, key);
                     }
                 }
+                resolvedCards.putIfAbsent(key, card);
                 keys.add(key);
                 if (!existingByDoi.containsValue(key) && !existingByTitle.containsValue(key)) {
                     newEntries.putIfAbsent(key, new CardProvenance(card, new LinkedHashSet<>()));
@@ -125,7 +149,8 @@ public class PaperCitationApplyService {
                             suggestion,
                             keys,
                             "APPLIED",
-                            "Citation closure applied one verified local Introduction patch and its citation atomically.");
+                            "Citation closure applied one verified local Introduction patch and its citation atomically.",
+                            closureResult.citationChanged());
                     appliedStatus.put("matchMode", "CLOSURE_" + stringValue(closure.get("operation")));
                     applied.add(appliedStatus);
                     appliedSuggestionIds.add(suggestion.getId());
@@ -147,7 +172,8 @@ public class PaperCitationApplyService {
                     int markerStart = markerMatches.get(0);
                     SlotReplacement replacement = replaceProtectedSlot(patchedTex, markerStart, slotMarker.length(), keys);
                     patchedTex = replacement.text();
-                    Map<String, Object> appliedStatus = status(suggestion, keys, "APPLIED", "Citation inserted at its protected citation-slot marker.");
+                    Map<String, Object> appliedStatus = status(suggestion, keys, "APPLIED",
+                            "Citation inserted at its protected citation-slot marker.", replacement.citationChanged());
                     appliedStatus.put("matchMode", replacement.matchMode());
                     applied.add(appliedStatus);
                     appliedSuggestionIds.add(suggestion.getId());
@@ -163,9 +189,11 @@ public class PaperCitationApplyService {
                     continue;
                 }
                 String matchedText = patchedTex.substring(match.start(), match.end());
+                boolean citationChanged = !containsAllCitationKeys(matchedText, keys);
                 String replacement = appendCitation(matchedText, citation);
                 patchedTex = patchedTex.substring(0, match.start()) + replacement + patchedTex.substring(match.end());
-                Map<String, Object> appliedStatus = status(suggestion, keys, "APPLIED", "Citation inserted at a unique verified manuscript anchor.");
+                Map<String, Object> appliedStatus = status(suggestion, keys, "APPLIED",
+                        "Citation inserted at a unique verified manuscript anchor.", citationChanged);
                 appliedStatus.put("matchMode", match.mode());
                 applied.add(appliedStatus);
                 appliedSuggestionIds.add(suggestion.getId());
@@ -192,6 +220,12 @@ public class PaperCitationApplyService {
                 item.put("suggestionId", entry.getKey());
                 item.put("bibKey", key);
                 item.put("alreadyPresent", !newEntries.containsKey(key));
+                LiteratureCard card = resolvedCards.get(key);
+                if (card != null) {
+                    item.put("title", card.getTitle());
+                    item.put("year", card.getPublicationYear());
+                }
+                if (reuseReasons.containsKey(key)) item.put("reuseReason", reuseReasons.get(key));
                 bibliography.add(item);
             }
         }
@@ -240,12 +274,14 @@ public class PaperCitationApplyService {
                     "The approved local replacement could not be paired with one unique citation anchor; no text was changed.");
         }
         String matchedText = candidate.substring(citationTarget.start(), citationTarget.end());
+        boolean citationChanged = !containsAllCitationKeys(matchedText, keys);
         String citation = "\\cite{" + String.join(",", keys) + "}";
         String citedText = appendCitation(matchedText, citation);
         return ClosurePatchResult.applied(
                 candidate.substring(0, citationTarget.start())
                         + citedText
-                        + candidate.substring(citationTarget.end()));
+                        + candidate.substring(citationTarget.end()),
+                citationChanged);
     }
 
     private AnchorMatch findExactOrNormalizedAnchor(String tex,
@@ -307,16 +343,18 @@ public class PaperCitationApplyService {
         }
         if (adjacent != null) {
             String merged = mergeKeys(adjacent.keys(), requestedKeys);
+            boolean citationChanged = !containsAllKeys(adjacent.keys(), requestedKeys);
             String updated = tex.substring(0, adjacent.keyStart())
                     + merged
                     + tex.substring(adjacent.keyEnd(), adjacent.commandEnd())
                     + tex.substring(markerStart + markerLength);
-            return new SlotReplacement(updated, "PROTECTED_SLOT_MERGED");
+            return new SlotReplacement(updated, "PROTECTED_SLOT_MERGED", citationChanged);
         }
         String citation = "\\cite{" + String.join(",", new LinkedHashSet<>(requestedKeys)) + "}";
         return new SlotReplacement(
                 tex.substring(0, markerStart) + citation + tex.substring(markerStart + markerLength),
-                "PROTECTED_SLOT");
+                "PROTECTED_SLOT",
+                true);
     }
 
     private String mergeKeys(String existing, List<String> requested) {
@@ -330,21 +368,92 @@ public class PaperCitationApplyService {
         return String.join(",", keys);
     }
 
-    private String resolveKey(LiteratureCard card,
-                              Map<String, String> existingByDoi,
-                              Map<String, String> existingByTitle,
-                              Set<String> usedKeys) {
+    private ResolvedKey resolveKey(LiteratureCard card,
+                                   Map<String, String> existingByDoi,
+                                   Map<String, String> existingByTitle,
+                                   Map<String, LatexBibEntry> existingBibliography,
+                                   Set<String> usedKeys) {
         String doi = normalizeDoi(card.getDoi());
-        if (!doi.isBlank() && existingByDoi.containsKey(doi)) return existingByDoi.get(doi);
+        if (!doi.isBlank() && existingByDoi.containsKey(doi)) {
+            return new ResolvedKey(existingByDoi.get(doi), "EXACT_DOI");
+        }
         String title = titleFingerprint(card.getTitle());
-        if (!title.isBlank() && existingByTitle.containsKey(title)) return existingByTitle.get(title);
+        if (!title.isBlank() && existingByTitle.containsKey(title)) {
+            return new ResolvedKey(existingByTitle.get(title), "EXACT_TITLE");
+        }
+        String familyKey = findWorkFamilyKey(card, existingBibliography);
+        if (familyKey != null) return new ResolvedKey(familyKey, "WORK_FAMILY");
         String base = "yb_" + slug(firstAuthor(card)) + "_" + (card.getPublicationYear() == null ? "nd" : card.getPublicationYear());
         if (base.equals("yb_paper_nd")) base = "yb_reference_nd";
         String key = base;
         int suffix = 2;
         while (usedKeys.contains(key)) key = base + "_" + suffix++;
         usedKeys.add(key);
-        return key;
+        return new ResolvedKey(key, "NEW");
+    }
+
+    private String findWorkFamilyKey(LiteratureCard card,
+                                     Map<String, LatexBibEntry> existingBibliography) {
+        if (card == null || card.getPublicationYear() == null || existingBibliography == null) return null;
+        Set<String> candidateTitle = significantTitleTokens(card.getTitle());
+        Set<String> candidateAuthors = authorSurnames(authors(card));
+        if (candidateTitle.size() < 4 || candidateAuthors.size() < 2) return null;
+
+        String bestKey = null;
+        double bestScore = 0;
+        for (Map.Entry<String, LatexBibEntry> item : existingBibliography.entrySet()) {
+            Map<String, String> fields = item.getValue().fields() == null ? Map.of() : item.getValue().fields();
+            Integer year = parseYear(fields.get("year"));
+            if (year == null || Math.abs(card.getPublicationYear() - year) > 2) continue;
+            Set<String> existingTitle = significantTitleTokens(fields.get("title"));
+            Set<String> existingAuthors = authorSurnames(fields.get("author"));
+            if (existingTitle.size() < 4 || existingAuthors.size() < 2) continue;
+
+            int titleOverlap = intersectionSize(candidateTitle, existingTitle);
+            double titleContainment = (double) titleOverlap / Math.min(candidateTitle.size(), existingTitle.size());
+            double titleJaccard = (double) titleOverlap /
+                    (candidateTitle.size() + existingTitle.size() - titleOverlap);
+            int authorOverlap = intersectionSize(candidateAuthors, existingAuthors);
+            double authorContainment = (double) authorOverlap /
+                    Math.min(candidateAuthors.size(), existingAuthors.size());
+            if (titleContainment < 0.85 || titleJaccard < 0.55 || authorContainment < 0.75) continue;
+
+            double score = titleContainment + titleJaccard + authorContainment;
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = item.getKey();
+            }
+        }
+        return bestKey;
+    }
+
+    private Set<String> significantTitleTokens(String title) {
+        Set<String> tokens = new LinkedHashSet<>(words(title));
+        tokens.removeAll(TITLE_STOPWORDS);
+        return tokens;
+    }
+
+    private Set<String> authorSurnames(String authorText) {
+        Set<String> result = new LinkedHashSet<>();
+        if (authorText == null || authorText.isBlank()) return result;
+        for (String author : authorText.split("(?i)\\s+and\\s+")) {
+            String familyPart = author.contains(",") ? author.substring(0, author.indexOf(',')) : author;
+            List<String> tokens = words(familyPart.replaceAll("[{}]", " "));
+            if (!tokens.isEmpty()) result.add(tokens.get(tokens.size() - 1));
+        }
+        return result;
+    }
+
+    private Integer parseYear(String value) {
+        if (value == null) return null;
+        Matcher matcher = Pattern.compile("(?:19|20)\\d{2}").matcher(value);
+        return matcher.find() ? Integer.parseInt(matcher.group()) : null;
+    }
+
+    private int intersectionSize(Set<String> left, Set<String> right) {
+        int count = 0;
+        for (String value : left) if (right.contains(value)) count++;
+        return count;
     }
 
     private String appendCitation(String anchor, String citation) {
@@ -526,28 +635,70 @@ public class PaperCitationApplyService {
     }
 
     private Map<String, Object> status(Suggestion suggestion, List<String> keys, String status, String message) {
+        return status(suggestion, keys, status, message, false);
+    }
+
+    private Map<String, Object> status(Suggestion suggestion, List<String> keys, String status, String message,
+                                       boolean citationChanged) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("suggestionId", suggestion.getId());
         result.put("status", status);
         result.put("bibKeys", keys);
         result.put("message", message);
         result.put("anchor", parsePatch(suggestion.getPatchJson()).getOrDefault("anchor", ""));
+        result.put("citationChanged", citationChanged);
         return result;
     }
 
     private String bibEntry(String key, LiteratureCard card) {
-        boolean proceedings = notBlank(card.getVenue())
-                && (card.getVenue().toLowerCase(Locale.ROOT).contains("conference")
-                || card.getVenue().toLowerCase(Locale.ROOT).contains("proceedings"));
+        PaperBibMetadataResolver.BibMetadata metadata = resolvedMetadata(card);
+        boolean proceedings = "inproceedings".equalsIgnoreCase(metadata.entryType());
+        String container = proceedings && notBlank(metadata.eventTitle())
+                ? metadata.eventTitle() : metadata.containerTitle();
         StringBuilder bib = new StringBuilder(proceedings ? "@inproceedings{" : "@article{").append(key).append(",\n")
                 .append("  title={").append(escapeBib(card.getTitle())).append("},\n")
                 .append("  author={").append(escapeBib(authors(card))).append("},\n");
-        if (card.getPublicationYear() != null) bib.append("  year={").append(card.getPublicationYear()).append("},\n");
-        if (notBlank(card.getVenue())) bib.append(proceedings ? "  booktitle={" : "  journal={")
-                .append(escapeBib(card.getVenue())).append("},\n");
+        if (metadata.publicationYear() != null) bib.append("  year={").append(metadata.publicationYear()).append("},\n");
+        if (notBlank(container)) bib.append(proceedings ? "  booktitle={" : "  journal={")
+                .append(escapeBib(container)).append("},\n");
+        if (notBlank(metadata.volume())) bib.append("  volume={").append(escapeBib(metadata.volume())).append("},\n");
+        if (notBlank(metadata.issue())) bib.append("  number={").append(escapeBib(metadata.issue())).append("},\n");
+        if (notBlank(metadata.pages())) bib.append("  pages={").append(escapeBib(bibPages(metadata.pages()))).append("},\n");
+        if (notBlank(metadata.publisher())) bib.append("  publisher={").append(escapeBib(metadata.publisher())).append("},\n");
         if (notBlank(card.getDoi())) bib.append("  doi={").append(escapeBib(card.getDoi())).append("},\n");
-        if (notBlank(card.getUrl())) bib.append("  url={").append(escapeBib(card.getUrl())).append("},\n");
+        if (notBlank(metadata.url())) bib.append("  url={").append(escapeBib(metadata.url())).append("},\n");
         return bib.append("}\n\n").toString();
+    }
+
+    private PaperBibMetadataResolver.BibMetadata resolvedMetadata(LiteratureCard card) {
+        try {
+            return metadataResolver == null
+                    ? PaperBibMetadataResolver.BibMetadata.fromCard(card)
+                    : metadataResolver.resolve(card);
+        } catch (Exception ignored) {
+            return PaperBibMetadataResolver.BibMetadata.fromCard(card);
+        }
+    }
+
+    private String bibPages(String pages) {
+        return pages == null ? "" : pages.replaceAll("(?<=\\d)-(?=\\d)", "--");
+    }
+
+    private boolean containsAllCitationKeys(String text, List<String> requestedKeys) {
+        Matcher matcher = CITE_COMMAND.matcher(text == null ? "" : text);
+        Set<String> present = new LinkedHashSet<>();
+        while (matcher.find()) {
+            for (String key : matcher.group(1).split(",")) if (!key.isBlank()) present.add(key.trim());
+        }
+        return present.containsAll(requestedKeys);
+    }
+
+    private boolean containsAllKeys(String existingKeys, List<String> requestedKeys) {
+        Set<String> present = new LinkedHashSet<>();
+        for (String key : (existingKeys == null ? "" : existingKeys).split(",")) {
+            if (!key.isBlank()) present.add(key.trim());
+        }
+        return present.containsAll(requestedKeys);
     }
 
     private String provenanceBlock(String key, CardProvenance provenance) {
@@ -612,6 +763,8 @@ public class PaperCitationApplyService {
     private boolean notBlank(String value) { return value != null && !value.isBlank(); }
     private String normalizeFilename(String filename) { return notBlank(filename) && filename.toLowerCase(Locale.ROOT).endsWith(".bib") ? filename : "references.bib"; }
 
+    private record ResolvedKey(String key, String mode) {}
+
     public record CitationApplyResult(String polishedTex,
                                       String mergedBib,
                                       String novelBib,
@@ -623,17 +776,34 @@ public class PaperCitationApplyService {
                                       Set<String> newBibKeys,
                                       String bibFilename) {
         public int acceptedSuggestionCount() { return bibliography.stream().map(item -> item.get("suggestionId")).collect(Collectors.toSet()).size(); }
+        public int newReferenceCount() { return newBibKeys == null ? 0 : newBibKeys.size(); }
+        public int reusedExistingReferenceCount() {
+            Set<Object> appliedIds = appliedPatches.stream().map(item -> item.get("suggestionId")).collect(Collectors.toSet());
+            return (int) bibliography.stream()
+                    .filter(item -> Boolean.TRUE.equals(item.get("alreadyPresent")))
+                    .filter(item -> appliedIds.contains(item.get("suggestionId")))
+                    .map(item -> item.get("bibKey"))
+                    .distinct()
+                    .count();
+        }
+        public int changedCitationLocationCount() {
+            return (int) appliedPatches.stream().filter(item -> Boolean.TRUE.equals(item.get("citationChanged"))).count();
+        }
+        public int verifiedExistingCitationLocationCount() {
+            return appliedPatches.size() - changedCitationLocationCount();
+        }
     }
 
     private record CardProvenance(LiteratureCard card, Set<Long> suggestionIds) {}
     private record CitationMatch(int keyStart, int keyEnd, int commandEnd, String keys) {}
-    private record SlotReplacement(String text, String matchMode) {}
-    private record ClosurePatchResult(boolean applied, String text, String status, String message) {
-        private static ClosurePatchResult applied(String text) {
-            return new ClosurePatchResult(true, text, "APPLIED", "");
+    private record SlotReplacement(String text, String matchMode, boolean citationChanged) {}
+    private record ClosurePatchResult(boolean applied, String text, String status, String message,
+                                      boolean citationChanged) {
+        private static ClosurePatchResult applied(String text, boolean citationChanged) {
+            return new ClosurePatchResult(true, text, "APPLIED", "", citationChanged);
         }
         private static ClosurePatchResult failed(String status, String message) {
-            return new ClosurePatchResult(false, "", status, message);
+            return new ClosurePatchResult(false, "", status, message, false);
         }
     }
     private record Scope(int start, int end) {}

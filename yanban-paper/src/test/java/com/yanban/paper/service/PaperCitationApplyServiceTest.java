@@ -151,6 +151,98 @@ class PaperCitationApplyServiceTest {
     }
 
     @Test
+    void writesResolvedVolumeIssuePagesPublisherAndDoiUrl() {
+        LiteratureCard card = card(201L, "10.1000/complete", "Complete Metadata Evidence");
+        card.setUrl("https://openalex.org/W1");
+        PaperBibMetadataResolver resolver = ignored -> new PaperBibMetadataResolver.BibMetadata(
+                "article", "IEEE Transactions on Testing", "", "57", "6", "3552-3562",
+                "IEEE", 2021, "https://doi.org/10.1000/complete");
+        PaperCitationApplyService metadataService = new PaperCitationApplyService(new ObjectMapper(), resolver);
+        Suggestion accepted = suggestion(201L, "ACCEPTED", true, "A stable metadata citation anchor.");
+
+        PaperCitationApplyService.CitationApplyResult result = metadataService.apply(
+                "A stable metadata citation anchor.", "", "refs.bib", Map.of(), List.of(accepted),
+                Map.of(201L, List.of(card)));
+
+        assertThat(result.novelBib())
+                .contains("journal={IEEE Transactions on Testing}")
+                .contains("volume={57}")
+                .contains("number={6}")
+                .contains("pages={3552--3562}")
+                .contains("publisher={IEEE}")
+                .contains("url={https://doi.org/10.1000/complete}")
+                .doesNotContain("openalex.org");
+    }
+
+    @Test
+    void distinguishesNewReferencesFromVerifiedExistingCitationLocations() {
+        LiteratureCard card = card(202L, "10.1000/existing", "Existing Citation Evidence");
+        LatexBibEntry existing = new LatexBibEntry("refExisting", "article",
+                Map.of("doi", "10.1000/existing", "title", "Existing Citation Evidence"),
+                "@article{refExisting,doi={10.1000/existing}}", "refs.bib");
+        Suggestion accepted = suggestion(202L, "ACCEPTED", true, "The claim already cites the evidence.");
+        String tex = "The claim already cites the evidence \\cite{refExisting} \\yanbancitationslot{202}.";
+
+        PaperCitationApplyService.CitationApplyResult result = service.apply(
+                tex, existing.rawText(), "refs.bib", Map.of("refExisting", existing), List.of(accepted),
+                Map.of(202L, List.of(card)));
+
+        assertThat(result.newReferenceCount()).isZero();
+        assertThat(result.reusedExistingReferenceCount()).isEqualTo(1);
+        assertThat(result.changedCitationLocationCount()).isZero();
+        assertThat(result.verifiedExistingCitationLocationCount()).isEqualTo(1);
+        assertThat(result.appliedPatches()).singleElement()
+                .satisfies(item -> assertThat(item.get("citationChanged")).isEqualTo(false));
+    }
+
+    @Test
+    void reusesUploadedJournalKeyForLikelyConferenceVersion() {
+        LiteratureCard conference = card(
+                203L, "10.1109/conference.2022.1", "Polarimetric FDA-MIMO Radar Detection");
+        conference.setAuthors("[\"Massimo Rosamilia\",\"Lan Lan\",\"Augusto Aubry\",\"Antonio De Maio\"]");
+        conference.setPublicationYear(2022);
+        LatexBibEntry journal = new LatexBibEntry("ref12", "article", Map.of(
+                "title", "Adaptive Target Detection With Polarimetric FDA-MIMO Radar",
+                "author", "Lan, Lan and Rosamilia, Massimo and Aubry, Augusto and De Maio, Antonio and Liao, Guisheng and Xu, Jingwei",
+                "year", "2023",
+                "doi", "10.1109/taes.2022.1"), "@article{ref12}", "refs.bib");
+        Suggestion accepted = suggestion(203L, "ACCEPTED", true, "A stable detection citation anchor.");
+
+        PaperCitationApplyService.CitationApplyResult result = service.apply(
+                "A stable detection citation anchor.", journal.rawText(), "refs.bib",
+                Map.of("ref12", journal), List.of(accepted), Map.of(203L, List.of(conference)));
+
+        assertThat(result.polishedTex()).contains("\\cite{ref12}");
+        assertThat(result.newReferenceCount()).isZero();
+        assertThat(result.novelBib()).isEmpty();
+        assertThat(result.bibliography()).singleElement().satisfies(item -> {
+            assertThat(item.get("bibKey")).isEqualTo("ref12");
+            assertThat(item.get("reuseReason")).isEqualTo("POSSIBLE_CONFERENCE_JOURNAL_VERSION");
+        });
+    }
+
+    @Test
+    void doesNotMergeRelatedTitlesWhenAuthorsDoNotOverlap() {
+        LiteratureCard candidate = card(
+                204L, "10.1109/conference.2022.2", "Polarimetric FDA-MIMO Radar Detection");
+        candidate.setAuthors("[\"Alice Smith\",\"Carol Jones\"]");
+        candidate.setPublicationYear(2022);
+        LatexBibEntry existing = new LatexBibEntry("ref12", "article", Map.of(
+                "title", "Adaptive Target Detection With Polarimetric FDA-MIMO Radar",
+                "author", "Lan, Lan and Rosamilia, Massimo and Aubry, Augusto and De Maio, Antonio",
+                "year", "2023"), "@article{ref12}", "refs.bib");
+        Suggestion accepted = suggestion(204L, "ACCEPTED", true, "A different stable detection anchor.");
+
+        PaperCitationApplyService.CitationApplyResult result = service.apply(
+                "A different stable detection anchor.", existing.rawText(), "refs.bib",
+                Map.of("ref12", existing), List.of(accepted), Map.of(204L, List.of(candidate)));
+
+        assertThat(result.polishedTex()).contains("\\cite{yb_").doesNotContain("\\cite{ref12}");
+        assertThat(result.newReferenceCount()).isEqualTo(1);
+        assertThat(result.novelBib()).contains("Polarimetric FDA-MIMO Radar Detection");
+    }
+
+    @Test
     void appliesApprovedClosureReplacementAndCitationAtomically() throws Exception {
         LiteratureCard card = card(21L, "10.1000/closure", "Closure Evidence");
         String original = "Prior work studies polarimetric target estimation in challenging environments.";

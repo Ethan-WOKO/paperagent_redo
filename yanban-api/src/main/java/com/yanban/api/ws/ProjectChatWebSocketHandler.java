@@ -109,7 +109,10 @@ public class ProjectChatWebSocketHandler extends TextWebSocketHandler {
                     response.navigationUrl(),
                     request.clientRequestId(),
                     response.assistantContent(),
-                    response.projectEvidence()
+                    response.projectEvidence(),
+                    response.completionStatus(),
+                    response.stopReason(),
+                    response.outcome()
             ));
         } catch (Exception ex) {
             log.warn("Project WebSocket execution threw wsSessionId={} userId={} projectId={} chatSessionId={} clientRequestId={} errorType={}",

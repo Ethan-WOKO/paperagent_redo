@@ -2,6 +2,8 @@ package com.yanban.core.agent;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -36,6 +38,13 @@ public class AgentSession {
     @Column(name = "rag_disabled", nullable = false)
     private Boolean ragDisabled;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "scope", nullable = false, length = 32)
+    private AgentSessionScope scope;
+
+    @Column(name = "project_id")
+    private Long projectId;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -49,12 +58,19 @@ public class AgentSession {
 
     public AgentSession(Long userId, String title, String modelProviderSnapshot, String modelSnapshot,
                         Integer maxSteps, Boolean ragDisabled) {
+        this(userId, title, modelProviderSnapshot, modelSnapshot, maxSteps, ragDisabled, AgentSessionScope.WORKSPACE, null);
+    }
+
+    public AgentSession(Long userId, String title, String modelProviderSnapshot, String modelSnapshot,
+                        Integer maxSteps, Boolean ragDisabled, AgentSessionScope scope, Long projectId) {
         this.userId = userId;
         this.title = title;
         this.modelProviderSnapshot = modelProviderSnapshot;
         this.modelSnapshot = modelSnapshot;
         this.maxSteps = maxSteps;
         this.ragDisabled = ragDisabled;
+        this.scope = scope == null ? AgentSessionScope.WORKSPACE : scope;
+        this.projectId = projectId;
     }
 
     public Long getId() { return id; }
@@ -64,6 +80,8 @@ public class AgentSession {
     public String getModelSnapshot() { return modelSnapshot; }
     public Integer getMaxSteps() { return maxSteps; }
     public Boolean getRagDisabled() { return ragDisabled; }
+    public AgentSessionScope getScope() { return scope; }
+    public Long getProjectId() { return projectId; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 

@@ -40,7 +40,10 @@ public final class ResearchToolContracts {
                             Map.of(), Set.of("relativePaths"), Set.of(),
                             Map.of("maxRowsPerFile", new ResearchToolInputPolicy.IntegerRange(1, 500))),
                     ResearchToolItemType.EXPERIMENT_SUMMARY, new ResearchBudget(30, 300, 400, 5_000_000)),
-            contract(PROJECT_CROSS_MATERIAL_SEARCH, "Find one concept across paper, code, configuration, and experiment material.",
+            contract(PROJECT_CROSS_MATERIAL_SEARCH, "Find one concept across paper, code, configuration, and experiment material. "
+                            + "For a large or unfamiliar Project, first call project_manifest, select concrete relevant files, "
+                            + "then pass them in relativePaths; prefer maxMatches 10-20 to control input and result cost. "
+                            + "Do not repeatedly search the entire Project after an input/result byte-budget error.",
                     policy(Set.of("query"), Set.of("query", "relativePaths", "maxMatches"),
                             Map.of("relativePaths", 50), Map.of("relativePaths", 256), Map.of("query", 200),
                             Set.of("relativePaths"), Set.of(),

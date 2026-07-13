@@ -4,12 +4,15 @@ import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
 import java.util.List;
 import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 /** Authenticated API adapter that is the only HTTP path permitted to bind a Project to runtime. */
 @Service
 public class ProjectAgentRuntimeService {
+    private static final Logger log = LoggerFactory.getLogger(ProjectAgentRuntimeService.class);
     private static final int CANONICAL_CHUNK_CODE_POINTS = 64;
 
     private final ProjectService projects;
@@ -22,12 +25,33 @@ public class ProjectAgentRuntimeService {
         this.planAgentService = planAgentService;
     }
 
+    public AgentSessionResponse createSession(Long userId, Long projectId, CreateSessionRequest request) {
+        projects.manifest(userId, projectId);
+        return agentService.createProjectSession(userId, projectId, request, "Project #" + projectId);
+    }
+
+    public List<AgentSessionResponse> listSessions(Long userId, Long projectId) {
+        projects.manifest(userId, projectId);
+        return agentService.listProjectSessions(userId, projectId);
+    }
+
     public AgentPlanResponse createPlan(Long userId, Long projectId, Long sessionId, CreateAgentPlanRequest request) {
-        return planAgentService.createProjectPlan(userId, projectId, sessionId, request);
+        projects.manifest(userId, projectId);
+        agentService.getOwnedProjectSession(userId, projectId, sessionId);
+        log.info("Project Plan request accepted userId={} projectId={} sessionId={} autoExecute={}",
+                userId, projectId, sessionId, request == null ? null : request.autoExecute());
+        try {
+            return planAgentService.createProjectPlan(userId, projectId, sessionId, request);
+        } catch (RuntimeException ex) {
+            log.warn("Project Plan request failed userId={} projectId={} sessionId={} errorType={} error={}",
+                    userId, projectId, sessionId, ex.getClass().getSimpleName(), abbreviate(ex.getMessage()));
+            throw ex;
+        }
     }
 
     public SendMessageResponse send(Long userId, Long projectId, Long sessionId, SendMessageRequest request) {
         var manifest = projects.manifest(userId, projectId);
+        agentService.getOwnedProjectSession(userId, projectId, sessionId);
         SendMessageResponse response = agentService.sendProjectMessage(userId, sessionId, request,
                 new ProjectRuntimeContext(userId, projectId));
         return projectResponse(response, manifest);
@@ -45,6 +69,7 @@ public class ProjectAgentRuntimeService {
                                              Consumer<String> canonicalTokenConsumer,
                                              Consumer<String> processConsumer) {
         var manifest = projects.manifest(userId, projectId);
+        agentService.getOwnedProjectSession(userId, projectId, sessionId);
         SendMessageResponse response = agentService.sendProjectMessageStreaming(
                 userId,
                 sessionId,
@@ -83,7 +108,8 @@ public class ProjectAgentRuntimeService {
                                 && file.sha256().equals(item.hash()))))
                 .toList();
         return new SendMessageResponse(response.success(), response.assistantContent(), response.steps(), response.errorMessage(),
-                response.navigationUrl(), response.messages(), response.debug(), current);
+                response.navigationUrl(), response.messages(), response.debug(), current,
+                response.completionStatus(), response.stopReason(), response.outcome());
     }
 
     private boolean isSafeRelativePath(String value) {
@@ -97,6 +123,14 @@ public class ProjectAgentRuntimeService {
             }
         }
         return true;
+    }
+
+    private String abbreviate(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "unspecified";
+        }
+        String normalized = value.trim().replaceAll("\\s+", " ");
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 497) + "...";
     }
 
     public List<ProjectEvidenceResponse> listPlanEvidence(Long userId, Long projectId, Long planId) {

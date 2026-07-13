@@ -6,6 +6,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.project.LocalServerProjectRootProvider;
 import com.yanban.api.project.Project;
+import com.yanban.api.project.ProjectFileEntry;
+import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectRepository;
 import com.yanban.api.project.ProjectService;
 import com.yanban.api.project.ProjectStorageProperties;
@@ -13,6 +15,7 @@ import com.yanban.core.tool.ToolCall;
 import com.yanban.core.tool.ToolExecutionContext;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -56,6 +59,52 @@ class ResearchProjectToolExecutorTest {
         ToolExecutionContext.setResolvedAllowedTools(Set.of("project_latex_outline"));
         var unsafe = json.createObjectNode().putArray("relativePaths").add("../secret.tex");
         assertThat(executor.execute(new ToolCall("c", "project_latex_outline", unsafe)).errorCode().name()).isEqualTo("VALIDATION_ERROR");
+    }
+
+    @Test
+    void canonicalizesOneModelSuppliedRelativePathBeforeFrozenContractValidation() throws Exception {
+        ProjectService service = serviceWithFixture(); authorizeAll();
+        ProjectLatexOutlineToolExecutor executor = new ProjectLatexOutlineToolExecutor(service, json);
+        var scalar = json.createObjectNode().put("relativePaths", "paper.tex").put("includeFormulaReferences", true);
+        var unsafeScalar = json.createObjectNode().put("relativePaths", "../secret.tex");
+
+        var result = executor.execute(new ToolCall("scalar", "project_latex_outline", scalar));
+        var unsafe = executor.execute(new ToolCall("unsafe-scalar", "project_latex_outline", unsafeScalar));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output().path("items")).isNotEmpty();
+        assertThat(unsafe.success()).isFalse();
+        assertThat(unsafe.errorCode().name()).isEqualTo("VALIDATION_ERROR");
+    }
+
+    @Test
+    void latexOutlineTypedItemsPreserveEveryObservedSubsectionForDeterministicCounting() throws Exception {
+        ProjectService service = serviceWithFixture();
+        Files.writeString(tempDir.resolve("server/study/paper.tex"), """
+                \\section{Problem}
+                \\subsection{Joint Optimization}
+                \\subsection{Hierarchical Solution}
+                \\section{Simulation}
+                \\subsection{Configuration}
+                \\subsection{Scenarios}
+                \\subsection{Complexity}
+                """);
+        authorizeAll();
+
+        var result = new ProjectLatexOutlineToolExecutor(service, json).execute(
+                new ToolCall("outline-count", "project_latex_outline", paths("paper.tex")));
+
+        assertThat(result.success()).isTrue();
+        var subsectionItems = new java.util.ArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        result.output().path("items").forEach(item -> {
+            if ("SECTION".equals(item.path("kind").asText())
+                    && "subsection".equals(item.path("identifier").asText())) {
+                subsectionItems.add(item);
+            }
+        });
+        assertThat(subsectionItems).hasSize(5);
+        assertThat(subsectionItems).extracting(item -> item.path("detail").asText())
+                .containsExactly("Joint Optimization", "Hierarchical Solution", "Configuration", "Scenarios", "Complexity");
     }
 
     @Test
@@ -118,6 +167,33 @@ class ResearchProjectToolExecutorTest {
         assertThat(result.output().path("status").asText()).isEqualTo("COMPLETE");
         assertThat(result.output().path("items").size()).isEqualTo(1);
         assertThat(result.output().path("items").get(0).path("linkedEvidence").size()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void largeProjectRequiresExplicitRelativePathsBeforeCrossMaterialSearch() {
+        ProjectService service = org.mockito.Mockito.mock(ProjectService.class);
+        when(service.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(
+                42L,
+                "a".repeat(64),
+                List.of(
+                        new ProjectFileEntry("paper.tex", 3_000_001L, Instant.EPOCH, "b".repeat(64)),
+                        new ProjectFileEntry("code.py", 3_000_001L, Instant.EPOCH, "c".repeat(64))
+                )));
+        authorizeAll();
+
+        var result = new ProjectCrossMaterialSearchToolExecutor(service, json).execute(new ToolCall(
+                "large-cross",
+                "project_cross_material_search",
+                json.createObjectNode().put("query", "objective").put("maxMatches", 20)));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode().name()).isEqualTo("VALIDATION_ERROR");
+        assertThat(result.errorMessage())
+                .contains("requires relativePaths")
+                .contains("Do not retry the whole-Project scope");
+        org.mockito.Mockito.verify(service, org.mockito.Mockito.never())
+                .readFile(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test

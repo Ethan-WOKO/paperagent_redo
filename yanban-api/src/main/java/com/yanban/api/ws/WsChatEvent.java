@@ -1,6 +1,8 @@
 package com.yanban.api.ws;
 
 import com.yanban.api.agent.AgentDebugPayload;
+import com.yanban.api.agent.AgentStopReason;
+import com.yanban.api.agent.CompletionStatus;
 import com.yanban.api.agent.ProjectEvidenceResponse;
 import java.util.List;
 
@@ -14,8 +16,18 @@ public record WsChatEvent(
         String clientRequestId,
         AgentDebugPayload debug,
         String assistantContent,
-        List<ProjectEvidenceResponse> projectEvidence
+        List<ProjectEvidenceResponse> projectEvidence,
+        CompletionStatus completionStatus,
+        AgentStopReason stopReason,
+        String outcome
 ) {
+    public WsChatEvent(String type, String content, Long sessionId, String error, String finishReason,
+                       String navigationUrl, String clientRequestId, AgentDebugPayload debug,
+                       String assistantContent, List<ProjectEvidenceResponse> projectEvidence) {
+        this(type, content, sessionId, error, finishReason, navigationUrl, clientRequestId, debug,
+                assistantContent, projectEvidence, null, null, null);
+    }
+
     public static WsChatEvent ack(Long sessionId, String clientRequestId) {
         return new WsChatEvent("ack", null, sessionId, null, null, null, clientRequestId, null, null, null);
     }
@@ -51,9 +63,23 @@ public record WsChatEvent(
                                           String clientRequestId,
                                           String assistantContent,
                                           List<ProjectEvidenceResponse> projectEvidence) {
+        return projectDone(sessionId, finishReason, navigationUrl, clientRequestId, assistantContent,
+                projectEvidence, null, null, null);
+    }
+
+    public static WsChatEvent projectDone(Long sessionId,
+                                          String finishReason,
+                                          String navigationUrl,
+                                          String clientRequestId,
+                                          String assistantContent,
+                                          List<ProjectEvidenceResponse> projectEvidence,
+                                          CompletionStatus completionStatus,
+                                          AgentStopReason stopReason,
+                                          String outcome) {
         return new WsChatEvent("done", null, sessionId, null, finishReason, navigationUrl, clientRequestId, null,
                 assistantContent,
-                projectEvidence == null ? List.of() : List.copyOf(projectEvidence));
+                projectEvidence == null ? List.of() : List.copyOf(projectEvidence),
+                completionStatus, stopReason, outcome);
     }
 
     public static WsChatEvent error(Long sessionId, String error, String clientRequestId) {

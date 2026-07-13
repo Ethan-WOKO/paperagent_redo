@@ -198,7 +198,9 @@ class LiteratureServiceTest {
                         )
                 ));
 
-        List<LiteratureSearchResult> selected = literatureService.retrieveForTask(99L, profile, 10, 1, 1);
+        String uploadedBibtex = "@article{existing,title={Hybrid retrieval for RAG},doi={10.1000/rag}}";
+        List<LiteratureSearchResult> selected = literatureService.retrieveForTask(
+                99L, profile, 10, 1, 1, uploadedBibtex, LiteratureCardAnalysisService.ProgressListener.NOOP);
 
         assertThat(selected).hasSize(1);
         assertThat(selected.get(0).card().getDoi()).isEqualTo("10.1000/rag");
@@ -207,6 +209,7 @@ class LiteratureServiceTest {
                 request.query().contains("retrieval augmented generation")
                         && request.goal().contains("论文润色")
                         && request.topK() == 1
+                        && uploadedBibtex.equals(request.existingBibtex())
         ));
         List<PaperTaskLiterature> savedRelations = relations.findByTaskIdOrderByRelevanceScoreDesc(99L);
         assertThat(savedRelations).hasSize(2);

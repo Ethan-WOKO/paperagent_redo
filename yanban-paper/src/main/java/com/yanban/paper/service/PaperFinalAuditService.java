@@ -17,6 +17,8 @@ public class PaperFinalAuditService {
     private static final Pattern CITE = Pattern.compile(
             "\\\\(?:cite|citep|citet|parencite|textcite|autocite)\\*?(?:\\s*\\[[^]]*]){0,2}\\s*\\{([^{}]+)}");
     private static final Pattern BIB_ENTRY = Pattern.compile("(?m)^\\s*@[A-Za-z]+\\s*\\{\\s*([^,\\s]+)");
+    private static final Pattern DOI_FIELD = Pattern.compile("(?im)\\bdoi\\s*=\\s*[\\{\"]([^}\"]+)");
+    private static final Pattern BIBLIOGRAPHY_COMMAND = Pattern.compile("\\\\bibliography\\s*\\{([^{}]+)}");
     private static final Pattern LABEL = Pattern.compile("\\\\label\\s*\\{([^{}]+)}");
     private static final Pattern REF = Pattern.compile("\\\\(?:ref|eqref|cref|Cref|autoref|pageref)\\*?\\s*\\{([^{}]+)}");
     private static final Pattern SLOT = Pattern.compile("\\\\yanbancitationslot\\s*\\{\\d+}");
@@ -37,6 +39,11 @@ public class PaperFinalAuditService {
         if (bibliographyKeys.size() != bibliographyKeyList.size()) {
             issues.add(new AuditIssue("DUPLICATE_BIBLIOGRAPHY_KEY", "blocker",
                     "The merged bibliography defines the same key more than once."));
+        }
+        List<String> doiList = listValues(DOI_FIELD, finalBib).stream().map(this::normalizeDoi).filter(value -> !value.isBlank()).toList();
+        if (new LinkedHashSet<>(doiList).size() != doiList.size()) {
+            issues.add(new AuditIssue("DUPLICATE_BIBLIOGRAPHY_DOI", "major",
+                    "The merged bibliography contains the same DOI more than once."));
         }
         Set<String> citationKeys = new LinkedHashSet<>();
         Matcher citeMatcher = CITE.matcher(activeTex);
@@ -77,6 +84,7 @@ public class PaperFinalAuditService {
 
         validateRecommendedBlocks(finalBib, issues);
         validateAppliedPatches(activeTex, citationResult, issues);
+        validateBibliographyFilename(activeTex, citationResult, issues);
 
         String status = issues.stream().anyMatch(issue -> "blocker".equals(issue.severity()) || "major".equals(issue.severity()))
                 ? "FAIL"
@@ -86,6 +94,10 @@ public class PaperFinalAuditService {
         counts.put("bibliographyEntryCount", bibliographyKeys.size());
         counts.put("appliedPatchCount", citationResult == null ? 0 : citationResult.appliedPatches().size());
         counts.put("unappliedPatchCount", citationResult == null ? 0 : citationResult.manualPatches().size());
+        counts.put("newReferenceCount", citationResult == null ? 0 : citationResult.newReferenceCount());
+        counts.put("reusedReferenceCount", citationResult == null ? 0 : citationResult.reusedExistingReferenceCount());
+        counts.put("citationLocationUpdateCount", citationResult == null ? 0 : citationResult.changedCitationLocationCount());
+        counts.put("verifiedExistingCitationLocationCount", citationResult == null ? 0 : citationResult.verifiedExistingCitationLocationCount());
         return new AuditResult(status, List.copyOf(issues), Map.copyOf(counts));
     }
 
@@ -135,6 +147,23 @@ public class PaperFinalAuditService {
         }
     }
 
+    private void validateBibliographyFilename(String tex,
+                                              PaperCitationApplyService.CitationApplyResult citationResult,
+                                              List<AuditIssue> issues) {
+        if (citationResult == null || citationResult.bibFilename() == null || citationResult.bibFilename().isBlank()) return;
+        String filename = citationResult.bibFilename();
+        String expectedBase = filename.toLowerCase(java.util.Locale.ROOT).endsWith(".bib")
+                ? filename.substring(0, filename.length() - 4) : filename;
+        Matcher matcher = BIBLIOGRAPHY_COMMAND.matcher(tex);
+        if (!matcher.find()) return;
+        Set<String> names = new LinkedHashSet<>();
+        for (String value : matcher.group(1).split(",")) names.add(value.trim());
+        if (!names.contains(expectedBase)) {
+            issues.add(new AuditIssue("MERGED_BIBLIOGRAPHY_NOT_REFERENCED", "blocker",
+                    "The exported manuscript does not reference the merged bibliography file " + filename + "."));
+        }
+    }
+
     private Set<String> values(Pattern pattern, String text) {
         return new LinkedHashSet<>(listValues(pattern, text));
     }
@@ -162,6 +191,14 @@ public class PaperFinalAuditService {
             if (!key.isBlank()) result.add(key.trim());
         }
         return result;
+    }
+
+    private String normalizeDoi(String value) {
+        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT)
+                .replace("https://doi.org/", "")
+                .replace("http://doi.org/", "")
+                .replace("doi:", "")
+                .trim();
     }
 
     private void addOnce(List<AuditIssue> issues, String code, String severity, String message) {

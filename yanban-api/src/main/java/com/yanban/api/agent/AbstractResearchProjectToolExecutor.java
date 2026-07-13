@@ -2,6 +2,7 @@ package com.yanban.api.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yanban.api.project.ProjectFileEntry;
 import com.yanban.api.project.ProjectFileResponse;
 import com.yanban.api.project.ProjectManifestResponse;
@@ -75,9 +76,10 @@ abstract class AbstractResearchProjectToolExecutor implements ToolExecutor {
             // manifest performs the ownership and READ_ONLY check at the executor boundary.
             ProjectManifestResponse manifest = projects.manifest(userId, projectId);
             ProjectVersionRef version = new ProjectVersionRef(manifest.version());
-            ResearchCallKey key = contract.callKey(version, call.arguments());
+            JsonNode arguments = normalizeSingletonRelativePaths(call.arguments());
+            ResearchCallKey key = contract.callKey(version, arguments);
             ResearchContext context = new ResearchContext(userId, projectId, version, key, manifest.files());
-            ResearchToolOutcome outcome = analyze(context, call.arguments());
+            ResearchToolOutcome outcome = analyze(context, arguments);
             contract.validateOutcome(outcome);
             return new ToolResult(call.id(), definition().name(), true, objectMapper.valueToTree(outcome), null, null,
                     false, outcome.evidenceRefs().stream().map(Object::toString).toList(), List.of(), List.of(), version.value());
@@ -88,6 +90,31 @@ abstract class AbstractResearchProjectToolExecutor implements ToolExecutor {
         } catch (RuntimeException exception) {
             return failure(call, ToolErrorCode.INTERNAL_ERROR, "research tool failed closed");
         }
+    }
+
+    /**
+     * Some OpenAI-compatible models occasionally emit one path as a scalar even when the published
+     * function schema says array&lt;string&gt;. Keep that schema frozen, but canonicalize this single
+     * unambiguous representation before the contract validates it. All normal path, ownership,
+     * manifest-attestation, budget, and evidence checks remain downstream of this conversion.
+     */
+    private JsonNode normalizeSingletonRelativePaths(JsonNode rawArguments) {
+        if (!(rawArguments instanceof ObjectNode arguments)
+                || contract.inputPolicy().relativePathArrayFields().isEmpty()) {
+            return rawArguments;
+        }
+        ObjectNode normalized = null;
+        for (String field : contract.inputPolicy().relativePathArrayFields()) {
+            JsonNode value = arguments.get(field);
+            if (value == null || !value.isTextual()) {
+                continue;
+            }
+            if (normalized == null) {
+                normalized = arguments.deepCopy();
+            }
+            normalized.putArray(field).add(value.textValue());
+        }
+        return normalized == null ? rawArguments : normalized;
     }
 
     protected abstract ResearchToolOutcome analyze(ResearchContext context, JsonNode arguments);

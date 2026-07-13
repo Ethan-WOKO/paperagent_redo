@@ -215,9 +215,10 @@ class PaperAssembleServiceTest {
         PaperAssembleResult result = assembleService.assemble(task.getId(), document(), false);
 
         assertThat(result.reviewReport())
-                .contains("## Citation Closure", "- Status: PARTIAL", "- Supported candidates: 5",
-                        "- Withheld candidates: 4", "- Failed batches: 1")
-                .contains("Failed batch #2 suggestions=[5, 6, 7, 8] attempts=2: invalid decisions")
+                .contains("## Citation Review and Application", "- Status: PARTIAL", "- Supported recommendations: 5",
+                        "- Recommendations held for focused review: 4", "- Failed review batches: 1")
+                .contains("Review batch #2 could not be completed after 2 attempts: invalid decisions")
+                .doesNotContain("suggestions=[5, 6, 7, 8]")
                 .contains("## Final Artifact Audit", "- Status: NOT_RUN");
     }
 
@@ -238,8 +239,8 @@ class PaperAssembleServiceTest {
         PaperAssembleResult result = assembleService.assemble(task.getId(), document(), false);
 
         assertThat(result.reviewReport())
-                .contains("## Citation Closure", "- Status: PASS", "- Repair loop status: COMPLETED",
-                        "- Repaired and accepted: 2", "- Report only after repair: 0",
+                .contains("## Citation Review and Application", "- Status: PASS", "- Focused citation review status: COMPLETED",
+                        "- Revised and accepted: 2", "- Recommendations not approved after evidence review: 0",
                         "- Maximum rounds per suggestion: 3")
                 .doesNotContain("- Status: PARTIAL");
     }

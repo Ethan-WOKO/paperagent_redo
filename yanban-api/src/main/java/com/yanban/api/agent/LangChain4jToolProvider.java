@@ -11,6 +11,7 @@ import com.yanban.core.tool.ToolResult;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.agent.tool.ToolSpecifications;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
 import dev.langchain4j.model.chat.request.json.JsonNumberSchema;
@@ -233,6 +234,10 @@ public class LangChain4jToolProvider implements ToolProvider {
         String type = schemaNode.path("type").asText("string").trim().toLowerCase(Locale.ROOT);
         String description = schemaNode.path("description").asText(null);
         return switch (type) {
+            case "array" -> JsonArraySchema.builder()
+                    .description(description)
+                    .items(toSchemaElement(schemaNode.path("items")))
+                    .build();
             case "integer" -> JsonIntegerSchema.builder().description(description).build();
             case "boolean" -> JsonBooleanSchema.builder().description(description).build();
             case "number" -> JsonNumberSchema.builder().description(description).build();

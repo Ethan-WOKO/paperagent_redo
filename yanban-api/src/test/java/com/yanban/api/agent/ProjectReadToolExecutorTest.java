@@ -6,6 +6,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.project.ProjectFileResponse;
 import com.yanban.api.project.ProjectManifestResponse;
+import com.yanban.api.project.ProjectSearchHit;
 import com.yanban.api.project.ProjectService;
 import com.yanban.core.tool.ToolCall;
 import com.yanban.core.tool.ToolExecutionContext;
@@ -32,7 +33,7 @@ class ProjectReadToolExecutorTest {
         ProjectReadFileToolExecutor executor = new ProjectReadFileToolExecutor(projects, json);
 
         var result = executor.execute(new ToolCall("c1", "project_read_file", json.createObjectNode()
-                .put("projectId", 11).put("relativePath", "src/Main.java")));
+                .put("relativePath", "src/Main.java")));
 
         assertThat(result.success()).isTrue();
         assertThat(result.output().path("projectId").asLong()).isEqualTo(11L);
@@ -42,16 +43,78 @@ class ProjectReadToolExecutorTest {
     }
 
     @Test
-    void rejectsAProjectIdInventedByTheModel() {
+    void readsOnlyTheRequestedInclusiveLineRange() {
+        when(projects.manifest(7L, 11L)).thenReturn(new ProjectManifestResponse(11L, "manifest-v1", List.of()));
+        when(projects.readFile(7L, 11L, "paper.tex"))
+                .thenReturn(new ProjectFileResponse("paper.tex", "line1\nline2\nline3\nline4", 23,
+                        Instant.EPOCH, "sha-lines"));
+        ToolExecutionContext.setCurrentUserId(7L);
+        ToolExecutionContext.setCurrentProjectId(11L);
+
+        var result = new ProjectReadFileToolExecutor(projects, json).execute(new ToolCall(
+                "range",
+                "project_read_file",
+                json.createObjectNode().put("relativePath", "paper.tex").put("startLine", 2).put("endLine", 3)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output().path("startLine").asInt()).isEqualTo(2);
+        assertThat(result.output().path("endLine").asInt()).isEqualTo(3);
+        assertThat(result.output().path("content").asText()).isEqualTo("line2\nline3");
+    }
+
+    @Test
+    void ignoresAProjectIdInventedByTheModelAndUsesServerContext() {
+        when(projects.manifest(7L, 11L)).thenReturn(new ProjectManifestResponse(11L, "manifest-v1", List.of()));
+        when(projects.readFile(7L, 11L, "safe.txt"))
+                .thenReturn(new ProjectFileResponse("safe.txt", "safe", 4, Instant.EPOCH, "sha-safe"));
         ToolExecutionContext.setCurrentUserId(7L);
         ToolExecutionContext.setCurrentProjectId(11L);
         ProjectReadFileToolExecutor executor = new ProjectReadFileToolExecutor(projects, json);
 
         var result = executor.execute(new ToolCall("c2", "project_read_file", json.createObjectNode()
-                .put("projectId", 12).put("relativePath", "../secret.txt")));
+                .put("projectId", 12).put("relativePath", "safe.txt")));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output().path("projectId").asLong()).isEqualTo(11L);
+        Mockito.verify(projects).readFile(7L, 11L, "safe.txt");
+    }
+
+    @Test
+    void modelSchemasDoNotExposeProjectIdentity() {
+        assertThat(new ProjectManifestToolExecutor(projects, json).definition().parameters().toString())
+                .doesNotContain("projectId");
+        assertThat(new ProjectReadFileToolExecutor(projects, json).definition().parameters().toString())
+                .doesNotContain("projectId");
+        assertThat(new ProjectSearchToolExecutor(projects, json).definition().parameters().toString())
+                .doesNotContain("projectId");
+    }
+
+    @Test
+    void searchesLiteralLatexCommandsWithBraces() {
+        when(projects.manifest(7L, 11L)).thenReturn(new ProjectManifestResponse(11L, "manifest-v1", List.of()));
+        when(projects.search(7L, 11L, "\\section{INTRODUCTION}", 5)).thenReturn(List.of(
+                new ProjectSearchHit("paper.tex", 69, "\\section{INTRODUCTION}", "sha-paper")));
+        ToolExecutionContext.setCurrentUserId(7L);
+        ToolExecutionContext.setCurrentProjectId(11L);
+
+        var result = new ProjectSearchToolExecutor(projects, json).execute(new ToolCall("search-latex", "project_search",
+                json.createObjectNode().put("query", "\\section{INTRODUCTION}").put("maxResults", 5)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output().path("hits").get(0).path("lineNumber").asInt()).isEqualTo(69);
+    }
+
+    @Test
+    void reportsInvalidSearchSyntaxAsValidationFailure() {
+        when(projects.manifest(7L, 11L)).thenReturn(new ProjectManifestResponse(11L, "manifest-v1", List.of()));
+        ToolExecutionContext.setCurrentUserId(7L);
+        ToolExecutionContext.setCurrentProjectId(11L);
+
+        var result = new ProjectSearchToolExecutor(projects, json).execute(new ToolCall("search-glob", "project_search",
+                json.createObjectNode().put("query", "*.tex")));
 
         assertThat(result.success()).isFalse();
-        assertThat(result.errorCode().name()).isEqualTo("PERMISSION_DENIED");
-        Mockito.verifyNoInteractions(projects);
+        assertThat(result.errorCode().name()).isEqualTo("VALIDATION_ERROR");
+        assertThat(result.errorMessage()).contains("literal query");
     }
 }
