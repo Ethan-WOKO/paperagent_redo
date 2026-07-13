@@ -1101,7 +1101,8 @@ function isTerminalPlanStatus(status: string) {
 }
 
 async function sendMessageWithFallback(sessionId: number, content: string, disableRag: boolean, skillId: string | null) {
-  const clientRequestId = crypto.randomUUID();
+  const clientRequestId = globalThis.crypto?.randomUUID?.()
+    || `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   console.info('[chat] send start', { sessionId, mode: 'ws-preferred', clientRequestId });
   try {
     await sendWsMessageWithRetry(sessionId, content, disableRag, skillId, clientRequestId);
