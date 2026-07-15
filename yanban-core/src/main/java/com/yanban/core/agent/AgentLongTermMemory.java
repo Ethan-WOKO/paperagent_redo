@@ -21,6 +21,12 @@ public class AgentLongTermMemory {
     public static final String STATUS_SUPERSEDED = "SUPERSEDED";
 
     public static final String SCOPE_USER = "USER";
+    public static final String SCOPE_PROJECT = "PROJECT";
+    public static final String CONFIRMATION_UNCONFIRMED = "UNCONFIRMED";
+    public static final String CONFIRMATION_CONFIRMED = "CONFIRMED";
+    public static final String CONFIRMATION_REJECTED = "REJECTED";
+    public static final String CONFIRMED_SOURCE_USER_ACTION = "USER_ACTION";
+    public static final String PROVENANCE_USER_MESSAGE = "USER_MESSAGE";
     public static final String SOURCE_USER_CONFIRMED = "USER_CONFIRMED";
     public static final String SOURCE_USER_CORRECTED = "USER_CORRECTED";
     public static final String TYPE_FACT = "FACT";
@@ -60,6 +66,33 @@ public class AgentLongTermMemory {
 
     @Column(nullable = false, length = 32)
     private String status;
+
+    @Column(name = "confirmation_status", nullable = false, length = 32)
+    private String confirmationStatus;
+
+    @Column(name = "confirmed_at")
+    private Instant confirmedAt;
+
+    @Column(name = "confirmed_source", length = 64)
+    private String confirmedSource;
+
+    @Column(name = "provenance_type", length = 64)
+    private String provenanceType;
+
+    @Column(name = "provenance_ref", length = 255)
+    private String provenanceRef;
+
+    @Column(name = "project_version", length = 64)
+    private String projectVersion;
+
+    @Column(name = "expires_at")
+    private Instant expiresAt;
+
+    @Column(name = "invalidated_at")
+    private Instant invalidatedAt;
+
+    @Column(name = "invalidation_reason", length = 512)
+    private String invalidationReason;
 
     @Column(name = "supersedes_memory_id")
     private Long supersedesMemoryId;
@@ -101,6 +134,7 @@ public class AgentLongTermMemory {
         this.sourceRefId = blankToNull(sourceRefId);
         this.confidence = normalizeConfidence(confidence);
         this.status = STATUS_ACTIVE;
+        this.confirmationStatus = CONFIRMATION_UNCONFIRMED;
         this.supersedesMemoryId = supersedesMemoryId;
     }
 
@@ -125,6 +159,15 @@ public class AgentLongTermMemory {
     public String getSourceRefId() { return sourceRefId; }
     public BigDecimal getConfidence() { return confidence; }
     public String getStatus() { return status; }
+    public String getConfirmationStatus() { return confirmationStatus; }
+    public Instant getConfirmedAt() { return confirmedAt; }
+    public String getConfirmedSource() { return confirmedSource; }
+    public String getProvenanceType() { return provenanceType; }
+    public String getProvenanceRef() { return provenanceRef; }
+    public String getProjectVersion() { return projectVersion; }
+    public Instant getExpiresAt() { return expiresAt; }
+    public Instant getInvalidatedAt() { return invalidatedAt; }
+    public String getInvalidationReason() { return invalidationReason; }
     public Long getSupersedesMemoryId() { return supersedesMemoryId; }
     public Long getSupersededByMemoryId() { return supersededByMemoryId; }
     public Instant getCreatedAt() { return createdAt; }

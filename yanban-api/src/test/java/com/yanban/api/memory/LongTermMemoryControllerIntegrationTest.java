@@ -66,6 +66,8 @@ class LongTermMemoryControllerIntegrationTest {
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.confirmationStatus").value("UNCONFIRMED"))
+                .andExpect(jsonPath("$.confirmedAt").doesNotExist())
                 .andExpect(jsonPath("$.tags.length()").value(2))
                 .andReturn();
         long firstId = objectMapper.readTree(createResult.getResponse().getContentAsString()).get("id").asLong();
@@ -90,6 +92,7 @@ class LongTermMemoryControllerIntegrationTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.confirmationStatus").value("UNCONFIRMED"))
                 .andExpect(jsonPath("$.sourceType").value("USER_CORRECTED"))
                 .andExpect(jsonPath("$.supersedesMemoryId").value(firstId))
                 .andReturn();

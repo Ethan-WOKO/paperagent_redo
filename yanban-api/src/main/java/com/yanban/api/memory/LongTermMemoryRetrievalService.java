@@ -23,6 +23,8 @@ import org.springframework.util.StringUtils;
 @Service
 public class LongTermMemoryRetrievalService {
 
+    private static final int CANDIDATE_PAGE_SIZE = 40;
+    private static final int MAX_SCANNED_ROWS = 400;
     private static final int MAX_CANDIDATES = 100;
     private static final int MAX_HITS = 5;
     private static final int MAX_CONTEXT_CHARACTERS = 1_600;
@@ -33,6 +35,7 @@ public class LongTermMemoryRetrievalService {
     private static final Set<String> SAFE_MEMORY_TYPES = Set.of(
             "PREFERENCE", "RESEARCH_PROFILE", "RESEARCH_FIELD", "STYLE", "FACT", "WARNING", "DECISION", "TERMINOLOGY");
     private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{L}\\p{N}]{2,}");
+    private static final Pattern PROJECT_VERSION_PATTERN = Pattern.compile("[a-f0-9]{64}");
     private static final Pattern ABSOLUTE_PATH_PATTERN = Pattern.compile(
             "(?i)(?:(?:^|[\\s\\(\\\"'=])[a-z]:[\\\\/]|\\\\\\\\[^\\s]+|file://|"
                     + "(?:^|[\\s\\(\\\"'=])/(?:home|users?|var|etc|opt|tmp|workspace|mnt|root|data)(?:/|$))");
@@ -54,32 +57,91 @@ public class LongTermMemoryRetrievalService {
         if (userId == null || !StringUtils.hasText(query)) {
             return AgentLongTermMemoryContext.empty();
         }
+        Instant now = Instant.now();
+        List<GovernedCandidate> candidates = scanGovernedCandidates(
+                userId,
+                null,
+                null,
+                AgentLongTermMemory.SCOPE_USER,
+                now,
+                page -> memories.findGovernedUserCandidates(userId, now, page));
+        return retrieveFromCandidates(query, candidates, now);
+    }
+
+    /**
+     * This entry point is intentionally not wired into the current Agent call chain. A caller must first resolve
+     * both Project ownership and the current manifest version on the server.
+     */
+    AgentLongTermMemoryContext retrieveProject(Long userId,
+                                               Long projectId,
+                                               String currentProjectVersion,
+                                               String query) {
+        if (userId == null || projectId == null || !isProjectVersion(currentProjectVersion)
+                || !StringUtils.hasText(query)) {
+            return AgentLongTermMemoryContext.empty();
+        }
+        Instant now = Instant.now();
+        List<GovernedCandidate> candidates = scanGovernedCandidates(
+                userId,
+                projectId,
+                currentProjectVersion,
+                AgentLongTermMemory.SCOPE_PROJECT,
+                now,
+                page -> memories.findGovernedProjectCandidates(
+                        userId, projectId, currentProjectVersion, now, page));
+        return retrieveFromCandidates(query, candidates, now);
+    }
+
+    private List<GovernedCandidate> scanGovernedCandidates(Long userId,
+                                                           Long projectId,
+                                                           String projectVersion,
+                                                           String scope,
+                                                           Instant now,
+                                                           CandidatePageLoader pageLoader) {
+        List<GovernedCandidate> candidates = new ArrayList<>();
+        int scannedRows = 0;
+        int pageNumber = 0;
+        while (scannedRows < MAX_SCANNED_ROWS && candidates.size() < MAX_CANDIDATES) {
+            int pageSize = Math.min(CANDIDATE_PAGE_SIZE, MAX_SCANNED_ROWS - scannedRows);
+            List<AgentLongTermMemory> rows = pageLoader.load(PageRequest.of(pageNumber, pageSize));
+            if (rows == null || rows.isEmpty()) {
+                break;
+            }
+            int rowsOnPage = Math.min(rows.size(), pageSize);
+            for (int index = 0; index < rowsOnPage && candidates.size() < MAX_CANDIDATES; index++) {
+                AgentLongTermMemory memory = rows.get(index);
+                scannedRows++;
+                ParsedTags parsedTags = readTags(memory == null ? null : memory.getTagsJson());
+                if (eligible(memory, userId, projectId, projectVersion, scope, now, parsedTags)) {
+                    candidates.add(new GovernedCandidate(memory, parsedTags.values()));
+                }
+            }
+            if (rowsOnPage < pageSize) {
+                break;
+            }
+            pageNumber++;
+        }
+        return List.copyOf(candidates);
+    }
+
+    private AgentLongTermMemoryContext retrieveFromCandidates(String query,
+                                                               List<GovernedCandidate> candidates,
+                                                               Instant now) {
         Set<String> queryTokens = tokenize(query);
         if (queryTokens.isEmpty()) {
             return AgentLongTermMemoryContext.empty();
         }
-
-        List<AgentLongTermMemory> rows = memories.findByUserIdAndStatusOrderByUpdatedAtDesc(
-                userId,
-                AgentLongTermMemory.STATUS_ACTIVE,
-                PageRequest.of(0, MAX_CANDIDATES)
-        );
         List<ScoredMemory> scored = new ArrayList<>();
-        int candidates = 0;
-        for (AgentLongTermMemory memory : rows) {
-            ParsedTags parsedTags = readTags(memory == null ? null : memory.getTagsJson());
-            if (!eligible(memory, userId, parsedTags)) {
-                continue;
-            }
-            candidates++;
-            List<String> tags = parsedTags.values();
-            double score = score(memory, tags, queryTokens);
+        for (GovernedCandidate candidate : candidates) {
+            AgentLongTermMemory memory = candidate.memory();
+            List<String> tags = candidate.tags();
+            double score = score(memory, tags, queryTokens, now);
             if (score > 0) {
                 scored.add(new ScoredMemory(memory, tags, score));
             }
         }
         if (scored.isEmpty()) {
-            return new AgentLongTermMemoryContext(null, 0, candidates, 0,
+            return new AgentLongTermMemoryContext(null, 0, candidates.size(), 0,
                     "No relevant long-term memory matched the current user message.");
         }
 
@@ -115,21 +177,33 @@ public class LongTermMemoryRetrievalService {
         }
         int omitted = omittedDuplicates + Math.max(0, uniqueRanked.size() - selected.size()) + omittedByBudget;
         if (content.isEmpty()) {
-            return new AgentLongTermMemoryContext(null, 0, candidates, scored.size(),
+            return new AgentLongTermMemoryContext(null, 0, candidates.size(), scored.size(),
                     "Long-term memory matches were dropped by the context budget.");
         }
         String note = "Injected long-term memories: hits=%d, candidates=%d, omitted=%d, minConfidence=%s, items=%s"
-                .formatted(debugItems.size(), candidates, omitted, MIN_CONFIDENCE, String.join(" | ", debugItems));
-        return new AgentLongTermMemoryContext(content.toString(), debugItems.size(), candidates, omitted, note);
+                .formatted(debugItems.size(), candidates.size(), omitted, MIN_CONFIDENCE, String.join(" | ", debugItems));
+        return new AgentLongTermMemoryContext(content.toString(), debugItems.size(), candidates.size(), omitted, note);
     }
 
-    private boolean eligible(AgentLongTermMemory memory, Long trustedUserId, ParsedTags parsedTags) {
+    private boolean eligible(AgentLongTermMemory memory,
+                             Long trustedUserId,
+                             Long trustedProjectId,
+                             String trustedProjectVersion,
+                             String trustedScope,
+                             Instant now,
+                             ParsedTags parsedTags) {
         return memory != null
                 && trustedUserId.equals(memory.getUserId())
                 && AgentLongTermMemory.STATUS_ACTIVE.equals(memory.getStatus())
-                && AgentLongTermMemory.SCOPE_USER.equals(memory.getScope())
-                && memory.getProjectId() == null
+                && AgentLongTermMemory.CONFIRMATION_CONFIRMED.equals(memory.getConfirmationStatus())
+                && memory.getConfirmedAt() != null
+                && !memory.getConfirmedAt().isAfter(now)
+                && memory.getDeletedAt() == null
+                && memory.getInvalidatedAt() == null
+                && (memory.getExpiresAt() == null || memory.getExpiresAt().isAfter(now))
+                && identityMatches(memory, trustedProjectId, trustedProjectVersion, trustedScope)
                 && isExplicitlyConfirmed(memory.getSourceType())
+                && hasCompleteSafeProvenance(memory)
                 && isSafeMemoryType(memory.getMemoryType())
                 && parsedTags.valid()
                 && memory.getConfidence() != null
@@ -137,6 +211,36 @@ public class LongTermMemoryRetrievalService {
                 && StringUtils.hasText(memory.getContent())
                 && !containsSensitiveOrLocalData(memory.getContent())
                 && parsedTags.values().stream().noneMatch(this::containsSensitiveOrLocalData);
+    }
+
+    private boolean identityMatches(AgentLongTermMemory memory,
+                                    Long trustedProjectId,
+                                    String trustedProjectVersion,
+                                    String trustedScope) {
+        if (AgentLongTermMemory.SCOPE_USER.equals(trustedScope)) {
+            return AgentLongTermMemory.SCOPE_USER.equals(memory.getScope())
+                    && memory.getProjectId() == null
+                    && memory.getProjectVersion() == null;
+        }
+        return AgentLongTermMemory.SCOPE_PROJECT.equals(trustedScope)
+                && AgentLongTermMemory.SCOPE_PROJECT.equals(memory.getScope())
+                && trustedProjectId != null
+                && trustedProjectId.equals(memory.getProjectId())
+                && isProjectVersion(trustedProjectVersion)
+                && trustedProjectVersion.equals(memory.getProjectVersion());
+    }
+
+    private boolean hasCompleteSafeProvenance(AgentLongTermMemory memory) {
+        return AgentLongTermMemory.CONFIRMED_SOURCE_USER_ACTION.equals(memory.getConfirmedSource())
+                && AgentLongTermMemory.PROVENANCE_USER_MESSAGE.equals(memory.getProvenanceType())
+                && StringUtils.hasText(memory.getProvenanceRef())
+                && !containsSensitiveOrLocalData(memory.getConfirmedSource())
+                && !containsSensitiveOrLocalData(memory.getProvenanceType())
+                && !containsSensitiveOrLocalData(memory.getProvenanceRef());
+    }
+
+    private boolean isProjectVersion(String projectVersion) {
+        return StringUtils.hasText(projectVersion) && PROJECT_VERSION_PATTERN.matcher(projectVersion).matches();
     }
 
     private boolean isSafeMemoryType(String memoryType) {
@@ -154,7 +258,10 @@ public class LongTermMemoryRetrievalService {
         return ABSOLUTE_PATH_PATTERN.matcher(content).find() || SENSITIVE_PATTERN.matcher(content).find();
     }
 
-    private double score(AgentLongTermMemory memory, List<String> tags, Set<String> queryTokens) {
+    private double score(AgentLongTermMemory memory,
+                         List<String> tags,
+                         Set<String> queryTokens,
+                         Instant now) {
         String content = memory.getContent().toLowerCase(Locale.ROOT);
         Set<String> memoryTokens = tokenize(content);
         double matchScore = 0.0;
@@ -172,14 +279,14 @@ public class LongTermMemoryRetrievalService {
         if (matchScore <= 0) {
             return 0.0;
         }
-        return matchScore + memory.getConfidence().doubleValue() + recencyScore(memory.getUpdatedAt());
+        return matchScore + memory.getConfidence().doubleValue() + recencyScore(memory.getUpdatedAt(), now);
     }
 
-    private double recencyScore(Instant updatedAt) {
+    private double recencyScore(Instant updatedAt, Instant now) {
         if (updatedAt == null) {
             return 0.0;
         }
-        long days = Math.max(0, Duration.between(updatedAt, Instant.now()).toDays());
+        long days = Math.max(0, Duration.between(updatedAt, now).toDays());
         if (days <= 7) {
             return 0.4;
         }
@@ -274,6 +381,14 @@ public class LongTermMemoryRetrievalService {
     }
 
     private record ScoredMemory(AgentLongTermMemory memory, List<String> tags, double score) {
+    }
+
+    private record GovernedCandidate(AgentLongTermMemory memory, List<String> tags) {
+    }
+
+    @FunctionalInterface
+    private interface CandidatePageLoader {
+        List<AgentLongTermMemory> load(PageRequest page);
     }
 
     private record ParsedTags(List<String> values, boolean valid) {

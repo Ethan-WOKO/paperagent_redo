@@ -3,6 +3,8 @@ package com.yanban.api.memory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -10,13 +12,17 @@ import com.yanban.api.agent.AgentLongTermMemoryContext;
 import com.yanban.core.agent.AgentLongTermMemory;
 import com.yanban.core.agent.AgentLongTermMemoryRepository;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Pageable;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class LongTermMemoryRetrievalServiceTest {
@@ -35,7 +41,7 @@ class LongTermMemoryRetrievalServiceTest {
 
     @Test
     void retrievesRelevantMemoryByKeywordAndTag() {
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(
                         memory("PREFERENCE", "User prefers GraphRAG answers with explicit ablation caveats.", "[\"GraphRAG\",\"style\"]", "0.86"),
                         memory("PREFERENCE", "User studies compiler optimization.", "[\"systems\"]", "0.90")
@@ -52,7 +58,7 @@ class LongTermMemoryRetrievalServiceTest {
 
     @Test
     void returnsEmptyWhenNoMemoryMatchesQuery() {
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(memory("FACT", "User studies reinforcement learning.", "[\"RL\"]", "0.80")));
 
         AgentLongTermMemoryContext context = service.retrieve(USER_ID, "Discuss literature review structure.");
@@ -71,7 +77,7 @@ class LongTermMemoryRetrievalServiceTest {
         AgentLongTermMemory lowConfidence = memory("FACT", "Low confidence GraphRAG memory should not appear.", "[\"GraphRAG\"]", "0.10");
         AgentLongTermMemory active = memory("FACT", "Active GraphRAG memory should appear.", "[\"GraphRAG\"]", "0.70");
 
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(deleted, superseded, lowConfidence, active));
 
         AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
@@ -92,7 +98,7 @@ class LongTermMemoryRetrievalServiceTest {
                 "MODEL_INFERRED", "Model-inferred GraphRAG guess.", "0.90");
         AgentLongTermMemory confirmed = memory(USER_ID, null, AgentLongTermMemory.SCOPE_USER,
                 AgentLongTermMemory.SOURCE_USER_CONFIRMED, "Confirmed GraphRAG preference.", "0.90");
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(crossUser, project, inferred, confirmed));
 
         AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
@@ -104,7 +110,7 @@ class LongTermMemoryRetrievalServiceTest {
 
     @Test
     void deduplicatesContentAndRejectsSensitiveOrAbsolutePathText() {
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(
                         memory("PREFERENCE", "GraphRAG answers need caveats.", "[\"GraphRAG\"]", "0.90"),
                         memory("PREFERENCE", "  graphrag answers need   caveats. ", "[\"GraphRAG\"]", "0.89"),
@@ -121,7 +127,7 @@ class LongTermMemoryRetrievalServiceTest {
 
     @Test
     void deduplicatesBeforeHitLimitSoDistinctLowerRankedMemoryIsRetainedDeterministically() {
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(
                         memory("PREFERENCE", "GraphRAG answers need explicit caveats.", "[\"GraphRAG\"]", "0.95"),
                         memory("PREFERENCE", " graphrag answers need explicit   caveats. ", "[\"GraphRAG\"]", "0.94"),
@@ -142,7 +148,7 @@ class LongTermMemoryRetrievalServiceTest {
 
     @Test
     void rejectsExpandedCredentialAndLocalPathFormsButKeepsOrdinaryWebUrls() {
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(
                         memory("FACT", "GraphRAG file is /workspace/private/result.txt", "[\"GraphRAG\"]", "0.90"),
                         memory("FACT", "GraphRAG file is /mnt/data/result.txt", "[\"GraphRAG\"]", "0.90"),
@@ -164,7 +170,7 @@ class LongTermMemoryRetrievalServiceTest {
 
     @Test
     void rejectsUnsafeTagsInvalidTagStructuresAndUnknownMemoryTypesBeforeScoringOrFormatting() {
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(
                         memory("PREFERENCE", "GraphRAG preference with credential tag.",
                                 "[\"api key is abcdefghijklmnop\"]", "0.95"),
@@ -193,7 +199,7 @@ class LongTermMemoryRetrievalServiceTest {
         String tooManyTags = "[" + java.util.stream.IntStream.range(0, 13)
                 .mapToObj(index -> "\"tag" + index + "\"")
                 .collect(java.util.stream.Collectors.joining(",")) + "]";
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(
                         memory("FACT", "GraphRAG record with too many tags.", tooManyTags, "0.95"),
                         memory("FACT", "GraphRAG record with non-text tag.", "[\"GraphRAG\",7]", "0.95"),
@@ -216,7 +222,7 @@ class LongTermMemoryRetrievalServiceTest {
                 memory("FACT", repeated("GraphRAG memory D "), "[\"GraphRAG\"]", "0.87"),
                 memory("FACT", repeated("GraphRAG memory E "), "[\"GraphRAG\"]", "0.86")
         );
-        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(rows);
 
         AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
@@ -227,8 +233,141 @@ class LongTermMemoryRetrievalServiceTest {
         assertThat(context.note()).contains("omitted=");
     }
 
+    @Test
+    void rejectsLegacyRejectedExpiredInvalidatedAndIncompleteGovernanceRows() {
+        AgentLongTermMemory legacy = rawMemory(USER_ID, null, AgentLongTermMemory.SCOPE_USER,
+                AgentLongTermMemory.SOURCE_USER_CONFIRMED, "Legacy GraphRAG memory.", "0.90");
+        AgentLongTermMemory rejected = memory("FACT", "Rejected GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(rejected, "confirmationStatus", AgentLongTermMemory.CONFIRMATION_REJECTED);
+        AgentLongTermMemory expired = memory("FACT", "Expired GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(expired, "expiresAt", Instant.now().minusSeconds(1));
+        AgentLongTermMemory invalidated = memory("FACT", "Invalidated GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(invalidated, "invalidatedAt", Instant.now().minusSeconds(1));
+        AgentLongTermMemory missingProvenance = memory("FACT", "Unprovenanced GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(missingProvenance, "provenanceRef", null);
+        AgentLongTermMemory futureConfirmation = memory("FACT", "Future-confirmed GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(futureConfirmation, "confirmedAt", Instant.now().plusSeconds(300));
+        AgentLongTermMemory valid = memory("FACT", "Governed GraphRAG memory.", "[\"GraphRAG\"]", "0.80");
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(legacy, rejected, expired, invalidated, missingProvenance, futureConfirmation, valid));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.content()).contains("Governed GraphRAG memory")
+                .doesNotContain("Legacy", "Rejected", "Expired", "Invalidated", "Unprovenanced", "Future-confirmed");
+    }
+
+    @Test
+    void acceptsOnlyWhitelistedIndependentConfirmationAndProvenanceValues() {
+        AgentLongTermMemory unknownConfirmation = memory("FACT", "Unknown-confirmed GraphRAG memory.",
+                "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(unknownConfirmation, "confirmedSource", "UNKNOWN");
+        AgentLongTermMemory modelConfirmation = memory("FACT", "Model-confirmed GraphRAG memory.",
+                "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(modelConfirmation, "confirmedSource", "MODEL_INFERRED");
+        AgentLongTermMemory modelProvenance = memory("FACT", "Model-provenance GraphRAG memory.",
+                "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(modelProvenance, "provenanceType", "MODEL_OUTPUT");
+        AgentLongTermMemory auditProvenance = memory("FACT", "Audit-provenance GraphRAG memory.",
+                "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(auditProvenance, "provenanceType", "AUDIT_SUMMARY");
+        AgentLongTermMemory recovered = memory("FACT", "Recovered GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(recovered, "confirmedSource", "RECOVERED");
+        AgentLongTermMemory untrusted = memory("FACT", "Untrusted GraphRAG memory.", "[\"GraphRAG\"]", "0.90");
+        ReflectionTestUtils.setField(untrusted, "provenanceType", "UNTRUSTED");
+        AgentLongTermMemory allowed = memory("FACT", "Whitelisted GraphRAG memory.", "[\"GraphRAG\"]", "0.80");
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(unknownConfirmation, modelConfirmation, modelProvenance,
+                        auditProvenance, recovered, untrusted, allowed));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.content()).contains("Whitelisted GraphRAG memory")
+                .doesNotContain("Unknown-confirmed", "Model-confirmed", "Model-provenance",
+                        "Audit-provenance", "Recovered", "Untrusted");
+    }
+
+    @Test
+    void scansPastAFullUnsafePageWithoutStarvingALaterGovernedMemory() {
+        List<AgentLongTermMemory> unsafePage = IntStream.range(0, 40)
+                .mapToObj(index -> {
+                    AgentLongTermMemory memory = memory("FACT", "Unsafe GraphRAG memory " + index,
+                            "[\"GraphRAG\"]", "0.90");
+                    ReflectionTestUtils.setField(memory, "provenanceType", "MODEL_OUTPUT");
+                    return memory;
+                })
+                .toList();
+        AgentLongTermMemory valid = memory("FACT", "Later governed GraphRAG memory.",
+                "[\"GraphRAG\"]", "0.85");
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
+                .thenAnswer(invocation -> {
+                    Pageable page = invocation.getArgument(2);
+                    return page.getPageNumber() == 0 ? unsafePage : List.of(valid);
+                });
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.content()).contains("Later governed GraphRAG memory")
+                .doesNotContain("Unsafe GraphRAG memory");
+        ArgumentCaptor<Pageable> pages = ArgumentCaptor.forClass(Pageable.class);
+        verify(memories, times(2)).findGovernedUserCandidates(eq(USER_ID), any(Instant.class), pages.capture());
+        assertThat(pages.getAllValues()).extracting(Pageable::getPageNumber).containsExactly(0, 1);
+        assertThat(pages.getAllValues()).extracting(Pageable::getPageSize).containsOnly(40);
+    }
+
+    @Test
+    void stopsGovernanceScanningAtTheHardRowBudget() {
+        List<AgentLongTermMemory> unsafePage = IntStream.range(0, 40)
+                .mapToObj(index -> {
+                    AgentLongTermMemory memory = memory("FACT", "Rejected-window GraphRAG memory " + index,
+                            "[\"GraphRAG\"]", "0.90");
+                    ReflectionTestUtils.setField(memory, "provenanceType", "AUDIT_SUMMARY");
+                    return memory;
+                })
+                .toList();
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
+                .thenReturn(unsafePage);
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hasContent()).isFalse();
+        ArgumentCaptor<Pageable> pages = ArgumentCaptor.forClass(Pageable.class);
+        verify(memories, times(10)).findGovernedUserCandidates(eq(USER_ID), any(Instant.class), pages.capture());
+        assertThat(pages.getAllValues()).extracting(Pageable::getPageNumber)
+                .containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+        assertThat(pages.getAllValues()).extracting(Pageable::getPageSize).containsOnly(40);
+    }
+
+    @Test
+    void projectRetrievalRequiresExactTrustedIdentityAndCurrentProjectVersion() {
+        String currentVersion = "a".repeat(64);
+        AgentLongTermMemory valid = governedProjectMemory(USER_ID, 7L, currentVersion,
+                "Current project GraphRAG decision.");
+        AgentLongTermMemory oldVersion = governedProjectMemory(USER_ID, 7L, "b".repeat(64),
+                "Old project GraphRAG decision.");
+        AgentLongTermMemory otherProject = governedProjectMemory(USER_ID, 8L, currentVersion,
+                "Other project GraphRAG decision.");
+        AgentLongTermMemory otherUser = governedProjectMemory(99L, 7L, currentVersion,
+                "Other user GraphRAG decision.");
+        when(memories.findGovernedProjectCandidates(eq(USER_ID), eq(7L), eq(currentVersion),
+                any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(valid, oldVersion, otherProject, otherUser));
+
+        assertThat(service.retrieveProject(USER_ID, 7L, null, "GraphRAG").hasContent()).isFalse();
+        assertThat(service.retrieveProject(USER_ID, 7L, "client-history-version", "GraphRAG").hasContent()).isFalse();
+
+        AgentLongTermMemoryContext context = service.retrieveProject(USER_ID, 7L, currentVersion, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.content()).contains("Current project GraphRAG decision")
+                .doesNotContain("Old project", "Other project", "Other user");
+    }
+
     private AgentLongTermMemory memory(String type, String content, String tagsJson, String confidence) {
-        return new AgentLongTermMemory(
+        return govern(new AgentLongTermMemory(
                 USER_ID,
                 null,
                 AgentLongTermMemory.SCOPE_USER,
@@ -239,13 +378,34 @@ class LongTermMemoryRetrievalServiceTest {
                 null,
                 new BigDecimal(confidence),
                 null
-        );
+        ), null);
     }
 
     private AgentLongTermMemory memory(Long userId, Long projectId, String scope, String sourceType,
                                        String content, String confidence) {
+        return govern(rawMemory(userId, projectId, scope, sourceType, content, confidence), null);
+    }
+
+    private AgentLongTermMemory rawMemory(Long userId, Long projectId, String scope, String sourceType,
+                                          String content, String confidence) {
         return new AgentLongTermMemory(userId, projectId, scope, "FACT", content, "[\"GraphRAG\"]",
                 sourceType, null, new BigDecimal(confidence), null);
+    }
+
+    private AgentLongTermMemory governedProjectMemory(Long userId, Long projectId, String projectVersion,
+                                                       String content) {
+        return govern(rawMemory(userId, projectId, AgentLongTermMemory.SCOPE_PROJECT,
+                AgentLongTermMemory.SOURCE_USER_CONFIRMED, content, "0.90"), projectVersion);
+    }
+
+    private AgentLongTermMemory govern(AgentLongTermMemory memory, String projectVersion) {
+        ReflectionTestUtils.setField(memory, "confirmationStatus", AgentLongTermMemory.CONFIRMATION_CONFIRMED);
+        ReflectionTestUtils.setField(memory, "confirmedAt", Instant.now().minusSeconds(30));
+        ReflectionTestUtils.setField(memory, "confirmedSource", AgentLongTermMemory.CONFIRMED_SOURCE_USER_ACTION);
+        ReflectionTestUtils.setField(memory, "provenanceType", AgentLongTermMemory.PROVENANCE_USER_MESSAGE);
+        ReflectionTestUtils.setField(memory, "provenanceRef", "session:1:message:1");
+        ReflectionTestUtils.setField(memory, "projectVersion", projectVersion);
+        return memory;
     }
 
     private String repeated(String value) {

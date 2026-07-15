@@ -41,6 +41,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -67,6 +68,9 @@ class AgentControllerIntegrationTest {
 
     @Autowired
     AgentMessageRepository agentMessages;
+
+    @Autowired
+    JdbcTemplate jdbc;
 
     @SpyBean
     AgentSessionSummaryService sessionSummaryService;
@@ -294,7 +298,7 @@ class AgentControllerIntegrationTest {
         String token = registerAndGetToken("agent_user_long_memory_context");
         long sessionId = createSession(token, "Long Memory Context");
 
-        mockMvc.perform(post("/api/v1/settings/memory")
+        MvcResult memoryResult = mockMvc.perform(post("/api/v1/settings/memory")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -305,7 +309,19 @@ class AgentControllerIntegrationTest {
                                   "confidence":0.86
                                 }
                                 """))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.confirmationStatus").value("UNCONFIRMED"))
+                .andReturn();
+        long memoryId = objectMapper.readTree(memoryResult.getResponse().getContentAsString()).get("id").asLong();
+        jdbc.update("""
+                UPDATE agent_long_term_memories
+                SET confirmation_status = 'CONFIRMED',
+                    confirmed_at = CURRENT_TIMESTAMP,
+                    confirmed_source = 'USER_ACTION',
+                    provenance_type = 'USER_MESSAGE',
+                    provenance_ref = ?
+                WHERE id = ?
+                """, "session:" + sessionId + ":test-confirmation", memoryId);
 
         mockMvc.perform(post("/api/v1/agent/sessions/{id}/messages", sessionId)
                         .header("Authorization", "Bearer " + token)
