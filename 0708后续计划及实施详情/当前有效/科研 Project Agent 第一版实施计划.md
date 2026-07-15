@@ -3,16 +3,16 @@
 > 文档状态：当前执行权威计划
 > 创建日期：2026-07-12
 > 最近同步：2026-07-15
-> 已审查工程基线：`01fece6`（Worker 7B：长期记忆治理字段、索引与 fail-closed 选择契约）
+> 已审查工程基线：`4367960`（Worker 7C：长期记忆受信确认、修正、拒绝、过期与软删除闭环）
 > Worker 1 验收基线：`e1f733d`（离线发布门与本地验收矩阵）
 > Worker 2 契约工程基线：`8e274ab`（科研工具与结构化索引纯契约）
 > Worker 3 只读工具工程基线：`1fc1e0f`（五个受治理科研工具与 Evidence 闭环）
-> 当前工程基线：`01fece6`（长期记忆确认、provenance、过期、失效与 ProjectVersion 数据基础）
+> 当前工程基线：`4367960`（长期记忆后端治理闭环与 ProjectVersion 校验）
 > Worker 启动基线：以串行任务包中冻结的完整 `HEAD` 为准
-> 当前发布状态：`WORKER_7B_ENGINEERING_ACCEPTED / WORKER_7C_QUEUED`
+> 当前发布状态：`WORKER_7C_ENGINEERING_ACCEPTED / WORKER_7D_QUEUED`
 > 设计依据：《通用 Agent Runtime 设计》《Agent 对比分析与后续改造建议》
 
-> 当前进度：Worker 1 至 Worker 6 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环。Worker 6 基线 `956ce42` 以服务端 manifest 的 portable relative path、文件大小和 SHA-256 内容哈希确定性派生 ProjectVersion，并将 Project Evidence、Plan 持久化 Evidence、Candidate 与 Artifact 绑定到同一版本；旧 Evidence 缺少完整版本、范围或 parser provenance 时保持 fail-closed，不能伪造 VERIFIED。Worker 7A 基线 `b83bb52` 只读接入经过服务器过滤的 USER 范围长期记忆，要求显式用户确认来源、ACTIVE 状态、受信 userId、无 projectId、允许的 memoryType、合法标签、置信度与任务相关性，并执行敏感信息/绝对路径拒绝、确定性排序、内容去重和上下文预算；这些记忆始终标记为辅助上下文，不能替代 Evidence、改变 NOT_APPLIED 或扩大工具权限。Worker 7B 基线 `01fece6` 通过 V33 增加独立 confirmation、confirmed source、provenance、ProjectVersion、expiry 和 invalidation 字段及 USER/Project 索引；历史和现有 CRUD 新记录默认 `UNCONFIRMED`，旧 Project 记忆不回填、不升级。选择器只接受 `USER_ACTION + USER_MESSAGE` 的受信组合，并以 10 页/400 行硬扫描预算避免坏记录造成候选饥饿；Project selector 仍未接入生产调用链。主对话独立复跑最新定向 42 项与完整 reactor 585 项，均零失败，完整聚合有 8 项既有条件跳过，`git diff --check` 通过。Worker 7C 至 7D 仍需完成受信确认/修正/删除/过期后端闭环和用户界面验收。真实 MySQL 尚未执行 V33，发布时必须先迁移再部署且不得自动确认历史数据。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、多版本历史与导出、沙箱或安全应用已经完成。
+> 当前进度：Worker 1 至 Worker 6 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环。Worker 6 基线 `956ce42` 以服务端 manifest 的 portable relative path、文件大小和 SHA-256 内容哈希确定性派生 ProjectVersion，并将 Project Evidence、Plan 持久化 Evidence、Candidate 与 Artifact 绑定到同一版本；旧 Evidence 缺少完整版本、范围或 parser provenance 时保持 fail-closed，不能伪造 VERIFIED。Worker 7A 基线 `b83bb52` 只读接入经过服务器过滤的 USER 范围长期记忆，要求显式用户确认来源、ACTIVE 状态、受信 userId、无 projectId、允许的 memoryType、合法标签、置信度与任务相关性，并执行敏感信息/绝对路径拒绝、确定性排序、内容去重和上下文预算；这些记忆始终标记为辅助上下文，不能替代 Evidence、改变 NOT_APPLIED 或扩大工具权限。Worker 7B 基线 `01fece6` 通过 V33 增加独立 confirmation、confirmed source、provenance、ProjectVersion、expiry 和 invalidation 字段及 USER/Project 索引；历史和现有 CRUD 新记录默认 `UNCONFIRMED`，旧 Project 记忆不回填、不升级。选择器只接受受信 provenance 组合，并以硬扫描预算避免坏记录造成候选饥饿；Project selector 仍未接入生产调用链。Worker 7C 基线 `4367960` 增加受信确认、拒绝、纠正、过期与软删除接口：所有写入都从认证用户和服务端 manifest 解析身份，Project 记忆确认/纠正必须与当前 ProjectVersion 精确一致，纠正以新确认版本取代旧记录，并通过悲观锁保持并发状态机确定性；客户端 source/provenance 字段不会获得信任。主对话独立复跑 7C 定向 26 项及完整 reactor 594 项，均零失败，完整聚合有 8 项既有条件跳过，`git diff --check` 通过。Worker 7D 仍需完成长期记忆治理界面、真实后端联调和多视口本地复审。真实 MySQL 尚未执行 V33，发布时必须先迁移再部署且不得自动确认历史数据。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、多版本历史与导出、沙箱或安全应用已经完成。
 
 ## 1. 目标与边界
 
@@ -427,7 +427,7 @@ Worker 开发
 
 ### Worker 7：长期记忆治理与只读接入
 
-状态：`7A_ACCEPTED / 7B_ACCEPTED / 7C_QUEUED`
+状态：`7A_ACCEPTED / 7B_ACCEPTED / 7C_ACCEPTED / 7D_QUEUED`
 
 - Worker 7A 已完成 USER 范围只读基础：只选择服务器受信 userId 下 ACTIVE、显式用户确认来源、无 projectId、允许类型、合法标签、达到置信度且与任务相关的记忆。
 - Worker 7A 已实现敏感信息和绝对路径整条拒绝、确定性排序、内容去重、5 条/1600 字符预算，以及“辅助且不作为 Evidence”的注入标记。
@@ -435,7 +435,8 @@ Worker 开发
 - Worker 7B 已完成独立 confirmation、provenance、expiry、invalidation、projectVersion 治理字段和 fail-closed 数据契约；旧数据默认未确认，旧 Project 记忆不得自动升级。V33 与 H2 镜像迁移、实体、仓储、USER/Project 选择器契约及测试已经通过，未开放公共确认写接口。
 - Worker 7B 只接受 `USER_ACTION + USER_MESSAGE` 受信 provenance，未知、模型、审计摘要、recovered/untrusted 值 fail-closed；候选扫描最多 10 页/400 行、接纳 100 条，防止无效记录挤出合法候选且不允许无界查询。
 - Worker 7B 主对话独立验证：定向 42/42；完整 reactor 585 项零失败、8 项既有条件跳过；`git diff --check` 通过。真实 MySQL 迁移仍待本地部署验证。
-- Worker 7C：实现受信后端确认、修正、软删除、过期和 ProjectVersion 校验闭环；修正创建新版本并使旧版本失效，不自动保存模型推测。
+- Worker 7C 已完成受信后端确认、拒绝、修正、软删除、过期和 ProjectVersion 校验闭环；修正创建服务器确认的新版本并使旧版本失效，不自动保存模型推测。Project 记忆确认/修正对旧版本 fail-closed，拒绝、过期和删除仍先校验当前用户对 Project 的所有权。
+- Worker 7C 使用悲观写锁保证并发状态转换确定性；重复确认、拒绝和删除具有受控幂等语义，冲突转换返回 409，客户端提供的 source/provenance 不会成为受信来源。主对话独立验证：定向 26/26；完整 reactor 594 项零失败、8 项既有条件跳过；`git diff --check` 通过。
 - Worker 7D：实现用户查看、确认、修正、删除、过期与注入审计界面，并使用真实后端完成本地验收。
 - Worker 7B 至 7D 必须逐个完成主对话复审、独立测试和 baseline 提交后才能进入下一项。
 
