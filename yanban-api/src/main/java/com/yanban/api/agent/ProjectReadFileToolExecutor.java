@@ -24,10 +24,10 @@ public class ProjectReadFileToolExecutor extends AbstractProjectReadToolExecutor
     }
     @Override public ToolDefinition definition() { return definition; }
     @Override public ToolResult execute(ToolCall call) {
-        Long projectId = requireTrustedProject(call);
+        TrustedProject project = requireTrustedProject(call);
         String relativePath = call.arguments() == null ? null : call.arguments().path("relativePath").asText(null);
-        if (projectId == null || !StringUtils.hasText(relativePath)) return rejected(call);
-        ProjectFileResponse file = projects.readFile(com.yanban.core.tool.ToolExecutionContext.getCurrentUserId(), projectId, relativePath);
+        if (project == null || !StringUtils.hasText(relativePath)) return rejected(call);
+        ProjectFileResponse file = projects.readFile(project.userId(), project.projectId(), relativePath);
         int startLine = call.arguments().has("startLine") ? call.arguments().path("startLine").asInt() : 1;
         String[] lines = file.content().split("\\R", -1);
         int endLine = call.arguments().has("endLine") ? call.arguments().path("endLine").asInt() : lines.length;
@@ -37,9 +37,9 @@ public class ProjectReadFileToolExecutor extends AbstractProjectReadToolExecutor
         }
         endLine = Math.min(endLine, lines.length);
         String content = String.join("\n", java.util.Arrays.copyOfRange(lines, startLine - 1, endLine));
-        ObjectNode output = objectMapper.createObjectNode(); evidence(output, projectId, file.path(), file.sha256());
+        ObjectNode output = objectMapper.createObjectNode(); evidence(output, project, file.path(), file.sha256());
         output.put("sizeBytes", file.sizeBytes()); output.put("modifiedAt", file.modifiedAt().toString());
         output.put("startLine", startLine); output.put("endLine", endLine); output.put("content", content);
-        return success(call, output, projectId, file.path(), file.sha256());
+        return success(call, output, project.projectId(), file.path(), file.sha256());
     }
 }

@@ -671,22 +671,43 @@ public class AgentService {
         for (int i = Math.max(0, historySize); i < messages.size(); i++) {
             ChatMessage message = messages.get(i);
             if (message == null || !"tool".equals(message.role()) || !StringUtils.hasText(message.content())) continue;
-            EvidenceRef ref;
             try {
                 com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(message.content());
                 if (node.path("projectId").asLong(-1) != context.projectId()) continue;
+                String projectVersion = node.path("projectVersion").asText("");
+                String callId = message.toolCallId() == null ? "unknown" : message.toolCallId();
+                if (node.path("hits").isArray()) {
+                    int hitIndex = 0;
+                    for (com.fasterxml.jackson.databind.JsonNode hit : node.path("hits")) {
+                        String hitVersion = hit.path("projectVersion").asText(projectVersion);
+                        String hitPath = hit.path("relativePath").asText("");
+                        String hitHash = hit.path("hash").asText(hit.path("version").asText(""));
+                        int line = hit.path("lineNumber").asInt(0);
+                        if (!StringUtils.hasText(hitVersion) || !StringUtils.hasText(hitPath)
+                                || !StringUtils.hasText(hitHash) || line < 1) continue;
+                        String hitChunk = "tool:" + callId + ":hit:" + hitIndex++;
+                        EvidenceRef hitRef = new EvidenceRef("project-observation-" + context.projectId() + "-"
+                                + hitChunk + "-" + hitPath + "-" + hitHash, EvidenceSourceType.PROJECT, "PROJECT",
+                                hitPath, hitChunk, null, hitHash, "governed project search observation",
+                                hitVersion, hitHash, line, line, "project-search@1", EvidenceVersionStatus.VERIFIED);
+                        EvidenceRef existing = refs.putIfAbsent(hitRef.id(), hitRef);
+                        if (existing != null && !existing.equals(hitRef)) throw new IllegalArgumentException("conflicting evidence id: " + hitRef.id());
+                    }
+                    continue;
+                }
                 String path = node.path("relativePath").asText("");
                 String version = node.path("hash").asText(node.path("version").asText(""));
-                if (!StringUtils.hasText(path) || !StringUtils.hasText(version)) continue;
-                String chunk = "tool:" + (message.toolCallId() == null ? "unknown" : message.toolCallId());
-                ref = new EvidenceRef("project-observation-" + context.projectId() + "-" + chunk + "-" + path + "-" + version,
-                        EvidenceSourceType.PROJECT, "PROJECT", path, chunk, null, version, "governed project tool observation");
+                int startLine = node.path("startLine").asInt(0); int endLine = node.path("endLine").asInt(0);
+                if (!StringUtils.hasText(projectVersion) || !StringUtils.hasText(path) || !StringUtils.hasText(version)
+                        || startLine < 1 || endLine < startLine) continue;
+                String chunk = "tool:" + callId;
+                EvidenceRef ref = new EvidenceRef("project-observation-" + context.projectId() + "-" + chunk + "-" + path + "-" + version,
+                        EvidenceSourceType.PROJECT, "PROJECT", path, chunk, null, version, "governed project tool observation",
+                        projectVersion, version, startLine, endLine, "project-read-file@1", EvidenceVersionStatus.VERIFIED);
+                EvidenceRef existing = refs.putIfAbsent(ref.id(), ref);
+                if (existing != null && !existing.equals(ref)) throw new IllegalArgumentException("conflicting evidence id: " + ref.id());
             } catch (Exception ignored) {
                 continue;
-            }
-            EvidenceRef existing = refs.putIfAbsent(ref.id(), ref);
-            if (existing != null && !existing.equals(ref)) {
-                throw new IllegalArgumentException("conflicting evidence id: " + ref.id());
             }
         }
         for (EvidenceRef ref : ResearchProjectEvidenceAdapter.extract(objectMapper, messages, historySize, context,

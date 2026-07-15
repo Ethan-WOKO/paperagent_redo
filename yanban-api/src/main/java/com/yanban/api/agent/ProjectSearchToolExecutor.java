@@ -24,20 +24,21 @@ public class ProjectSearchToolExecutor extends AbstractProjectReadToolExecutor {
     }
     @Override public ToolDefinition definition() { return definition; }
     @Override public ToolResult execute(ToolCall call) {
-        Long projectId = requireTrustedProject(call); String query = call.arguments() == null ? null : call.arguments().path("query").asText(null);
-        if (projectId == null) return rejected(call);
+        TrustedProject project = requireTrustedProject(call); String query = call.arguments() == null ? null : call.arguments().path("query").asText(null);
+        if (project == null) return rejected(call);
         if (!StringUtils.hasText(query) || !isLiteralQuery(query)) {
             return ToolResult.failure(call.id(), definition().name(), com.yanban.core.tool.ToolErrorCode.VALIDATION_ERROR,
                     "Project search accepts one literal query substring only; regex/glob expressions are unsupported. "
                             + "Replace the expression with a concrete token such as P_total or trace(Q).");
         }
         Integer max = call.arguments().has("maxResults") ? call.arguments().path("maxResults").asInt() : null;
-        List<ProjectSearchHit> hits = projects.search(com.yanban.core.tool.ToolExecutionContext.getCurrentUserId(), projectId, query, max);
-        ObjectNode output = objectMapper.createObjectNode(); output.put("projectId", projectId); output.put("query", query); output.put("trust", "UNTRUSTED");
-        var items = output.putArray("hits"); for (ProjectSearchHit hit : hits) { ObjectNode item = items.addObject(); evidence(item, projectId, hit.path(), hit.sha256()); item.put("lineNumber", hit.lineNumber()); item.put("line", hit.line()); }
+        List<ProjectSearchHit> hits = projects.search(project.userId(), project.projectId(), query, max);
+        ObjectNode output = objectMapper.createObjectNode(); output.put("projectId", project.projectId());
+        output.put("projectVersion", project.manifest().version()); output.put("query", query); output.put("trust", "UNTRUSTED");
+        var items = output.putArray("hits"); for (ProjectSearchHit hit : hits) { ObjectNode item = items.addObject(); evidence(item, project, hit.path(), hit.sha256()); item.put("lineNumber", hit.lineNumber()); item.put("line", hit.line()); }
         String version = hits.isEmpty() ? "no-hit" : hits.get(0).sha256();
-        if (!hits.isEmpty()) evidence(output, projectId, hits.get(0).path(), version);
-        return success(call, output, projectId, "search:" + query, version);
+        if (!hits.isEmpty()) evidence(output, project, hits.get(0).path(), version);
+        return success(call, output, project.projectId(), "search:" + query, version);
     }
 
     private boolean isLiteralQuery(String query) {

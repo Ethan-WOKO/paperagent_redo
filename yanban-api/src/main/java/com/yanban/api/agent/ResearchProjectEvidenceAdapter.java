@@ -65,7 +65,9 @@ final class ResearchProjectEvidenceAdapter {
                     String callId = message.toolCallId();
                     EvidenceRef ref = new EvidenceRef("trusted-tool:" + context.projectId() + ":" + evidence.relativePath().value()
                             + ":" + hash + ":" + callId, EvidenceSourceType.PROJECT, "PROJECT", evidence.relativePath().value(),
-                            "tool:" + callId, null, hash, "governed research tool evidence");
+                            "tool:" + callId, null, hash, "governed research tool evidence",
+                            evidence.projectVersion().value(), hash, evidence.range().startLine(),
+                            evidence.range().endLine(), evidence.parserVersion().value(), EvidenceVersionStatus.VERIFIED);
                     EvidenceRef existing = refs.putIfAbsent(ref.id(), ref);
                     if (existing != null && !existing.equals(ref)) throw new IllegalArgumentException("conflicting research evidence id");
                 }

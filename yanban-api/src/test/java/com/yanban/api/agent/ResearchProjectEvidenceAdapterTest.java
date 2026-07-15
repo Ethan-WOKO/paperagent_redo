@@ -1,6 +1,7 @@
 package com.yanban.api.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.core.model.ChatMessage;
@@ -12,7 +13,7 @@ class ResearchProjectEvidenceAdapterTest {
     private final ObjectMapper json = new ObjectMapper();
 
     @Test
-    void mapsOnlyAttestedResearchEnvelopeAndUsesFileHashAsLegacyVersion() {
+    void mapsOnlyAttestedResearchEnvelopeAndPreservesCompleteVersionBinding() {
         AgentRuntimeResult result = new AgentRuntimeResult(true, "observed", transcript("project_latex_outline", "a".repeat(64),
                 "SERVER_ATTESTED_METADATA"), 1, null, List.of(), List.of(), null, null, null);
 
@@ -22,7 +23,47 @@ class ResearchProjectEvidenceAdapterTest {
             assertThat(ref.id()).startsWith("trusted-tool:42:paper/main.tex:");
             assertThat(ref.version()).isEqualTo("a".repeat(64));
             assertThat(ref.file()).isEqualTo("paper/main.tex");
+            assertThat(ref.projectVersion()).isEqualTo("b".repeat(64));
+            assertThat(ref.fileHash()).isEqualTo("a".repeat(64));
+            assertThat(ref.startLine()).isEqualTo(2);
+            assertThat(ref.endLine()).isEqualTo(2);
+            assertThat(ref.parserVersion()).isEqualTo("latex-outline@1");
+            assertThat(ref.versionStatus()).isEqualTo(EvidenceVersionStatus.VERIFIED);
         });
+    }
+
+    @Test
+    void legacyEvidenceIsExplicitlyUnversioned() {
+        EvidenceRef legacy = new EvidenceRef("legacy:1", EvidenceSourceType.PROJECT, "PROJECT",
+                "paper.tex", "line:1", null, "a".repeat(64), "old data");
+
+        assertThat(legacy.versionStatus()).isEqualTo(EvidenceVersionStatus.LEGACY_UNVERSIONED);
+        assertThat(legacy.projectVersion()).isNull();
+    }
+
+    @Test
+    void malformedVersionBindingCannotBecomeVerifiedOrStale() {
+        assertThatThrownBy(() -> new EvidenceRef("bad:version", EvidenceSourceType.PROJECT, "PROJECT",
+                "paper.tex", "tool:1", null, "a".repeat(64), "bad", "m", "a".repeat(64),
+                1, 1, "parser@1", EvidenceVersionStatus.VERIFIED)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new EvidenceRef("bad:hash", EvidenceSourceType.PROJECT, "PROJECT",
+                "paper.tex", "tool:1", null, "bad", "bad", "b".repeat(64), "h1",
+                1, 1, "parser@1", EvidenceVersionStatus.STALE)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void staleStatusPreservesCompleteProvenanceAndIsNotVerified() {
+        EvidenceRef verified = new EvidenceRef("typed:1", EvidenceSourceType.PROJECT, "PROJECT", "paper.tex",
+                "tool:1", null, "a".repeat(64), "test", "b".repeat(64), "a".repeat(64),
+                4, 7, "parser@1", EvidenceVersionStatus.VERIFIED);
+
+        EvidenceRef stale = verified.stale();
+
+        assertThat(stale.versionStatus()).isEqualTo(EvidenceVersionStatus.STALE);
+        assertThat(stale.projectVersion()).isEqualTo(verified.projectVersion());
+        assertThat(stale.fileHash()).isEqualTo(verified.fileHash());
+        assertThat(stale.startLine()).isEqualTo(4);
+        assertThat(stale.endLine()).isEqualTo(7);
     }
 
     @Test

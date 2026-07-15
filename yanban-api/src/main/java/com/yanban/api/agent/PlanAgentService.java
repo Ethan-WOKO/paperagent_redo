@@ -1828,7 +1828,8 @@ public class PlanAgentService {
         return new EvidenceRef("trusted-plan:" + context.projectId() + ":" + plan.getId() + ":"
                 + step.getId() + ":" + attempt + ":" + observationId,
                 EvidenceSourceType.PROJECT, "PROJECT", ref.file(), ref.chunk(), ref.citation(), ref.version(),
-                "persisted plan step project observation");
+                "persisted plan step project observation", ref.projectVersion(), ref.fileHash(), ref.startLine(),
+                ref.endLine(), ref.parserVersion(), ref.versionStatus());
     }
 
     private AgentPlan getOwnedPlan(Long userId, Long planId) {

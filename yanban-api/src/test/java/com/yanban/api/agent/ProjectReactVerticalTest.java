@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.project.ProjectFileResponse;
@@ -20,13 +22,15 @@ import org.junit.jupiter.api.Test;
 
 class ProjectReactVerticalTest {
     private final ObjectMapper json = new ObjectMapper();
+    private static final String PROJECT_VERSION = "b".repeat(64);
+    private static final String FILE_HASH = "a".repeat(64);
 
     @Test
     void coordinatorUsesTrustedProjectContextAndRealProviderReadReturnsUntrustedProvenance() {
         ProjectService projects = mock(ProjectService.class);
-        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, "m1", List.of()));
+        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, PROJECT_VERSION, List.of()));
         when(projects.readFile(7L, 42L, "src/Main.java"))
-                .thenReturn(new ProjectFileResponse("src/Main.java", "class Main {}", 13, Instant.EPOCH, "h1"));
+                .thenReturn(new ProjectFileResponse("src/Main.java", "class Main {}", 13, Instant.EPOCH, FILE_HASH));
         ToolRegistry registry = new ToolRegistry().register(new ProjectReadFileToolExecutor(projects, json));
         LangChain4jChatModelAdapter model = mock(LangChain4jChatModelAdapter.class);
         when(model.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
@@ -47,15 +51,17 @@ class ProjectReactVerticalTest {
         assertThat(result.success()).isTrue();
         String toolContent = result.messages().stream().filter(m -> "tool".equals(m.role())).map(ChatMessage::content).findFirst().orElse("");
         assertThat(toolContent)
-                .contains("\"relativePath\":\"src/Main.java\"", "\"hash\":\"h1\"", "\"trust\":\"UNTRUSTED\"");
+                .contains("\"projectVersion\":\"" + PROJECT_VERSION + "\"", "\"relativePath\":\"src/Main.java\"",
+                        "\"hash\":\"" + FILE_HASH + "\"", "\"trust\":\"UNTRUSTED\"");
+        verify(projects, times(1)).manifest(7L, 42L);
     }
 
     @Test
     void modelCannotSwitchProjectIdDuringActualReactToolCall() {
         ProjectService projects = mock(ProjectService.class);
-        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, "m1", List.of()));
+        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, PROJECT_VERSION, List.of()));
         when(projects.readFile(7L, 42L, "x.txt"))
-                .thenReturn(new ProjectFileResponse("x.txt", "trusted project", 15, Instant.EPOCH, "h42"));
+                .thenReturn(new ProjectFileResponse("x.txt", "trusted project", 15, Instant.EPOCH, FILE_HASH));
         ToolRegistry registry = new ToolRegistry().register(new ProjectReadFileToolExecutor(projects, json));
         LangChain4jChatModelAdapter model = mock(LangChain4jChatModelAdapter.class);
         when(model.chat(any(dev.langchain4j.model.chat.request.ChatRequest.class), any(AgentRuntimeRequest.class)))
@@ -66,7 +72,7 @@ class ProjectReactVerticalTest {
                 new LangChain4jToolProvider(registry, json, new AgentLangChain4jTools(registry, json)), json);
         AgentRuntimeResult result = strategy.run(request().withProjectContext(new ProjectRuntimeContext(7L, 42L)).withStrategy(AgentStrategy.SINGLE_STEP_REACT));
         assertThat(result.toolTrace().get(0)).contains("success=true");
-        org.mockito.Mockito.verify(projects).manifest(7L, 42L);
+        verify(projects, times(1)).manifest(7L, 42L);
         org.mockito.Mockito.verify(projects).readFile(7L, 42L, "x.txt");
         org.mockito.Mockito.verify(projects, org.mockito.Mockito.never()).manifest(7L, 99L);
     }

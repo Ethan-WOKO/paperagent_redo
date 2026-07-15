@@ -411,21 +411,24 @@ class PlanAgentServiceTest {
     }
 
     @Test
-    void projectReadFileStepPersistsOneLegacyProjectEvidenceThroughExecutePlan() throws Exception {
+    void projectReadFileStepPersistsCompleteVersionedProjectEvidenceThroughExecutePlan() throws Exception {
         String hash = "e".repeat(64);
+        String projectVersion = "b".repeat(64);
         ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
-        AgentPlanStep step = newStep("legacy-read", 1, List.of(), "[\"project_read_file\"]");
+        AgentPlanStep step = newStep("versioned-read", 1, List.of(), "[\"project_read_file\"]");
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
-        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "legacy-manifest", List.of(
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, projectVersion, List.of(
                 new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
         when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
                 List.of("project_read_file"), 3, 1, "project"));
-        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("legacy-read-call", "function",
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("versioned-read-call", "function",
                 new com.yanban.core.model.ToolCall.FunctionCall("project_read_file", "{\"relativePath\":\"paper/main.tex\"}"));
-        String result = "{\"projectId\":42,\"relativePath\":\"paper/main.tex\",\"hash\":\"" + hash
-                + "\",\"version\":\"" + hash + "\",\"evidenceRefs\":[\"legacy-read-ref\"]}";
+        String result = "{\"projectId\":42,\"projectVersion\":\"" + projectVersion
+                + "\",\"relativePath\":\"paper/main.tex\",\"hash\":\"" + hash
+                + "\",\"version\":\"" + hash + "\",\"startLine\":3,\"endLine\":7,"
+                + "\"evidenceRefs\":[\"versioned-read-ref\"]}";
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(new AgentRuntimeResult(true, "observed",
-                List.of(new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("legacy-read-call", result)),
+                List.of(new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("versioned-read-call", result)),
                 1, null, List.of(), List.of(), null, null, null));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
@@ -441,6 +444,51 @@ class PlanAgentServiceTest {
         assertThat(evidence.get(0).path("id").asText()).startsWith("trusted-plan:");
         assertThat(evidence.get(0).path("file").asText()).isEqualTo("paper/main.tex");
         assertThat(evidence.get(0).path("version").asText()).isEqualTo(hash);
+        assertThat(evidence.get(0).path("projectVersion").asText()).isEqualTo(projectVersion);
+        assertThat(evidence.get(0).path("fileHash").asText()).isEqualTo(hash);
+        assertThat(evidence.get(0).path("startLine").asInt()).isEqualTo(3);
+        assertThat(evidence.get(0).path("endLine").asInt()).isEqualTo(7);
+        assertThat(evidence.get(0).path("parserVersion").asText()).isEqualTo("project-read-file@1");
+        assertThat(evidence.get(0).path("versionStatus").asText()).isEqualTo("VERIFIED");
+    }
+
+    @Test
+    void legacyProjectReadWithoutVersionAndRangeRemainsInsufficient() {
+        String hash = "e".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
+                objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("legacy-read", 1, List.of(), "[\"project_read_file\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, "b".repeat(64), List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file"), 3, 1, "project"));
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("legacy-read-call", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall(
+                        "project_read_file", "{\"relativePath\":\"paper/main.tex\"}"));
+        String legacyResult = "{\"projectId\":42,\"relativePath\":\"paper/main.tex\",\"hash\":\"" + hash
+                + "\",\"version\":\"" + hash + "\",\"evidenceRefs\":[\"legacy-read-ref\"]}";
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(new AgentRuntimeResult(
+                true, "observed", List.of(new ChatMessage("assistant", null, List.of(call), null),
+                ChatMessage.tool("legacy-read-call", legacyResult)), 1, null, List.of(), List.of(), null, null, null));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).filteredOn(value -> "step_project_evidence".equals(value.getEventType()))
+                .allSatisfy(value -> assertThat(readEvidenceCount(value)).isZero());
+        assertThat(event.getAllValues()).extracting(AgentPlanEvent::getEventType)
+                .contains("step_verification_inconclusive", "step_completed_unverified")
+                .doesNotContain("step_completed");
+    }
+
+    private int readEvidenceCount(AgentPlanEvent event) {
+        try {
+            return objectMapper.readTree(event.getPayloadJson()).path("evidence").size();
+        } catch (Exception ignored) {
+            return -1;
+        }
     }
 
     @Test

@@ -28,10 +28,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 class PlanCompletionEvidenceVerticalTest {
+    private static final String FILE_HASH = "a".repeat(64);
+    private static final String PROJECT_VERSION = "b".repeat(64);
     @Test
     void realPlanServiceWritesAndRestoresStepEvidenceForOuterVerifier() throws Exception {
-        Fixture fixture = new Fixture("h1");
-        fixture.innerRuntimeResult = toolResult("h1");
+        Fixture fixture = new Fixture(FILE_HASH);
+        fixture.innerRuntimeResult = toolResult(FILE_HASH);
 
         AgentRuntimeResult result = fixture.outerRuntime.run(fixture.request());
 
@@ -42,13 +44,13 @@ class PlanCompletionEvidenceVerticalTest {
 
     @Test
     void realPlanServiceRestoresNoEventOrOldHashAsInsufficient() throws Exception {
-        Fixture missing = new Fixture("h1");
+        Fixture missing = new Fixture(FILE_HASH);
         missing.plan.markCompleted();
         AgentRuntimeResult noEvent = missing.outerRuntime.run(missing.request());
         assertThat(noEvent.completionVerification().status()).isEqualTo(CompletionStatus.INSUFFICIENT_EVIDENCE);
         missing.shutdown();
 
-        Fixture old = new Fixture("h1");
+        Fixture old = new Fixture(FILE_HASH);
         old.plan.markCompleted();
         old.events.add(new AgentPlanEvent(19L, 1L, "step_project_evidence", old.json.writeValueAsString(java.util.Map.of(
                 "evidence", List.of(new EvidenceRef("trusted-plan:42:src/Main.java:old:step", EvidenceSourceType.PROJECT,
@@ -59,8 +61,9 @@ class PlanCompletionEvidenceVerticalTest {
     }
 
     private static AgentRuntimeResult toolResult(String hash) {
-        String tool = "{\"projectId\":42,\"relativePath\":\"src/Main.java\",\"hash\":\"" + hash
-                + "\",\"evidenceRefs\":[\"project:42:src/Main.java:" + hash + ":c1\"]}";
+        String tool = "{\"projectId\":42,\"projectVersion\":\"" + PROJECT_VERSION
+                + "\",\"relativePath\":\"src/Main.java\",\"hash\":\"" + hash
+                + "\",\"startLine\":2,\"endLine\":4,\"evidenceRefs\":[\"project:42:src/Main.java:" + hash + ":c1\"]}";
         return new AgentRuntimeResult(true, "done", List.of(new ChatMessage("tool", tool, null, "c1"),
                 ChatMessage.assistant("done")), 1, null, List.of(), List.of(), null, null, null);
     }
@@ -101,7 +104,7 @@ class PlanCompletionEvidenceVerticalTest {
             when(settings.resolveModelEndpoint(anyLong(), any(), any())).thenReturn(
                     new UserSettingsService.ModelEndpoint("test", "model", null, "key", "builtin", "url"));
             when(policy.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(List.of("project_read_file"), 3, 1, "project"));
-            when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
+            when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, PROJECT_VERSION, List.of(
                     new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, currentHash))));
             when(verifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
             when(innerRuntime.run(any())).thenAnswer(call -> innerRuntimeResult);

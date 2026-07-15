@@ -26,11 +26,11 @@ public class ProjectManifestToolExecutor extends AbstractProjectReadToolExecutor
     }
     @Override public ToolDefinition definition() { return definition; }
     @Override public ToolResult execute(ToolCall call) {
-        Long projectId = requireTrustedProject(call);
-        if (projectId == null) return rejected(call);
-        ProjectManifestResponse manifest = projects.manifest(com.yanban.core.tool.ToolExecutionContext.getCurrentUserId(), projectId);
+        TrustedProject project = requireTrustedProject(call);
+        if (project == null) return rejected(call);
+        ProjectManifestResponse manifest = project.manifest();
         ObjectNode output = objectMapper.createObjectNode();
-        evidence(output, projectId, "manifest", manifest.version());
+        evidence(output, project, "manifest", manifest.version());
         output.put("fileCount", manifest.files().size());
         var files = output.putArray("files");
         for (ProjectFileEntry file : manifest.files()) {
@@ -38,6 +38,6 @@ public class ProjectManifestToolExecutor extends AbstractProjectReadToolExecutor
             item.put("relativePath", file.path()); item.put("sizeBytes", file.sizeBytes()); item.put("hash", file.sha256());
             item.put("version", file.sha256());
         }
-        return success(call, output, projectId, "manifest", manifest.version());
+        return success(call, output, project.projectId(), "manifest", manifest.version());
     }
 }

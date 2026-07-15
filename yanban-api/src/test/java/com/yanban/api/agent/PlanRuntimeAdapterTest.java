@@ -67,14 +67,16 @@ class PlanRuntimeAdapterTest {
     @Test
     void outerVerifierUsesTypedPlanEvidenceAndRejectsMissingOrOldEvidence() {
         PlanAgentService service = mock(PlanAgentService.class);
+        String projectVersion = "b".repeat(64); String fileHash = "a".repeat(64);
         EvidenceLedger current = new EvidenceLedger(List.of(new EvidenceRef("trusted-plan:42:src/Main.java:h1:step",
-                EvidenceSourceType.PROJECT, "PROJECT", "src/Main.java", "step", null, "h1", "event")));
+                EvidenceSourceType.PROJECT, "PROJECT", "src/Main.java", "step", null, fileHash, "event",
+                projectVersion, fileHash, 3, 3, "project-search@1", EvidenceVersionStatus.VERIFIED)));
         when(service.executePlanResultWithinAdapter(7L, 19L, "trace", true)).thenReturn(
                 new PlanAgentService.PlanExecutionResult(plan("COMPLETED", null, List.of(step("COMPLETED"))),
                         AgentRuntimeStopSignal.NONE, current));
         ProjectService projects = mock(ProjectService.class);
-        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
-                new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, "h1"))));
+        when(projects.manifest(7L, 42L)).thenReturn(new ProjectManifestResponse(42L, projectVersion, List.of(
+                new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, fileHash))));
         CompletionVerifier verifier = new CompletionVerifier(new ObjectMapper(), new ProjectEvidenceValidator(projects),
                 mock(CandidateChangeArtifactService.class));
         AgentRuntimeService runtime = new AgentRuntimeService(List.of(new PlanRuntimeAdapter(service)), verifier,

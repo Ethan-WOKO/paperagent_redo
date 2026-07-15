@@ -1,6 +1,9 @@
 package com.yanban.api.project;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yanban.core.research.FileHash;
+import com.yanban.core.research.ProjectManifestIdentity;
+import com.yanban.core.research.ProjectRelativePath;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
@@ -148,9 +151,9 @@ public class ProjectService {
         ProjectPathPolicy policy = ProjectPathPolicy.from(project, objectMapper);
         List<ProjectFileEntry> files = project.getRootType() == ProjectRootType.MINIO_OBJECTS
                 ? listObjectFiles(project, policy) : listFiles(resolveLocal(project, policy));
-        String version = sha256(files.stream()
-                .map(file -> file.path() + "\u0000" + file.sizeBytes() + "\u0000" + file.modifiedAt() + "\u0000" + file.sha256())
-                .reduce("", (left, right) -> left + right + "\n").getBytes(StandardCharsets.UTF_8));
+        String version = ProjectManifestIdentity.derive(files.stream()
+                .map(file -> new ProjectManifestIdentity.Entry(new ProjectRelativePath(file.path()),
+                        new FileHash(file.sha256()), file.sizeBytes())).toList()).value();
         return new ProjectManifestResponse(projectId, version, files);
     }
 

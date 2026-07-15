@@ -20,13 +20,15 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
 class CompletionVerifierTest {
+    private static final String PROJECT_VERSION = "b".repeat(64);
+    private static final String FILE_HASH = "a".repeat(64);
     private final ProjectService projects = mock(ProjectService.class);
     private final CandidateChangeArtifactService candidates = mock(CandidateChangeArtifactService.class);
     private final CompletionVerifier verifier = new CompletionVerifier(new ObjectMapper(), new ProjectEvidenceValidator(projects), candidates);
 
     CompletionVerifierTest() {
-        when(projects.manifest(anyLong(), anyLong())).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
-                new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, "h1"))));
+        when(projects.manifest(anyLong(), anyLong())).thenReturn(new ProjectManifestResponse(42L, PROJECT_VERSION, List.of(
+                new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, FILE_HASH))));
         when(candidates.store(anyLong(), anyLong(), any())).thenAnswer(call -> call.getArgument(2));
     }
 
@@ -137,8 +139,7 @@ class CompletionVerifierTest {
 
     @Test
     void currentInheritedPlanEvidenceCanGroundSummaryWithoutANewToolCall() {
-        EvidenceRef inherited = new EvidenceRef("trusted-plan:42:src/Main.java:h1:step-1",
-                EvidenceSourceType.PROJECT, "PROJECT", "src/Main.java", "tool:step-1", null, "h1", "test");
+        EvidenceRef inherited = versionedPlan("trusted-plan:42:src/Main.java:h1:step-1", FILE_HASH);
         AgentRuntimeRequest request = projectRequest(AgentStrategy.SINGLE_STEP_REACT)
                 .withInheritedTrustedEvidence(new EvidenceLedger(List.of(inherited)));
 
@@ -146,7 +147,12 @@ class CompletionVerifierTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.VERIFIED);
-        assertThat(result.trustedEvidenceLedger().evidence()).containsExactly(inherited);
+        assertThat(result.trustedEvidenceLedger().evidence()).singleElement().satisfies(ref -> {
+            assertThat(ref.id()).isEqualTo(inherited.id());
+            assertThat(ref.versionStatus()).isEqualTo(EvidenceVersionStatus.VERIFIED);
+            assertThat(ref.projectVersion()).isEqualTo(PROJECT_VERSION);
+            assertThat(ref.fileHash()).isEqualTo(FILE_HASH);
+        });
     }
 
     @Test
@@ -161,6 +167,37 @@ class CompletionVerifierTest {
         assertThat(result.success()).isFalse();
         assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.INSUFFICIENT_EVIDENCE);
         assertThat(result.trustedEvidenceLedger().evidence()).isEmpty();
+    }
+
+    @Test
+    void legacyPlanEvidenceIsNotUpgradedEvenWhenPathAndHashAreCurrent() {
+        EvidenceRef legacy = new EvidenceRef("trusted-plan:42:legacy", EvidenceSourceType.PROJECT, "PROJECT",
+                "src/Main.java", "tool:old", null, FILE_HASH, "legacy");
+        AgentRuntimeRequest request = projectRequest(AgentStrategy.SINGLE_STEP_REACT)
+                .withInheritedTrustedEvidence(new EvidenceLedger(List.of(legacy)));
+
+        AgentRuntimeResult result = verifier.verify(request, success("legacy summary", List.of()));
+
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.INSUFFICIENT_EVIDENCE);
+        assertThat(result.trustedEvidenceLedger().evidence()).isEmpty();
+    }
+
+    @Test
+    void searchEvidencePreservesEachHitLineAndRejectsWrongHash() {
+        String json = "{\"projectId\":42,\"hits\":["
+                + "{\"relativePath\":\"src/Main.java\",\"hash\":\"" + FILE_HASH + "\",\"lineNumber\":7},"
+                + "{\"relativePath\":\"src/Main.java\",\"hash\":\"" + FILE_HASH + "\",\"lineNumber\":11},"
+                + "{\"relativePath\":\"src/Main.java\",\"hash\":\"" + "f".repeat(64) + "\",\"lineNumber\":13}]}";
+
+        AgentRuntimeResult result = verifier.verify(projectRequest(AgentStrategy.SINGLE_STEP_REACT),
+                success("search results", List.of(new ChatMessage("tool", json, null, "search-1"))));
+
+        assertThat(result.trustedEvidenceLedger().evidence()).hasSize(2)
+                .extracting(EvidenceRef::startLine).containsExactly(7, 11);
+        assertThat(result.trustedEvidenceLedger().evidence()).allSatisfy(ref -> {
+            assertThat(ref.startLine()).isEqualTo(ref.endLine());
+            assertThat(ref.parserVersion()).isEqualTo("project-search@1");
+        });
     }
 
     @Test
@@ -179,8 +216,7 @@ class CompletionVerifierTest {
 
     @Test
     void planNamespacedInheritedEvidenceDoesNotCollideWithReusedProviderToolCallId() {
-        EvidenceRef inherited = new EvidenceRef("trusted-plan:42:19:101:1:stable-observation",
-                EvidenceSourceType.PROJECT, "PROJECT", "src/Main.java", "tool:call-1", null, "h1", "dependency");
+        EvidenceRef inherited = versionedPlan("trusted-plan:42:19:101:1:stable-observation", FILE_HASH);
         AgentRuntimeRequest request = projectRequest(AgentStrategy.SINGLE_STEP_REACT)
                 .withInheritedTrustedEvidence(new EvidenceLedger(List.of(inherited)));
 
@@ -190,7 +226,7 @@ class CompletionVerifierTest {
         assertThat(result.success()).isTrue();
         assertThat(result.trustedEvidenceLedger().evidence()).hasSize(2);
         assertThat(result.trustedEvidenceLedger().evidence()).extracting(EvidenceRef::id)
-                .contains(inherited.id(), "trusted-tool:42:src/Main.java:h1:call-1");
+                .contains(inherited.id(), "trusted-tool:42:src/Main.java:" + FILE_HASH + ":call-1");
     }
 
     @Test
@@ -286,7 +322,7 @@ class CompletionVerifierTest {
         assertThat(result.success()).isTrue();
         assertThat(result.assistantContent()).isEqualTo("Observed once.");
         assertThat(result.trustedEvidenceLedger().evidence()).singleElement()
-                .extracting(EvidenceRef::id).asString().contains("trusted-tool:42:src/Main.java:h1:call-1");
+                .extracting(EvidenceRef::id).asString().contains("trusted-tool:42:src/Main.java:" + FILE_HASH + ":call-1");
     }
 
     @Test
@@ -454,8 +490,16 @@ class CompletionVerifierTest {
     }
 
     private ChatMessage tool(long projectId, String path, String hash) {
+        if ("h1".equals(hash)) hash = FILE_HASH;
         return new ChatMessage("tool", "{\"projectId\":" + projectId + ",\"relativePath\":\"" + path
-                + "\",\"hash\":\"" + hash + "\",\"version\":\"" + hash + "\"}", null, "call-1");
+                + "\",\"hash\":\"" + hash + "\",\"version\":\"" + hash
+                + "\",\"startLine\":2,\"endLine\":4}", null, "call-1");
+    }
+
+    private EvidenceRef versionedPlan(String id, String hash) {
+        return new EvidenceRef(id, EvidenceSourceType.PROJECT, "PROJECT", "src/Main.java", "tool:step-1",
+                null, hash, "test", PROJECT_VERSION, hash, 2, 4, "project-read-file@1",
+                EvidenceVersionStatus.VERIFIED);
     }
 
     private List<ChatMessage> researchTranscript(String hash) {

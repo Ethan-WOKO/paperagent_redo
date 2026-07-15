@@ -50,8 +50,10 @@ public class CandidateChangeArtifactService {
         }
         try {
             ProjectManifestResponse manifest = projects.manifest(userId, candidate.projectId());
-            boolean current = manifest.files().stream().anyMatch(file -> file.path().equals(candidate.relativePath())
-                    && file.sha256().equals(candidate.baseVersion()));
+            boolean current = candidate.projectVersion() != null
+                    && manifest.version().equals(candidate.projectVersion())
+                    && manifest.files().stream().anyMatch(file -> file.path().equals(candidate.relativePath())
+                    && file.sha256().equals(candidate.fileHash()));
             return withStatus(candidate, current ? CandidateChangeStatus.CANDIDATE : CandidateChangeStatus.STALE);
         } catch (ResponseStatusException ex) {
             if (ex.getStatusCode() == HttpStatus.NOT_FOUND) {
@@ -64,7 +66,7 @@ public class CandidateChangeArtifactService {
     }
 
     private CandidateChangeSet withStatus(CandidateChangeSet candidate, CandidateChangeStatus status) {
-        return new CandidateChangeSet(candidate.projectId(), candidate.relativePath(), candidate.baseVersion(),
+        return new CandidateChangeSet(candidate.projectId(), candidate.projectVersion(), candidate.relativePath(), candidate.fileHash(),
                 candidate.summary(), candidate.patchOrSuggestion(), candidate.evidenceRefs(), status,
                 CandidateChangeSet.NOT_APPLIED, candidate.artifactId());
     }

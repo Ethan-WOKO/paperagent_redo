@@ -142,9 +142,10 @@ public class CompletionVerifier {
         if (request.projectContext() == null || verification.status() != CompletionStatus.VERIFIED || !requestsModification(request.userMessage())) return null;
         return result.evidenceLedger().evidence().stream()
                 .filter(ref -> ref.sourceType() == EvidenceSourceType.PROJECT && !"manifest".equals(ref.file())
+                        && ref.versionStatus() == EvidenceVersionStatus.VERIFIED
                         && ProjectEvidenceValidator.isTrusted(ref))
                 .findFirst()
-                .map(ref -> candidateArtifacts.store(request.userId(), request.sessionId(), new CandidateChangeSet(request.projectContext().projectId(), ref.file(), ref.version(),
+                .map(ref -> candidateArtifacts.store(request.userId(), request.sessionId(), new CandidateChangeSet(request.projectContext().projectId(), ref.projectVersion(), ref.file(), ref.fileHash(),
                         "Candidate Project change; review before applying.", result.assistantContent(), List.of(ref.id()),
                         CandidateChangeStatus.CANDIDATE, CandidateChangeSet.NOT_APPLIED)))
                 .orElse(null);
@@ -164,28 +165,47 @@ public class CompletionVerifier {
         for (int i = Math.max(0, request.history().size()); i < messages.size(); i++) {
             ChatMessage message = messages.get(i);
             if (message == null || !"tool".equals(message.role()) || !StringUtils.hasText(message.content())) continue;
-            EvidenceRef ref;
             try {
                 JsonNode node = objectMapper.readTree(message.content());
                 if (node.path("projectId").asLong(-1) != request.projectContext().projectId()) continue;
-                String path = node.path("relativePath").asText("");
-                String version = node.path("hash").asText(node.path("version").asText(""));
-                if (!StringUtils.hasText(path) || !StringUtils.hasText(version)) continue;
                 String callId = message.toolCallId() == null ? "unknown" : message.toolCallId();
-                ref = new EvidenceRef("trusted-tool:" + request.projectContext().projectId() + ":" + path + ":" + version + ":" + callId,
-                        EvidenceSourceType.PROJECT, "PROJECT", path, "tool:" + callId, null, version,
-                        "current governed project tool observation");
+                if (node.path("hits").isArray()) {
+                    int hitIndex = 0;
+                    for (JsonNode hit : node.path("hits")) {
+                        String path = hit.path("relativePath").asText("");
+                        String hash = hit.path("hash").asText(hit.path("version").asText(""));
+                        int line = hit.path("lineNumber").asInt(0);
+                        EvidenceRef ref = attest(request, path, hash, line, line, "project-search@1",
+                                callId + ":hit:" + hitIndex++);
+                        if (ref != null) putExact(refs, ref);
+                    }
+                    continue;
+                }
+                String path = node.path("relativePath").asText("");
+                String hash = node.path("hash").asText(node.path("version").asText(""));
+                int startLine = node.path("startLine").asInt(0);
+                int endLine = node.path("endLine").asInt(0);
+                EvidenceRef ref = attest(request, path, hash, startLine, endLine, "project-read-file@1", callId);
+                if (ref != null) putExact(refs, ref);
             } catch (Exception ignored) {
                 // Untrusted tool text cannot create evidence.
                 continue;
             }
-            putExact(refs, ref);
         }
         for (EvidenceRef ref : ResearchProjectEvidenceAdapter.extract(objectMapper, messages, request.history().size(),
                 request.projectContext(), ResearchProjectEvidenceAdapter.allResearchTools()).evidence()) {
             putExact(refs, ref);
         }
         return new EvidenceLedger(List.copyOf(refs.values()));
+    }
+
+    private EvidenceRef attest(AgentRuntimeRequest request, String path, String hash, int startLine,
+                               int endLine, String parserVersion, String callId) {
+        if (!StringUtils.hasText(path) || !StringUtils.hasText(hash) || startLine < 1 || endLine < startLine) return null;
+        return projectEvidenceValidator.attestCurrentFile(request.userId(), request.projectContext(),
+                "trusted-tool:" + request.projectContext().projectId() + ":" + path + ":" + hash + ":" + callId,
+                path, hash, startLine, endLine, parserVersion, "tool:" + callId,
+                "current governed project tool observation");
     }
 
     private EvidenceLedger merge(EvidenceLedger left, EvidenceLedger right) {

@@ -3,6 +3,7 @@ package com.yanban.api.agent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yanban.api.project.ProjectService;
+import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.core.tool.ToolCall;
 import com.yanban.core.tool.ToolDescriptor;
 import com.yanban.core.tool.ToolExecutionContext;
@@ -31,15 +32,15 @@ abstract class AbstractProjectReadToolExecutor implements ToolExecutor {
                 ToolDescriptor.IdempotencyPolicy.NONE, ToolDescriptor.RepeatPolicy.DENY_SAME_INPUT, true);
     }
 
-    protected Long requireTrustedProject(ToolCall call) {
+    protected TrustedProject requireTrustedProject(ToolCall call) {
         Long userId = ToolExecutionContext.getCurrentUserId();
         Long trustedProjectId = ToolExecutionContext.getCurrentProjectId();
         if (userId == null || trustedProjectId == null) {
             return null;
         }
         // Re-assert ownership/read-only state at the executor boundary on every call.
-        projects.manifest(userId, trustedProjectId);
-        return trustedProjectId;
+        ProjectManifestResponse manifest = projects.manifest(userId, trustedProjectId);
+        return new TrustedProject(userId, trustedProjectId, manifest);
     }
 
     protected ToolResult rejected(ToolCall call) {
@@ -47,8 +48,9 @@ abstract class AbstractProjectReadToolExecutor implements ToolExecutor {
                 "Project tool requires an authenticated server-attested Project context.");
     }
 
-    protected ObjectNode evidence(ObjectNode output, Long projectId, String relativePath, String version) {
-        output.put("projectId", projectId);
+    protected ObjectNode evidence(ObjectNode output, TrustedProject project, String relativePath, String version) {
+        output.put("projectVersion", project.manifest().version());
+        output.put("projectId", project.projectId());
         output.put("relativePath", relativePath);
         output.put("hash", version);
         output.put("version", version);
@@ -62,4 +64,6 @@ abstract class AbstractProjectReadToolExecutor implements ToolExecutor {
         return new ToolResult(call.id(), definition().name(), true, output, null, null, false,
                 List.of(ref), List.of(), List.of(), version);
     }
+
+    protected record TrustedProject(Long userId, Long projectId, ProjectManifestResponse manifest) {}
 }
