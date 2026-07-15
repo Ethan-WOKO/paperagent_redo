@@ -83,6 +83,131 @@ class LongTermMemoryRetrievalServiceTest {
     }
 
     @Test
+    void failsClosedForCrossUserProjectScopeAndUnconfirmedSources() {
+        AgentLongTermMemory crossUser = memory(99L, null, AgentLongTermMemory.SCOPE_USER,
+                AgentLongTermMemory.SOURCE_USER_CONFIRMED, "Cross-user GraphRAG memory.", "0.90");
+        AgentLongTermMemory project = memory(USER_ID, 7L, "PROJECT",
+                AgentLongTermMemory.SOURCE_USER_CONFIRMED, "Unversioned project GraphRAG fact.", "0.90");
+        AgentLongTermMemory inferred = memory(USER_ID, null, AgentLongTermMemory.SCOPE_USER,
+                "MODEL_INFERRED", "Model-inferred GraphRAG guess.", "0.90");
+        AgentLongTermMemory confirmed = memory(USER_ID, null, AgentLongTermMemory.SCOPE_USER,
+                AgentLongTermMemory.SOURCE_USER_CONFIRMED, "Confirmed GraphRAG preference.", "0.90");
+        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+                .thenReturn(List.of(crossUser, project, inferred, confirmed));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.content()).contains("Confirmed GraphRAG preference")
+                .doesNotContain("Cross-user", "Unversioned project", "Model-inferred");
+        assertThat(context.candidateCount()).isEqualTo(1);
+    }
+
+    @Test
+    void deduplicatesContentAndRejectsSensitiveOrAbsolutePathText() {
+        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+                .thenReturn(List.of(
+                        memory("PREFERENCE", "GraphRAG answers need caveats.", "[\"GraphRAG\"]", "0.90"),
+                        memory("PREFERENCE", "  graphrag answers need   caveats. ", "[\"GraphRAG\"]", "0.89"),
+                        memory("FACT", "GraphRAG source is C:\\\\Users\\\\alice\\\\secret.txt", "[\"GraphRAG\"]", "0.95"),
+                        memory("FACT", "GraphRAG api_key=do-not-expose", "[\"GraphRAG\"]", "0.95")));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.omittedCount()).isEqualTo(1);
+        assertThat(context.content()).contains("GraphRAG answers need caveats")
+                .doesNotContain("alice", "do-not-expose");
+    }
+
+    @Test
+    void deduplicatesBeforeHitLimitSoDistinctLowerRankedMemoryIsRetainedDeterministically() {
+        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+                .thenReturn(List.of(
+                        memory("PREFERENCE", "GraphRAG answers need explicit caveats.", "[\"GraphRAG\"]", "0.95"),
+                        memory("PREFERENCE", " graphrag answers need explicit   caveats. ", "[\"GraphRAG\"]", "0.94"),
+                        memory("PREFERENCE", "GRAPHRAG ANSWERS NEED EXPLICIT CAVEATS.", "[\"GraphRAG\"]", "0.93"),
+                        memory("PREFERENCE", "GraphRAG answers need explicit caveats.", "[\"GraphRAG\"]", "0.92"),
+                        memory("PREFERENCE", "GraphRAG answers need explicit caveats.", "[\"GraphRAG\"]", "0.91"),
+                        memory("FACT", "GraphRAG evaluation uses a held-out benchmark.", "[\"GraphRAG\"]", "0.80")));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(2);
+        assertThat(context.omittedCount()).isEqualTo(4);
+        assertThat(context.content()).contains("GraphRAG answers need explicit caveats",
+                "GraphRAG evaluation uses a held-out benchmark");
+        assertThat(context.content().indexOf("GraphRAG answers need explicit caveats"))
+                .isLessThan(context.content().indexOf("GraphRAG evaluation uses a held-out benchmark"));
+    }
+
+    @Test
+    void rejectsExpandedCredentialAndLocalPathFormsButKeepsOrdinaryWebUrls() {
+        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+                .thenReturn(List.of(
+                        memory("FACT", "GraphRAG file is /workspace/private/result.txt", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG file is /mnt/data/result.txt", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG file is /root/result.txt", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG file is /data/result.txt", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG file is file:///srv/private/result.txt", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG api key is abcdefghijklmnop", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG Authorization Bearer abcdefghijklmnop", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG token is sk-abcdefghijklmnop", "[\"GraphRAG\"]", "0.90"),
+                        memory("FACT", "GraphRAG paper is available at https://example.org/papers/graphrag", "[\"GraphRAG\"]", "0.80")));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.candidateCount()).isEqualTo(1);
+        assertThat(context.content()).contains("https://example.org/papers/graphrag")
+                .doesNotContain("/workspace", "/mnt", "/root", "/data", "file://", "abcdefghijklmnop", "sk-");
+    }
+
+    @Test
+    void rejectsUnsafeTagsInvalidTagStructuresAndUnknownMemoryTypesBeforeScoringOrFormatting() {
+        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+                .thenReturn(List.of(
+                        memory("PREFERENCE", "GraphRAG preference with credential tag.",
+                                "[\"api key is abcdefghijklmnop\"]", "0.95"),
+                        memory("PREFERENCE", "GraphRAG preference with path tag.",
+                                "[\"C:\\\\Users\\\\alice\\\\secret.txt\"]", "0.95"),
+                        memory("PREFERENCE", "GraphRAG preference with oversized tag.",
+                                "[\"" + "x".repeat(65) + "\"]", "0.95"),
+                        memory("PREFERENCE", "GraphRAG preference with malformed tags.",
+                                "{\"tag\":\"GraphRAG\"}", "0.95"),
+                        memory("<script>UNKNOWN</script>", "GraphRAG preference with unknown type.",
+                                "[\"GraphRAG\"]", "0.95"),
+                        memory("PREFERENCE", "GraphRAG preference with safe academic metadata.",
+                                "[\"GraphRAG\",\"https://example.org/topic\"]", "0.80")));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.candidateCount()).isEqualTo(1);
+        assertThat(context.content()).contains("safe academic metadata", "GraphRAG", "https://example.org/topic")
+                .doesNotContain("credential tag", "path tag", "oversized tag", "malformed tags", "unknown type",
+                        "abcdefghijklmnop", "alice", "<script>");
+    }
+
+    @Test
+    void rejectsTooManyOrNonTextualTagsAndDeduplicatesSafeTagsInStableOrder() {
+        String tooManyTags = "[" + java.util.stream.IntStream.range(0, 13)
+                .mapToObj(index -> "\"tag" + index + "\"")
+                .collect(java.util.stream.Collectors.joining(",")) + "]";
+        when(memories.findByUserIdAndStatusOrderByUpdatedAtDesc(eq(USER_ID), eq(AgentLongTermMemory.STATUS_ACTIVE), any(Pageable.class)))
+                .thenReturn(List.of(
+                        memory("FACT", "GraphRAG record with too many tags.", tooManyTags, "0.95"),
+                        memory("FACT", "GraphRAG record with non-text tag.", "[\"GraphRAG\",7]", "0.95"),
+                        memory("FACT", "GraphRAG record with stable tags.",
+                                "[\"GraphRAG\",\"evaluation\",\"GraphRAG\"]", "0.80")));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "GraphRAG");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.content()).contains("tags=GraphRAG/evaluation")
+                .doesNotContain("too many tags", "non-text tag", "GraphRAG/evaluation/GraphRAG");
+    }
+
+    @Test
     void reportsBudgetOmissions() {
         List<AgentLongTermMemory> rows = List.of(
                 memory("FACT", repeated("GraphRAG memory A "), "[\"GraphRAG\"]", "0.90"),
@@ -115,6 +240,12 @@ class LongTermMemoryRetrievalServiceTest {
                 new BigDecimal(confidence),
                 null
         );
+    }
+
+    private AgentLongTermMemory memory(Long userId, Long projectId, String scope, String sourceType,
+                                       String content, String confidence) {
+        return new AgentLongTermMemory(userId, projectId, scope, "FACT", content, "[\"GraphRAG\"]",
+                sourceType, null, new BigDecimal(confidence), null);
     }
 
     private String repeated(String value) {

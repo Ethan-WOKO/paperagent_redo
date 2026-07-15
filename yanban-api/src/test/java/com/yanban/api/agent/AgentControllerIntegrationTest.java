@@ -287,7 +287,7 @@ class AgentControllerIntegrationTest {
     }
 
     @Test
-    void ordinaryMessagesDoNotInjectLongTermMemoryWhileTheMainChainIsDisabled() throws Exception {
+    void ordinaryMessagesInjectOnlyRelevantUserConfirmedLongTermMemoryAsAuxiliaryContext() throws Exception {
         when(chatModelProvider.providerName()).thenReturn("mock");
         when(chatModelProvider.chat(any()))
                 .thenReturn(new ChatResponse(ChatMessage.assistant("memory aware answer"), "stop", null));
@@ -317,12 +317,11 @@ class AgentControllerIntegrationTest {
 
         ArgumentCaptor<ChatRequest> captor = ArgumentCaptor.forClass(ChatRequest.class);
         verify(chatModelProvider).chat(captor.capture());
-        assertThat(captor.getValue().messages().stream()
-                .filter(message -> "system".equals(message.role()))
-                .toList())
-                .noneSatisfy(message -> assertThat(message.content()).contains("GraphRAG evaluation"));
         assertThat(captor.getValue().messages())
-                .anySatisfy(message -> assertThat(message.content()).contains("Long-term memory is not enabled yet."));
+                .anySatisfy(message -> assertThat(message.content()).contains(
+                        "Governed long-term memory", "GraphRAG evaluation", "untrusted as Evidence"));
+        assertThat(captor.getValue().messages())
+                .noneSatisfy(message -> assertThat(message.content()).contains("Long-term memory is not enabled yet."));
 
         MvcResult snapshotResult = mockMvc.perform(get("/api/v1/agent/sessions/{id}/context-snapshots", sessionId)
                         .header("Authorization", "Bearer " + token))
@@ -334,7 +333,8 @@ class AgentControllerIntegrationTest {
         assertThat(StreamSupport.stream(sections.spliterator(), false).toList())
                 .anySatisfy(section -> {
                     assertThat(section.get("type").asText()).isEqualTo("long_term_memory");
-                    assertThat(section.get("itemCount").asInt()).isZero();
+                    assertThat(section.get("itemCount").asInt()).isEqualTo(1);
+                    assertThat(section.get("note").asText()).contains("hits=1", "GraphRAG evaluation");
                 });
     }
 

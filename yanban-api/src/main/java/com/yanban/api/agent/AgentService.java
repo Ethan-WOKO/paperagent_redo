@@ -777,7 +777,12 @@ public class AgentService {
     }
 
     private AgentLongTermMemoryContext loadLongTermMemoryContext(Long userId, String content) {
-        return AgentLongTermMemoryContext.empty();
+        try {
+            return longTermMemoryRetrievalService.retrieve(userId, content);
+        } catch (Exception ex) {
+            log.warn("Failed to retrieve governed long-term memory userId={}", userId, ex);
+            return AgentLongTermMemoryContext.empty();
+        }
     }
 
     private void saveContextSnapshot(AgentTurn turn, AgentContextPackage contextPackage) {
