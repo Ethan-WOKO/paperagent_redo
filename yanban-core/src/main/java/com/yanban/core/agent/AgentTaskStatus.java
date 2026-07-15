@@ -6,6 +6,7 @@ public enum AgentTaskStatus {
     PENDING,
     RUNNING,
     WAITING_INPUT,
+    PAUSED,
     CANCEL_REQUESTED,
     CANCELLING,
     COMPLETED,
@@ -34,7 +35,7 @@ public enum AgentTaskStatus {
         return !isTerminal(status) && !isCancelling(status);
     }
 
-    private static AgentTaskStatus parse(String status) {
+    public static AgentTaskStatus parse(String status) {
         if (status == null || status.isBlank()) {
             return null;
         }

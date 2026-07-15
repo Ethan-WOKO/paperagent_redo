@@ -52,10 +52,14 @@ public record AgentTaskState(AgentTaskStatus status, AgentTaskPhase phase, Agent
 
     private static boolean allowsActivePhase(AgentTaskStatus status, AgentTaskPhase phase) {
         return switch (status) {
-            case PENDING -> phase == AgentTaskPhase.CREATED || phase == AgentTaskPhase.PLANNING;
-            case RUNNING -> phase == AgentTaskPhase.PLANNING || phase == AgentTaskPhase.EXECUTING
+            case PENDING -> phase == AgentTaskPhase.CREATED || phase == AgentTaskPhase.ROUTING
+                    || phase == AgentTaskPhase.CONTEXT_PREPARING || phase == AgentTaskPhase.PLANNING;
+            case RUNNING -> phase == AgentTaskPhase.ROUTING || phase == AgentTaskPhase.CONTEXT_PREPARING
+                    || phase == AgentTaskPhase.PLANNING || phase == AgentTaskPhase.EXECUTING
+                    || phase == AgentTaskPhase.WAITING_TOOL || phase == AgentTaskPhase.RESUMING
                     || phase == AgentTaskPhase.VERIFYING;
             case WAITING_INPUT -> phase == AgentTaskPhase.WAITING_INPUT;
+            case PAUSED -> phase == AgentTaskPhase.PAUSED;
             case CANCEL_REQUESTED, CANCELLING -> phase == AgentTaskPhase.FINALIZING;
             default -> false;
         };

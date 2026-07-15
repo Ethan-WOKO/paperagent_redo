@@ -11,12 +11,16 @@ import com.yanban.api.project.ProjectService;
 import com.yanban.api.project.ProjectStorageProperties;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ToolCall;
+import com.yanban.core.agent.AgentRunStateMappings;
+import com.yanban.core.agent.AgentTaskOutcome;
+import com.yanban.core.agent.AgentTurn;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class AgentServiceResearchEvidenceTest {
     private final ObjectMapper json = new ObjectMapper();
@@ -57,6 +61,14 @@ class AgentServiceResearchEvidenceTest {
         assertThat(inventory.success()).isTrue();
         assertThat(contentClaim.success()).isFalse();
         assertThat(contentClaim.outcome()).isEqualTo("INSUFFICIENT_EVIDENCE");
+
+        AgentTurn turn = new AgentTurn(3L, 7L, 10L);
+        ReflectionTestUtils.setField(turn, "id", 99L);
+        AgentRunProjection projection = AgentService.finalRunProjection(contentClaim, turn, context);
+        assertThat(projection.state().outcome()).isEqualTo(AgentTaskOutcome.PARTIAL);
+        assertThat(projection.identity().runId()).isEqualTo("AGENT_TURN:99");
+        turn.complete(11L);
+        assertThat(AgentRunStateMappings.fromTurn(turn.getStatus(), true)).isEqualTo(projection.state());
     }
 
     private AgentRuntimeResult runtime(List<ChatMessage> messages) { return new AgentRuntimeResult(true,"ok",messages,1,null,List.of(),List.of(),null,null,null); }

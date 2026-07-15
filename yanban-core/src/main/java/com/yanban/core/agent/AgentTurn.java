@@ -63,6 +63,10 @@ public class AgentTurn {
     }
 
     public void complete(Long assistantMessageId) {
+        requireOpen();
+        if (assistantMessageId == null) {
+            throw new IllegalArgumentException("canonical assistant message id must not be null");
+        }
         this.assistantMessageId = assistantMessageId;
         this.status = STATUS_COMPLETED;
         this.errorMessage = null;
@@ -70,6 +74,7 @@ public class AgentTurn {
     }
 
     public void fail(Long assistantMessageId, String errorMessage) {
+        requireOpen();
         this.assistantMessageId = assistantMessageId;
         this.status = STATUS_FAILED;
         this.errorMessage = errorMessage;
@@ -77,6 +82,7 @@ public class AgentTurn {
     }
 
     public void cancel(String errorMessage) {
+        requireOpen();
         this.status = STATUS_CANCELLED;
         this.errorMessage = errorMessage;
         this.finishedAt = Instant.now();
@@ -92,4 +98,10 @@ public class AgentTurn {
     public Instant getStartedAt() { return startedAt; }
     public Instant getFinishedAt() { return finishedAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+
+    private void requireOpen() {
+        if (!STATUS_RUNNING.equals(status)) {
+            throw new IllegalStateException("agent turn is already terminal");
+        }
+    }
 }

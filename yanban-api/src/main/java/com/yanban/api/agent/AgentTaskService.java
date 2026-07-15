@@ -7,6 +7,8 @@ import com.yanban.core.agent.AgentTaskEventRecorder;
 import com.yanban.core.agent.AgentTaskRegistry;
 import com.yanban.core.agent.AgentTaskRepository;
 import com.yanban.core.agent.AgentTaskStatus;
+import com.yanban.core.agent.AgentTaskOutcome;
+import com.yanban.core.agent.AgentTaskPhase;
 import com.yanban.paper.domain.LiteratureSearchTask;
 import com.yanban.paper.domain.LiteratureSearchTaskRepository;
 import com.yanban.paper.domain.PaperTask;
@@ -145,7 +147,9 @@ public class AgentTaskService {
                 lastEvent.message(),
                 lastEvent.createdAt(),
                 AgentTaskStatus.isTerminal(status),
-                AgentTaskStatus.canCancel(status)
+                AgentTaskStatus.canCancel(status),
+                unifiedPhase(status).name(),
+                outcomeName(status, artifacts.partialArtifactCount() > 0)
         );
     }
 
@@ -181,7 +185,9 @@ public class AgentTaskService {
                 lastEvent.message(),
                 lastEvent.createdAt(),
                 AgentTaskStatus.isTerminal(status),
-                AgentTaskStatus.canCancel(status)
+                AgentTaskStatus.canCancel(status),
+                unifiedPhase(status).name(),
+                outcomeName(status, partialResultAvailable)
         );
     }
 
@@ -208,8 +214,42 @@ public class AgentTaskService {
                 lastEvent.message(),
                 lastEvent.createdAt(),
                 AgentTaskStatus.isTerminal(task.getStatus()),
-                AgentTaskStatus.canCancel(task.getStatus())
+                AgentTaskStatus.canCancel(task.getStatus()),
+                unifiedPhase(task.getStatus()).name(),
+                outcomeName(task.getStatus(), false)
         );
+    }
+
+    private AgentTaskPhase unifiedPhase(String status) {
+        AgentTaskStatus parsed = AgentTaskStatus.parse(status);
+        if (parsed == null) {
+            return AgentTaskPhase.EXECUTING;
+        }
+        return switch (parsed) {
+            case PENDING -> AgentTaskPhase.CREATED;
+            case RUNNING -> AgentTaskPhase.EXECUTING;
+            case WAITING_INPUT -> AgentTaskPhase.WAITING_INPUT;
+            case PAUSED -> AgentTaskPhase.PAUSED;
+            case CANCEL_REQUESTED, CANCELLING, COMPLETED, FAILED, CANCELLED, STOPPED -> AgentTaskPhase.FINALIZING;
+        };
+    }
+
+    private AgentTaskOutcome terminalOutcome(String status, boolean partial) {
+        AgentTaskStatus parsed = AgentTaskStatus.parse(status);
+        if (parsed == null || !AgentTaskStatus.isTerminal(status)) {
+            return null;
+        }
+        return switch (parsed) {
+            case COMPLETED -> partial ? AgentTaskOutcome.PARTIAL : AgentTaskOutcome.SUCCEEDED;
+            case FAILED -> AgentTaskOutcome.FAILED;
+            case CANCELLED, STOPPED -> AgentTaskOutcome.CANCELLED;
+            default -> throw new IllegalStateException("non-terminal status cannot have outcome: " + status);
+        };
+    }
+
+    private String outcomeName(String status, boolean partial) {
+        AgentTaskOutcome outcome = terminalOutcome(status, partial);
+        return outcome == null ? null : outcome.name();
     }
 
     private ArtifactSummary summarizeArtifacts(Long taskId) {

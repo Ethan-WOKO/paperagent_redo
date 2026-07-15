@@ -96,6 +96,8 @@ class AgentTaskServiceTest {
         assertThat(response.startedAt()).isEqualTo(Instant.parse("2026-07-05T00:00:00Z"));
         assertThat(response.finishedAt()).isEqualTo(Instant.parse("2026-07-05T00:05:00Z"));
         assertThat(response.partialResultAvailable()).isTrue();
+        assertThat(response.phase()).isEqualTo("FINALIZING");
+        assertThat(response.outcome()).isEqualTo("CANCELLED");
         assertThat(response.completedArtifactCount()).isEqualTo(1);
         assertThat(response.partialArtifactCount()).isEqualTo(1);
         assertThat(response.lastEventId()).isEqualTo(900L);
@@ -131,6 +133,8 @@ class AgentTaskServiceTest {
         assertThat(response.cancellationReason()).isEqualTo("manual stop");
         assertThat(response.cancellable()).isFalse();
         assertThat(response.terminal()).isFalse();
+        assertThat(response.phase()).isEqualTo("FINALIZING");
+        assertThat(response.outcome()).isNull();
     }
 
     @Test
@@ -227,6 +231,7 @@ class AgentTaskServiceTest {
         TaskStatusResponse response = service.getStatus(USER_ID, TASK_ID, "literature_search");
 
         assertThat(response.partialResultAvailable()).isTrue();
+        assertThat(response.outcome()).isEqualTo("PARTIAL");
     }
 
     private PaperTask paperTask(String status, String stage) {

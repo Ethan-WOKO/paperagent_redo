@@ -20,6 +20,7 @@ import com.yanban.core.agent.AgentPlanStep;
 import com.yanban.core.agent.AgentPlanStepRepository;
 import com.yanban.core.agent.AgentPlanStepStatus;
 import com.yanban.core.agent.AgentSession;
+import com.yanban.core.agent.AgentTaskOutcome;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ToolCall;
 import jakarta.annotation.PreDestroy;
@@ -160,7 +161,7 @@ public class PlanAgentService {
         AgentCoordinationResult coordination = runtimeCoordinator.coordinate(
                 AgentCoordinationRequest.trustedPlanCreate(runtimeRequest));
         Long createdPlanId = coordination.runtimeResult().planId();
-        if (createdPlanId == null) {
+        if (coordination.runProjection().state().outcome() == AgentTaskOutcome.FAILED || createdPlanId == null) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                     blankToDefault(coordination.runtimeResult().errorMessage(), "Planner did not create an executable plan."));
         }
@@ -191,7 +192,8 @@ public class PlanAgentService {
         AgentCoordinationResult coordination = runtimeCoordinator == null
                 ? null : runtimeCoordinator.coordinate(AgentCoordinationRequest.trustedProjectPlanCreate(runtimeRequest));
         AgentRuntimeResult runtimeResult = coordination == null ? null : coordination.runtimeResult();
-        if (runtimeResult == null || runtimeResult.planId() == null) {
+        if (runtimeResult == null || coordination.runProjection().state().outcome() == AgentTaskOutcome.FAILED
+                || runtimeResult.planId() == null) {
             String error = runtimeResult == null
                     ? "Project Plan runtime is unavailable."
                     : blankToDefault(runtimeResult.errorMessage(), "Project planner failed.");
@@ -457,9 +459,10 @@ public class PlanAgentService {
         AgentCoordinationResult result = runtimeCoordinator.coordinate(
                 projectContext == null ? AgentCoordinationRequest.trustedPlanApi(request, planId)
                         : AgentCoordinationRequest.trustedProjectPlan(request, planId));
-        if (result.runtimeResult().stopReason() == AgentStopReason.POLICY_REJECTED
+        boolean infrastructureFailure = result.runtimeResult().stopReason() == AgentStopReason.POLICY_REJECTED
                 || result.runtimeResult().stopReason() == AgentStopReason.NO_RUNTIME_ADAPTER
-                || result.runtimeResult().stopReason() == AgentStopReason.RUNTIME_EXCEPTION) {
+                || result.runtimeResult().stopReason() == AgentStopReason.RUNTIME_EXCEPTION;
+        if (infrastructureFailure && result.runProjection().state().outcome() == AgentTaskOutcome.FAILED) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                     blankToDefault(result.runtimeResult().errorMessage(), "Plan runtime could not be started."));
         }

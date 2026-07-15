@@ -18,6 +18,8 @@ import com.yanban.core.agent.AgentSessionSummaryService;
 import com.yanban.core.agent.AgentSessionSummaryUpdate;
 import com.yanban.core.agent.AgentTurn;
 import com.yanban.core.agent.AgentTurnRepository;
+import com.yanban.core.agent.AgentRunIdentity;
+import com.yanban.core.agent.AgentTaskOutcome;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatRequest;
@@ -517,6 +519,13 @@ public class AgentService {
             AgentCoordinationResult coordination = agentRuntimeCoordinator.coordinate(coordinationRequest);
             AgentRuntimeResult result = enforceProjectEvidenceRequirement(projectContext, request.content(),
                     coordination.runtimeResult(), effectiveHistory.size());
+            AgentRunProjection finalProjection = finalRunProjection(result, turn, projectContext);
+            if (finalProjection.state().outcome() == null) {
+                return failTurn(session, userId, turn, saved,
+                        "Synchronous Chat does not support PAUSED or WAITING_INPUT runtime results.",
+                        result.steps(), experimentContext, memoryExperiment, result, effectiveHistory,
+                        request.clientRequestId(), elapsedMillis(startedAtNanos), modelSource);
+            }
 
             AgentMessage processMessage = saveProcessSummaryIfNeeded(session.getId(), userId, result, experimentContext);
             if (processMessage != null) {
@@ -545,8 +554,11 @@ public class AgentService {
                     result.completionTokens(),
                     result.totalTokens());
 
-            if (result.success()) {
+            if (finalProjection.state().outcome() == AgentTaskOutcome.SUCCEEDED) {
                 Long assistantMessageId = lastAssistantMessageId(runtimeMessages);
+                if (finalProjection.canonicalAnswer() == null) {
+                    throw new IllegalStateException("successful run has no canonical answer");
+                }
                 completeTurn(turn, assistantMessageId);
                 updateSessionSummaryAfterSuccess(
                         session,
@@ -590,7 +602,8 @@ public class AgentService {
             // A Plan may have a useful, persisted reflection while still being PARTIAL,
             // PAUSED, WAITING or budget-stopped. Keep that chat-visible evidence instead
             // of replacing it with a generic successful-looking failure message.
-            if (hasVisibleNonSuccessResult(result)) {
+            if (finalProjection.state().outcome() == AgentTaskOutcome.PARTIAL
+                    && finalProjection.canonicalAnswer() != null) {
                 Long assistantMessageId = lastAssistantMessageId(runtimeMessages);
                 completeTurn(turn, assistantMessageId);
                 AgentDebugPayload debugPayload = finalizeDebugPayload(
@@ -695,6 +708,16 @@ public class AgentService {
             return result.insufficientProjectEvidence(result.trustedEvidenceLedger(), historySize);
         }
         return result;
+    }
+
+    static AgentRunProjection finalRunProjection(AgentRuntimeResult result, AgentTurn turn,
+                                                  ProjectRuntimeContext projectContext) {
+        if (result == null || turn == null || turn.getId() == null) {
+            throw new IllegalArgumentException("final run projection requires a persisted turn and runtime result");
+        }
+        return AgentRunProjection.fromRuntime(result, new AgentRunIdentity(
+                "AGENT_TURN", turn.getId().toString(), turn.getUserId(), turn.getSessionId(),
+                projectContext == null ? null : projectContext.projectId()));
     }
 
     private static boolean hasProjectFileEvidence(EvidenceLedger ledger) {

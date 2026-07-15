@@ -1,6 +1,8 @@
 package com.yanban.api.agent;
 
+import com.yanban.core.agent.AgentRunIdentity;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -29,21 +31,21 @@ public class AgentRuntimeCoordinator {
                 || !resolved.userId().equals(resolved.projectContext().userId()))) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.DIRECT, false, false, null, "missing_trusted_project_context");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Project execution requires authenticated project context."));
         }
         if (request.capability() != AgentRequestCapability.PROJECT_READ
                 && request.capability() != AgentRequestCapability.TRUSTED_PROJECT_PLAN_READ && resolved.projectContext() != null) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.DIRECT, false, false, null, "project_context_capability_mismatch");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Project context is invalid for this request capability."));
         }
         if (request.capability() == AgentRequestCapability.LEGACY_PLAN_REFLECT
                 && !strategySelector.isPlanReflectIntent(resolved.userMessage())) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.DIRECT, true, false, null, "invalid_legacy_plan_reflect_request");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Legacy plan reflection requires '/plan reflect <goal>'."));
         }
         if ((request.capability() == AgentRequestCapability.TRUSTED_PLAN_API
@@ -51,7 +53,7 @@ public class AgentRuntimeCoordinator {
                 && request.planOperation() == PlanApiOperation.EXECUTE && request.planId() == null) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.PLAN_EXECUTE, true, false, null, "missing_trusted_plan_id");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Trusted Plan API execution requires a persisted plan id."));
         }
         if ((request.capability() == AgentRequestCapability.TRUSTED_PLAN_API
@@ -59,7 +61,7 @@ public class AgentRuntimeCoordinator {
                 && request.planOperation() == PlanApiOperation.CREATE && request.planId() != null) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.PLAN_EXECUTE, true, false, null, "unexpected_plan_id_for_create");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Trusted Plan API creation must not supply a plan id."));
         }
         if ((request.capability() == AgentRequestCapability.TRUSTED_PLAN_API
@@ -67,14 +69,15 @@ public class AgentRuntimeCoordinator {
                 && resolved.planId() != null && !resolved.planId().equals(request.planId())) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.PLAN_EXECUTE, true, false, null, "conflicting_trusted_plan_id");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Trusted Plan API request contains conflicting plan ids."));
         }
         if (!StringUtils.hasText(resolved.provider()) || !StringUtils.hasText(resolved.model())
+                || !StringUtils.hasText(resolved.traceId())
                 || resolved.toolPolicy() == null || resolved.maxSteps() <= 0) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.DIRECT, explicitPlanRequest, false, null, "unresolved_runtime_prerequisite");
-            return new AgentCoordinationResult(decision, failed(
+            return coordination(resolved, decision, failed(
                     decision, AgentStopReason.POLICY_REJECTED, "Runtime request is missing a resolved endpoint, budget, or tool policy."));
         }
 
@@ -93,15 +96,31 @@ public class AgentRuntimeCoordinator {
             // after the trusted capability and conflict checks have completed.
             AgentRuntimeResult result = runtimeService.run(resolved.withStrategy(selected).withPlanId(request.planId()));
             AgentStopReason stopReason = result.stopReason() == null ? stopReason(result) : result.stopReason();
-            return new AgentCoordinationResult(decision, result.withCoordination(
+            return coordination(resolved, decision, result.withCoordination(
                     selected, stopReason, result.outcome() == null ? outcome(result) : result.outcome(),
                     result.degraded(), result.degradedFrom()));
         } catch (NoRuntimeAdapterException ex) {
-            return new AgentCoordinationResult(decision, failed(decision, AgentStopReason.NO_RUNTIME_ADAPTER, ex.getMessage()));
+            return coordination(resolved, decision, failed(decision, AgentStopReason.NO_RUNTIME_ADAPTER, ex.getMessage()));
         } catch (RuntimeException ex) {
-            return new AgentCoordinationResult(decision, failed(decision, AgentStopReason.RUNTIME_EXCEPTION,
+            return coordination(resolved, decision, failed(decision, AgentStopReason.RUNTIME_EXCEPTION,
                     StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : ex.getClass().getSimpleName()));
         }
+    }
+
+    private AgentCoordinationResult coordination(AgentRuntimeRequest request,
+                                                   AgentCoordinationDecision decision,
+                                                   AgentRuntimeResult result) {
+        Long projectId = request.projectContext() == null ? null : request.projectContext().projectId();
+        boolean persistedPlan = result.planId() != null;
+        boolean hasTrace = StringUtils.hasText(request.traceId());
+        AgentRunIdentity identity = new AgentRunIdentity(
+                persistedPlan ? "AGENT_PLAN" : hasTrace ? "RUNTIME_TRACE" : "RUNTIME_INVOCATION",
+                persistedPlan ? result.planId().toString()
+                        : hasTrace ? request.traceId() : UUID.randomUUID().toString(),
+                request.userId(),
+                request.sessionId(),
+                projectId);
+        return new AgentCoordinationResult(decision, result, AgentRunProjection.fromRuntime(result, identity));
     }
 
     private AgentStopReason stopReason(AgentRuntimeResult result) {

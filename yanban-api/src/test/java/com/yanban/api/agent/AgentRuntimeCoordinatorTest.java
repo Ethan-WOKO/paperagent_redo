@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.yanban.core.model.ChatMessage;
+import com.yanban.core.agent.AgentTaskOutcome;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -32,13 +33,21 @@ class AgentRuntimeCoordinatorTest {
         assertThat(legacy.runtimeResult().stopReason()).isEqualTo(AgentStopReason.COMPLETED);
         assertThat(legacy.runtimeResult().outcome()).isEqualTo("SUCCESS");
         assertThat(legacy.runtimeResult().degraded()).isFalse();
+        assertThat(direct.runProjection().state().outcome()).isEqualTo(AgentTaskOutcome.SUCCEEDED);
+        assertThat(react.runProjection().state().outcome()).isEqualTo(AgentTaskOutcome.SUCCEEDED);
+        assertThat(legacy.runProjection().state().outcome()).isEqualTo(AgentTaskOutcome.SUCCEEDED);
+        assertThat(direct.runProjection().identity().source()).isEqualTo("RUNTIME_TRACE");
+        assertThat(react.runProjection().identity().source()).isEqualTo("RUNTIME_TRACE");
+        assertThat(legacy.runProjection().identity().source()).isEqualTo("RUNTIME_TRACE");
+        assertThat(direct.runProjection().identity().runId()).isEqualTo("RUNTIME_TRACE:trace");
     }
 
     @Test
     void trustedPlanApiSelectsPlanExecuteWithoutNaturalLanguagePromotion() {
         AgentRuntimeService runtime = mock(AgentRuntimeService.class);
         when(runtime.run(org.mockito.ArgumentMatchers.any())).thenReturn(new AgentRuntimeResult(
-                true, "ok", List.of(ChatMessage.assistant("ok")), 1, null, List.of(), List.of(), null, null, null));
+                true, "ok", List.of(ChatMessage.assistant("ok")), 1, null, List.of(), List.of(), null, null, null)
+                .withPlanId(91L));
         AgentRuntimeCoordinator coordinator = new AgentRuntimeCoordinator(runtime, new AgentStrategySelector());
 
         AgentCoordinationResult result = coordinator.coordinate(AgentCoordinationRequest.trustedPlanApi(
@@ -49,6 +58,8 @@ class AgentRuntimeCoordinatorTest {
         org.mockito.ArgumentCaptor<AgentRuntimeRequest> captured = org.mockito.ArgumentCaptor.forClass(AgentRuntimeRequest.class);
         verify(runtime).run(captured.capture());
         assertThat(captured.getValue().planId()).isEqualTo(91L);
+        assertThat(result.runProjection().identity().source()).isEqualTo("AGENT_PLAN");
+        assertThat(result.runProjection().identity().sourceId()).isEqualTo("91");
     }
 
     @Test
@@ -169,10 +180,48 @@ class AgentRuntimeCoordinatorTest {
         assertThat(result.runtimeResult().stopReason()).isEqualTo(AgentStopReason.RUNTIME_EXCEPTION);
     }
 
+    @Test
+    void sameSessionRunsRequireDistinctTraceIdentities() {
+        AgentRuntimeService runtime = mock(AgentRuntimeService.class);
+        when(runtime.run(org.mockito.ArgumentMatchers.any())).thenReturn(new AgentRuntimeResult(
+                true, "ok", List.of(), 1, null, List.of(), List.of(), null, null, null));
+        AgentRuntimeCoordinator coordinator = new AgentRuntimeCoordinator(runtime, new AgentStrategySelector());
+
+        AgentCoordinationResult first = coordinator.coordinate(AgentCoordinationRequest.chat(
+                request("first", List.of(), "trace-1")));
+        AgentCoordinationResult second = coordinator.coordinate(AgentCoordinationRequest.chat(
+                request("second", List.of(), "trace-2")));
+
+        assertThat(first.runProjection().identity().runId()).isNotEqualTo(second.runProjection().identity().runId());
+    }
+
+    @Test
+    void missingAndBlankTraceReturnStablePolicyRejectionsWithUniqueInvocationIdentities() {
+        AgentRuntimeService runtime = mock(AgentRuntimeService.class);
+        AgentRuntimeCoordinator coordinator = new AgentRuntimeCoordinator(runtime, new AgentStrategySelector());
+
+        AgentCoordinationResult missing = coordinator.coordinate(AgentCoordinationRequest.chat(
+                request("first", List.of(), null)));
+        AgentCoordinationResult blank = coordinator.coordinate(AgentCoordinationRequest.chat(
+                request("second", List.of(), "   ")));
+
+        assertThat(missing.runtimeResult().stopReason()).isEqualTo(AgentStopReason.POLICY_REJECTED);
+        assertThat(blank.runtimeResult().stopReason()).isEqualTo(AgentStopReason.POLICY_REJECTED);
+        assertThat(missing.runProjection().identity().source()).isEqualTo("RUNTIME_INVOCATION");
+        assertThat(blank.runProjection().identity().source()).isEqualTo("RUNTIME_INVOCATION");
+        assertThat(missing.runProjection().identity().runId())
+                .isNotEqualTo(blank.runProjection().identity().runId());
+        verify(runtime, org.mockito.Mockito.never()).run(org.mockito.ArgumentMatchers.any());
+    }
+
     private AgentRuntimeRequest request(String message, List<String> tools) {
+        return request(message, tools, "trace");
+    }
+
+    private AgentRuntimeRequest request(String message, List<String> tools, String traceId) {
         return new AgentRuntimeRequest(null, 1L, List.of(), 1L, message, "test", "model", null, null, 2,
                 false, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J,
                 AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, new ResolvedToolPolicy(tools, 2, 1, "test"),
-                null, null, "trace", null, null);
+                null, null, traceId, null, null);
     }
 }

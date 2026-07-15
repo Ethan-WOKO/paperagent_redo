@@ -674,7 +674,11 @@ class PlanAgentServiceTest {
         AgentRuntimeResult runtimeResult = new AgentRuntimeResult(true, "created", List.of(), 0,
                 null, List.of(), List.of(), null, null, null).withPlanId(PLAN_ID);
         when(runtimeCoordinator.coordinate(any())).thenReturn(new AgentCoordinationResult(
-                new AgentCoordinationDecision(AgentStrategy.PLAN_EXECUTE, true, false, null, "trusted_plan_api"), runtimeResult));
+                new AgentCoordinationDecision(AgentStrategy.PLAN_EXECUTE, true, false, null, "trusted_plan_api"),
+                runtimeResult,
+                AgentRunProjection.fromRuntime(runtimeResult,
+                        new com.yanban.core.agent.AgentRunIdentity("AGENT_PLAN", PLAN_ID.toString(),
+                                USER_ID, SESSION_ID, null))));
 
         AgentPlanResponse response = coordinated.createPlan(USER_ID, SESSION_ID,
                 new CreateAgentPlanRequest("Research safely", false, null, false));
@@ -714,6 +718,31 @@ class PlanAgentServiceTest {
 
         verify(runtimeCoordinator, org.mockito.Mockito.never()).coordinate(any());
         verify(events).save(any(AgentPlanEvent.class));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void coordinatorReturnsPersistedDomainFailedPlanWithoutTurningItIntoHttp500() {
+        PlanAgentService coordinated = coordinatedService();
+        AgentRuntimeResult failed = new AgentRuntimeResult(false, "Plan failed", List.of(), 1,
+                "step failed", List.of(), List.of(), null, null, null)
+                .withPlanId(PLAN_ID)
+                .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.RUNTIME_FAILED,
+                        "FAILURE", false, null);
+        when(runtimeCoordinator.coordinate(any())).thenAnswer(invocation -> {
+            plan.markFailed("step failed");
+            return new AgentCoordinationResult(
+                    new AgentCoordinationDecision(AgentStrategy.PLAN_EXECUTE, true, false, null, "trusted_plan_api"),
+                    failed,
+                    AgentRunProjection.fromRuntime(failed,
+                            new com.yanban.core.agent.AgentRunIdentity("AGENT_PLAN", PLAN_ID.toString(),
+                                    USER_ID, SESSION_ID, null)));
+        });
+
+        AgentPlanResponse response = coordinated.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.FAILED.name());
+        assertThat(response.errorMessage()).isEqualTo("step failed");
     }
 
     private PlanAgentService coordinatedService() {

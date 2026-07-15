@@ -3,9 +3,14 @@ package com.yanban.core.agent;
 /** Stable runtime phase vocabulary; persistence remains on the existing current_stage field in MVP-0. */
 public enum AgentTaskPhase {
     CREATED,
+    ROUTING,
+    CONTEXT_PREPARING,
     PLANNING,
     EXECUTING,
+    WAITING_TOOL,
     WAITING_INPUT,
+    PAUSED,
+    RESUMING,
     VERIFYING,
     FINALIZING
 }
