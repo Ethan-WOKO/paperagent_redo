@@ -35,6 +35,31 @@ export interface ProjectEvidenceResponse {
   current: boolean;
 }
 
+export interface ProjectRevisionResponse {
+  id: number;
+  projectVersion: string;
+  current: boolean;
+  fileCount: number;
+  totalBytes: number;
+  sourceType: 'UPLOAD' | 'APPLICATION';
+  createdAt: string;
+}
+
+export interface ProjectRevisionOperationResponse {
+  operationId: number;
+  operationType: 'APPLICATION' | 'ROLLBACK';
+  outcome: 'SUCCEEDED';
+  baseRevisionId: number;
+  baseVersion: string;
+  resultRevisionId: number;
+  resultVersion: string;
+  candidateArtifactId: number | null;
+  candidateFingerprint: string | null;
+  acceptedChangeIndexes: number[];
+  rejectedChangeIndexes: number[];
+  completedAt: string;
+}
+
 export interface UploadProjectPayload {
   name: string;
   includeRules: string[];
@@ -116,5 +141,21 @@ export function createProjectPlan(projectId: number, sessionId: number, payload:
 }
 export function listProjectEvidence(projectId: number, planId: number) {
   return http.get<ProjectEvidenceResponse[]>(`/projects/${projectId}/agent/plans/${planId}/evidence`);
+}
+export function applyProjectCandidate(projectId: number, artifactId: number, projectVersion: string,
+                                      acceptedChangeIndexes: number[], idempotencyKey: string) {
+  return http.post<ProjectRevisionOperationResponse>(`/projects/${projectId}/candidates/${artifactId}/applications`,
+    { acceptedChangeIndexes }, { headers: { 'Idempotency-Key': idempotencyKey, 'If-Match': projectVersion } });
+}
+export function listProjectRevisions(projectId: number) {
+  return http.get<ProjectRevisionResponse[]>(`/projects/${projectId}/revisions`);
+}
+export function rollbackProjectRevision(projectId: number, revisionId: number, projectVersion: string,
+                                        idempotencyKey: string) {
+  return http.post<ProjectRevisionOperationResponse>(`/projects/${projectId}/revisions/${revisionId}/rollback`,
+    {}, { headers: { 'Idempotency-Key': idempotencyKey, 'If-Match': projectVersion } });
+}
+export function exportProjectRevision(projectId: number, revisionId: number) {
+  return http.get<Blob>(`/projects/${projectId}/revisions/${revisionId}/export`, { responseType: 'blob' });
 }
 export type { AgentPlanResponse, AgentMessageResponse, AgentSessionResponse };

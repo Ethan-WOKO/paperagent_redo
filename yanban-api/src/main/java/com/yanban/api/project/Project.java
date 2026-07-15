@@ -8,6 +8,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.Instant;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
@@ -51,6 +52,13 @@ public class Project {
 
     @Column(name = "index_version", nullable = false, length = 128)
     private String indexVersion;
+
+    @Column(name = "current_revision_id")
+    private Long currentRevisionId;
+
+    @Version
+    @Column(name = "revision_lock", nullable = false)
+    private long revisionLock;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -105,6 +113,17 @@ public class Project {
     public String getIgnoreRules() { return ignoreRules; }
     public Instant getLastIndexedAt() { return lastIndexedAt; }
     public String getIndexVersion() { return indexVersion; }
+    public Long getCurrentRevisionId() { return currentRevisionId; }
+    public long getRevisionLock() { return revisionLock; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+
+    void publishRevision(ProjectRevision revision) {
+        if (revision == null || id == null || !id.equals(revision.getProjectId())
+                || !userId.equals(revision.getUserId()) || rootType != ProjectRootType.MINIO_OBJECTS) {
+            throw new IllegalArgumentException("Revision does not belong to this managed Project");
+        }
+        rootPath = revision.getObjectPrefix();
+        currentRevisionId = revision.getId();
+    }
 }

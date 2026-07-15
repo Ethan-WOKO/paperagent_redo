@@ -9,6 +9,11 @@ public interface ProjectObjectStorage {
 
     ProjectObjectEntry storeFile(String prefix, String relativePath, MultipartFile file);
 
+    /** Writes one immutable revision object. Callers must always use a freshly allocated prefix. */
+    default ProjectObjectEntry storeBytes(String prefix, String relativePath, byte[] content, String contentType) {
+        throw new UnsupportedOperationException("Project revision byte writes are not configured");
+    }
+
     void writeManifest(String prefix, List<ProjectObjectEntry> files);
 
     List<ProjectObjectEntry> readManifest(String prefix);

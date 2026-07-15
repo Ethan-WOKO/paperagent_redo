@@ -84,6 +84,26 @@ public class MinioProjectObjectStorage implements ProjectObjectStorage {
     }
 
     @Override
+    public ProjectObjectEntry storeBytes(String prefix, String relativePath, byte[] content, String contentType) {
+        String safePrefix = validatePrefix(prefix);
+        String portablePath = portableRelativePath(relativePath);
+        if (content == null) throw new InvalidProjectPathException("Project revision content is required");
+        try {
+            bucketProvisioner.ensureBucketExists();
+            minioClient.putObject(PutObjectArgs.builder()
+                    .bucket(bucket())
+                    .object(fileKey(safePrefix, portablePath))
+                    .stream(new ByteArrayInputStream(content), content.length, -1)
+                    .contentType(contentType(contentType))
+                    .build());
+            String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+            return new ProjectObjectEntry(portablePath, content.length, Instant.now(), hash);
+        } catch (Exception ex) {
+            throw unavailable("Project revision file upload failed", ex);
+        }
+    }
+
+    @Override
     public void writeManifest(String prefix, List<ProjectObjectEntry> files) {
         String safePrefix = validatePrefix(prefix);
         try {

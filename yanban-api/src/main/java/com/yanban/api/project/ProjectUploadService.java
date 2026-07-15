@@ -11,6 +11,9 @@ import java.util.List;
 import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.yanban.core.research.FileHash;
+import com.yanban.core.research.ProjectManifestIdentity;
+import com.yanban.core.research.ProjectRelativePath;
 import org.springframework.web.multipart.MultipartFile;
 
 /** Imports a browser-selected folder into an isolated MinIO Project snapshot. */
@@ -23,15 +26,26 @@ public class ProjectUploadService {
     private final ProjectObjectStorage objectStorage;
     private final ProjectStorageProperties properties;
     private final ObjectMapper objectMapper;
+    private final ProjectRevisionRepository revisions;
 
     public ProjectUploadService(ProjectRepository projects,
                                 ProjectObjectStorage objectStorage,
                                 ProjectStorageProperties properties,
                                 ObjectMapper objectMapper) {
+        this(projects, objectStorage, properties, objectMapper, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProjectUploadService(ProjectRepository projects,
+                                ProjectObjectStorage objectStorage,
+                                ProjectStorageProperties properties,
+                                ObjectMapper objectMapper,
+                                ProjectRevisionRepository revisions) {
         this.projects = projects;
         this.objectStorage = objectStorage;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.revisions = revisions;
     }
 
     @Transactional
@@ -49,7 +63,18 @@ public class ProjectUploadService {
             objectStorage.writeManifest(prefix, entries);
             Project project = Project.minioUpload(userId, name.trim(), prefix,
                     serializedIncludes, serializedIgnores);
-            return projects.saveAndFlush(project);
+            project = projects.saveAndFlush(project);
+            if (revisions != null) {
+                String version = ProjectManifestIdentity.derive(entries.stream().map(entry ->
+                        new ProjectManifestIdentity.Entry(new ProjectRelativePath(entry.path()),
+                                new FileHash(entry.sha256()), entry.sizeBytes())).toList()).value();
+                long totalBytes = entries.stream().mapToLong(ProjectObjectEntry::sizeBytes).sum();
+                ProjectRevision revision = revisions.saveAndFlush(new ProjectRevision(project.getId(), userId,
+                        version, prefix, entries.size(), totalBytes, ProjectRevision.SourceType.UPLOAD, null));
+                project.publishRevision(revision);
+                project = projects.saveAndFlush(project);
+            }
+            return project;
         } catch (RuntimeException ex) {
             safeDeletePrefix(prefix);
             throw ex;

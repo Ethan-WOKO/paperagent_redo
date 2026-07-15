@@ -126,6 +126,7 @@
               <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'preview' }" @click="toggleInspector('preview')">Preview</button>
               <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'evidence' }" @click="toggleInspector('evidence')">Evidence <span>{{ evidence.length }}</span></button>
               <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'changes' }" @click="toggleInspector('changes')">Changes <span>{{ candidates.length }}</span></button>
+              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'versions' }" @click="toggleInspector('versions')">Versions <span>{{ revisions.length }}</span></button>
               <NButton size="tiny" quaternary :disabled="loading.send" @click="startNewConversation">New conversation</NButton>
             </div>
           </div>
@@ -136,6 +137,7 @@
                 <button :class="{ active: inspectorTab === 'preview' }" @click="inspectorTab = 'preview'">Preview</button>
                 <button :class="{ active: inspectorTab === 'evidence' }" @click="inspectorTab = 'evidence'">Evidence</button>
                 <button :class="{ active: inspectorTab === 'changes' }" @click="inspectorTab = 'changes'">Changes</button>
+                <button :class="{ active: inspectorTab === 'versions' }" @click="inspectorTab = 'versions'">Versions</button>
               </div>
               <button type="button" class="project-inspector__close" @click="inspectorOpen = false">Hide</button>
             </div>
@@ -171,7 +173,7 @@
                 </div>
               </template>
 
-              <template v-else>
+              <template v-else-if="inspectorTab === 'changes'">
                 <div class="project-inspector__changes-head">
                   <p class="project-panel__hint">Read-only suggestions. Original Project files are never changed.</p>
                   <NButton size="tiny" secondary :loading="loading.candidates" :disabled="!activeProject || candidates.length === 0" title="Compare each proposal's base hash with the current Project file" @click="refreshCandidates">Revalidate</NButton>
@@ -224,8 +226,14 @@
                     </section>
 
                     <section class="project-candidate-files">
-                      <article v-for="entry in selectedCandidate.candidate.reviewDiff.entries" :key="`${entry.type}:${entry.relativePath}`">
+                      <article v-for="(entry, changeIndex) in selectedCandidate.candidate.reviewDiff.entries" :key="`${entry.type}:${entry.relativePath}`">
                         <header>
+                          <NCheckbox
+                            :checked="selectedChangeIndexes.has(changeIndex)"
+                            :disabled="!candidateCanApply(selectedCandidate) || loading.applyCandidate"
+                            :aria-label="`Accept ${entry.relativePath}`"
+                            @update:checked="(checked) => setChangeSelected(changeIndex, checked)"
+                          />
                           <NTag size="tiny" :type="candidateChangeType(entry.type)">{{ entry.type }}</NTag>
                           <strong :title="entry.relativePath">{{ entry.relativePath }}</strong>
                         </header>
@@ -252,7 +260,48 @@
                         </details>
                       </article>
                     </section>
+                    <NAlert v-if="applicationMessage" :type="applicationMessageType" :show-icon="false">
+                      {{ applicationMessage }}
+                    </NAlert>
+                    <div class="project-candidate-apply">
+                      <span>{{ selectedChangeIndexes.size }} of {{ selectedCandidate.candidate.changes.length }} changes selected</span>
+                      <NButton
+                        type="primary"
+                        size="small"
+                        :loading="loading.applyCandidate"
+                        :disabled="!candidateCanApply(selectedCandidate) || selectedChangeIndexes.size === 0"
+                        @click="openApplyConfirmation"
+                      >Apply selected changes</NButton>
+                    </div>
                   </template>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="project-inspector__changes-head">
+                  <p class="project-panel__hint">Immutable server-managed Project revisions.</p>
+                  <NButton size="tiny" secondary :loading="loading.revisions" :disabled="!activeProject" @click="loadRevisions">Refresh</NButton>
+                </div>
+                <NAlert v-if="revisionMessage" :type="revisionMessageType" :show-icon="false">{{ revisionMessage }}</NAlert>
+                <div class="project-revision-list">
+                  <article v-for="revision in revisions" :key="revision.id">
+                    <header>
+                      <strong :title="revision.projectVersion">{{ shortHash(revision.projectVersion) }}</strong>
+                      <NTag v-if="revision.current" size="tiny" type="success">CURRENT</NTag>
+                      <NTag size="tiny" type="info">{{ revision.sourceType }}</NTag>
+                    </header>
+                    <dl>
+                      <dt>revision</dt><dd>{{ revision.id }}</dd>
+                      <dt>files</dt><dd>{{ revision.fileCount }}</dd>
+                      <dt>size</dt><dd>{{ formatBytes(revision.totalBytes) }}</dd>
+                      <dt>created</dt><dd>{{ formatDateTime(revision.createdAt) }}</dd>
+                    </dl>
+                    <div class="project-revision-actions">
+                      <NButton size="tiny" secondary :loading="exportingRevisionId === revision.id" @click="downloadRevision(revision)">Export ZIP</NButton>
+                      <NButton size="tiny" secondary :disabled="revision.current || loading.rollback" @click="openRollbackConfirmation(revision)">Rollback</NButton>
+                    </div>
+                  </article>
+                  <NEmpty v-if="!loading.revisions && revisions.length === 0" size="small" description="Version history begins when a managed Project is imported or its first Candidate is applied." />
                 </div>
               </template>
             </div>
@@ -472,22 +521,44 @@
         </NSpace>
       </NSpace>
     </NModal>
+
+    <NModal v-model:show="applyModalOpen" preset="card" title="Apply selected Candidate changes" :mask-closable="!loading.applyCandidate" :closable="!loading.applyCandidate" :style="{ width: 'min(520px, calc(100vw - 32px))' }">
+      <p class="project-delete-copy">
+        This creates a new immutable Project version from {{ selectedChangeIndexes.size }} selected change{{ selectedChangeIndexes.size === 1 ? '' : 's' }}.
+        The current and earlier versions remain available for rollback.
+      </p>
+      <NSpace justify="end">
+        <NButton :disabled="loading.applyCandidate" @click="applyModalOpen = false">Cancel</NButton>
+        <NButton type="primary" :loading="loading.applyCandidate" @click="confirmApplyCandidate">Create new version</NButton>
+      </NSpace>
+    </NModal>
+
+    <NModal v-model:show="rollbackModalOpen" preset="card" title="Rollback Project version" :mask-closable="!loading.rollback" :closable="!loading.rollback" :style="{ width: 'min(520px, calc(100vw - 32px))' }">
+      <p class="project-delete-copy">
+        Switch the current Project to revision {{ rollbackTarget?.id }} ({{ rollbackTarget ? shortHash(rollbackTarget.projectVersion) : '' }}).
+        No revision or Candidate will be deleted or modified.
+      </p>
+      <NSpace justify="end">
+        <NButton :disabled="loading.rollback" @click="rollbackModalOpen = false">Cancel</NButton>
+        <NButton type="warning" :loading="loading.rollback" @click="confirmRollback">Rollback</NButton>
+      </NSpace>
+    </NModal>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { NAlert, NButton, NDropdown, NEmpty, NForm, NFormItem, NInput, NModal, NSpace, NSpin, NTag } from 'naive-ui';
+import { NAlert, NButton, NCheckbox, NDropdown, NEmpty, NForm, NFormItem, NInput, NModal, NSpace, NSpin, NTag } from 'naive-ui';
 import AppLayout from '@/components/AppLayout.vue';
 import MarkdownMessage from '@/components/MarkdownMessage.vue';
 import { deleteSession as deleteAgentSession, listMessages, listPlans, updateSession as updateAgentSession, type AgentMessageResponse, type AgentPlanResponse, type AgentSessionResponse } from '@/api/agent';
 import { candidateReviewFailure, getCandidateChange, isCandidateArtifactV1, listArtifacts, type ArtifactResponse, type CandidateArtifactResponse, type CandidateChangeType, type CandidateEvidenceRef, type CandidateReviewState } from '@/api/artifact';
-import { createProjectPlan, createProjectSession, deleteProject, filterProjectUploadFiles, getProjectManifest, listProjectEvidence, listProjectSessions, listProjects, readProjectFile, searchProject, sendProjectMessage, uploadProject, type ProjectEvidenceResponse, type ProjectFileResponse, type ProjectManifestResponse, type ProjectSearchHit, type ProjectSummaryResponse } from '@/api/project';
+import { applyProjectCandidate, createProjectPlan, createProjectSession, deleteProject, exportProjectRevision, filterProjectUploadFiles, getProjectManifest, listProjectEvidence, listProjectRevisions, listProjectSessions, listProjects, readProjectFile, rollbackProjectRevision, searchProject, sendProjectMessage, uploadProject, type ProjectEvidenceResponse, type ProjectFileResponse, type ProjectManifestResponse, type ProjectRevisionResponse, type ProjectSearchHit, type ProjectSummaryResponse } from '@/api/project';
 import { useAuthStore } from '@/stores/auth';
 import { useI18n } from '@/composables/useI18n';
 
 type ProjectChatRole = 'user' | 'assistant' | 'process';
-type ProjectInspectorTab = 'preview' | 'evidence' | 'changes';
+type ProjectInspectorTab = 'preview' | 'evidence' | 'changes' | 'versions';
 
 interface ProjectChatMessage {
   localId: string;
@@ -545,6 +616,16 @@ const selectedPlan = ref<AgentPlanResponse | null>(null);
 const evidence = ref<ProjectEvidenceResponse[]>([]);
 const candidates = ref<CandidateReviewItem[]>([]);
 const selectedCandidate = ref<CandidateReviewItem | null>(null);
+const selectedChangeIndexes = ref<Set<number>>(new Set());
+const revisions = ref<ProjectRevisionResponse[]>([]);
+const applyModalOpen = ref(false);
+const rollbackModalOpen = ref(false);
+const rollbackTarget = ref<ProjectRevisionResponse | null>(null);
+const exportingRevisionId = ref<number | null>(null);
+const applicationMessage = ref('');
+const applicationMessageType = ref<'success' | 'warning' | 'error'>('success');
+const revisionMessage = ref('');
+const revisionMessageType = ref<'success' | 'warning' | 'error'>('success');
 const centerTab = ref<'chat' | 'plan'>('chat');
 const inspectorTab = ref<ProjectInspectorTab>('preview');
 const inspectorOpen = ref(true);
@@ -580,6 +661,9 @@ const loading = reactive({
   plan: false,
   evidence: false,
   candidates: false,
+  revisions: false,
+  applyCandidate: false,
+  rollback: false,
   create: false,
   deleteProject: false,
   renameSession: false,
@@ -1000,7 +1084,143 @@ function showInspector(tab: ProjectInspectorTab) {
 
 function selectCandidate(candidate: CandidateReviewItem) {
   selectedCandidate.value = candidate;
+  selectedChangeIndexes.value = candidateCanApply(candidate) && candidate.candidate
+    ? new Set(candidate.candidate.changes.map((_, index) => index))
+    : new Set();
+  applicationMessage.value = '';
   showInspector('changes');
+}
+
+function candidateCanApply(item: CandidateReviewItem | null) {
+  return !!item?.candidate
+    && item.state === 'VALIDATED'
+    && item.candidate.governanceStatus === 'VALIDATED'
+    && item.candidate.applicationStatus === 'NOT_APPLIED'
+    && item.candidate.validation.issues.length === 0
+    && item.candidate.validation.checks.every((check) => check.status === 'PASSED');
+}
+
+function setChangeSelected(index: number, checked: boolean) {
+  const next = new Set(selectedChangeIndexes.value);
+  if (checked) next.add(index);
+  else next.delete(index);
+  selectedChangeIndexes.value = next;
+}
+
+function openApplyConfirmation() {
+  if (!candidateCanApply(selectedCandidate.value) || selectedChangeIndexes.value.size === 0) return;
+  applyModalOpen.value = true;
+}
+
+async function confirmApplyCandidate() {
+  const projectId = activeProjectId.value;
+  const item = selectedCandidate.value;
+  if (!projectId || !item?.candidate || !candidateCanApply(item) || selectedChangeIndexes.value.size === 0) return;
+  loading.applyCandidate = true;
+  applicationMessage.value = '';
+  try {
+    const accepted = [...selectedChangeIndexes.value].sort((left, right) => left - right);
+    const { data } = await applyProjectCandidate(projectId, item.artifact.id,
+      item.candidate.projectVersion, accepted, newClientRequestId());
+    applyModalOpen.value = false;
+    applicationMessageType.value = 'success';
+    applicationMessage.value = `New Project version ${shortHash(data.resultVersion)} was published. Candidate ${item.artifact.id} remains NOT_APPLIED.`;
+    selectedFile.value = null;
+    searchResults.value = [];
+    await Promise.all([loadManifest(projectEpoch), loadRevisions()]);
+    if (activeSessionId.value) await loadCandidates(activeSessionId.value, projectEpoch);
+    showInspector('versions');
+  } catch (cause) {
+    const status = apiStatus(cause);
+    applicationMessageType.value = status === 409 ? 'warning' : 'error';
+    applicationMessage.value = status === 409
+      ? `The Project changed before publication. Revalidate the Candidate and review it again. ${apiError(cause)}`
+      : status === 422
+        ? `The Candidate failed current validation and was not applied. ${apiError(cause)}`
+        : apiError(cause);
+  } finally {
+    loading.applyCandidate = false;
+  }
+}
+
+async function loadRevisions() {
+  const projectId = activeProjectId.value;
+  const epoch = projectEpoch;
+  if (!projectId) return;
+  loading.revisions = true;
+  try {
+    const { data } = await listProjectRevisions(projectId);
+    if (epoch === projectEpoch && projectId === activeProjectId.value) revisions.value = data;
+  } catch (cause) {
+    if (epoch === projectEpoch) {
+      revisionMessageType.value = 'error';
+      revisionMessage.value = apiError(cause);
+    }
+  } finally {
+    if (epoch === projectEpoch) loading.revisions = false;
+  }
+}
+
+function openRollbackConfirmation(revision: ProjectRevisionResponse) {
+  if (revision.current) return;
+  rollbackTarget.value = revision;
+  rollbackModalOpen.value = true;
+}
+
+async function confirmRollback() {
+  const projectId = activeProjectId.value;
+  const target = rollbackTarget.value;
+  const currentVersion = manifest.value?.version;
+  if (!projectId || !target || !currentVersion) return;
+  loading.rollback = true;
+  revisionMessage.value = '';
+  try {
+    const { data } = await rollbackProjectRevision(projectId, target.id, currentVersion, newClientRequestId());
+    rollbackModalOpen.value = false;
+    rollbackTarget.value = null;
+    revisionMessageType.value = 'success';
+    revisionMessage.value = `Current Project rolled back to ${shortHash(data.resultVersion)}. No history was deleted.`;
+    selectedFile.value = null;
+    searchResults.value = [];
+    await Promise.all([loadManifest(projectEpoch), loadRevisions()]);
+    if (activeSessionId.value) await loadCandidates(activeSessionId.value, projectEpoch);
+  } catch (cause) {
+    const status = apiStatus(cause);
+    revisionMessageType.value = status === 409 ? 'warning' : 'error';
+    revisionMessage.value = status === 409
+      ? `The current Project changed before rollback. Refresh versions and try again. ${apiError(cause)}`
+      : apiError(cause);
+  } finally {
+    loading.rollback = false;
+  }
+}
+
+async function downloadRevision(revision: ProjectRevisionResponse) {
+  const project = activeProject.value;
+  if (!project || exportingRevisionId.value != null) return;
+  exportingRevisionId.value = revision.id;
+  revisionMessage.value = '';
+  try {
+    const { data } = await exportProjectRevision(project.id, revision.id);
+    const url = URL.createObjectURL(data);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${project.name.replace(/[^A-Za-z0-9._-]+/g, '-') || 'project'}-revision-${revision.id}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (cause) {
+    revisionMessageType.value = 'error';
+    revisionMessage.value = apiError(cause);
+  } finally {
+    exportingRevisionId.value = null;
+  }
+}
+
+function formatDateTime(value: string) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
 function candidateTitle(item: CandidateReviewItem) {
@@ -1260,12 +1480,16 @@ async function selectProject(projectId: number) {
   plans.value = [];
   evidence.value = [];
   candidates.value = [];
+  revisions.value = [];
   selectedPlan.value = null;
   selectedCandidate.value = null;
+  selectedChangeIndexes.value = new Set();
+  applicationMessage.value = '';
+  revisionMessage.value = '';
   inspectorTab.value = 'preview';
   inspectorOpen.value = true;
   const epoch = projectEpoch;
-  await Promise.all([loadManifest(epoch), loadConversation(epoch)]);
+  await Promise.all([loadManifest(epoch), loadConversation(epoch), loadRevisions()]);
 }
 
 async function loadManifest(epoch = projectEpoch) {
@@ -1560,7 +1784,14 @@ async function loadCandidates(sessionId: number, epoch = projectEpoch) {
     }));
     if (epoch !== projectEpoch) return;
     candidates.value = details;
-    if (selectedCandidate.value) selectedCandidate.value = candidates.value.find((item) => item.artifact.id === selectedCandidate.value?.artifact.id) || null;
+    if (selectedCandidate.value) {
+      selectedCandidate.value = candidates.value.find((item) => item.artifact.id === selectedCandidate.value?.artifact.id) || null;
+      if (!candidateCanApply(selectedCandidate.value)) selectedChangeIndexes.value = new Set();
+      else if (selectedCandidate.value?.candidate) {
+        selectedChangeIndexes.value = new Set([...selectedChangeIndexes.value]
+          .filter((index) => index < selectedCandidate.value!.candidate!.changes.length));
+      }
+    }
   } catch (cause) {
     if (epoch === projectEpoch) error.value = apiError(cause);
   } finally {
@@ -2050,6 +2281,16 @@ onUnmounted(() => {
 .project-delete-marker { margin: 0; padding: 7px 0; color: var(--yb-text-muted); }
 .project-candidate-evidence { display: flex; flex-direction: column; gap: 7px; padding-bottom: 4px; }
 .project-candidate-evidence dl + dl { padding-top: 7px; border-top: 1px dashed var(--yb-border); }
+.project-candidate-apply { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid var(--yb-border); }
+.project-candidate-apply span { color: var(--yb-text-secondary); font-size: 10px; }
+.project-revision-list { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow: auto; scrollbar-gutter: stable; }
+.project-revision-list article { padding: 9px; border: 1px solid var(--yb-border); border-radius: 7px; background: var(--yb-bg-elevated); }
+.project-revision-list article > header { display: flex; align-items: center; gap: 6px; }
+.project-revision-list article > header strong { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.project-revision-list dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; margin: 8px 0; font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.project-revision-list dt { color: var(--yb-text-muted); }
+.project-revision-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.project-revision-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
 .project-delete-copy { margin: 0 0 20px; color: var(--yb-text-secondary); line-height: 1.6; }
 .project-create-header { display: flex; flex-direction: column; gap: 4px; }

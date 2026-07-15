@@ -322,4 +322,41 @@ class ProjectControllerIntegrationTest {
                         .contentType("application/json").content("{\"content\":\"read notes\"}"))
                 .andExpect(status().isNotFound());
     }
+
+    @Test
+    void revisionRoutesUseAuthenticatedActorRouteIdentityAndExplicitHeaders() throws Exception {
+        ProjectService service = new ProjectService(projects,
+                List.of(new LocalServerProjectRootProvider(properties)), properties, new ObjectMapper());
+        ProjectRevisionWorkflowService workflow = mock(ProjectRevisionWorkflowService.class);
+        ProjectRevisionOperationResponse response = new ProjectRevisionOperationResponse(91L,
+                ProjectRevisionOperation.Type.APPLICATION, ProjectRevisionOperation.Outcome.SUCCEEDED,
+                11L, "a".repeat(64), 12L, "b".repeat(64), 55L, "c".repeat(64),
+                List.of(0, 2), List.of(1), java.time.Instant.parse("2026-07-16T00:00:00Z"));
+        when(workflow.applyCandidate(org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.eq(55L),
+                org.mockito.ArgumentMatchers.eq("application-key-1"),
+                org.mockito.ArgumentMatchers.eq("a".repeat(64)), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(response);
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProjectController(service, null, null, workflow))
+                .setControllerAdvice(new ProjectExceptionHandler())
+                .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver()).build();
+
+        mockMvc.perform(post("/api/v1/projects/42/candidates/55/applications")
+                        .header("Idempotency-Key", "application-key-1")
+                        .header("If-Match", "a".repeat(64))
+                        .contentType("application/json")
+                        .content("{\"userId\":999,\"projectId\":999,\"acceptedChangeIndexes\":[0,2]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationId").value(91))
+                .andExpect(jsonPath("$.outcome").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.resultVersion").value("b".repeat(64)));
+
+        org.mockito.ArgumentCaptor<ApplyCandidateRequest> request =
+                org.mockito.ArgumentCaptor.forClass(ApplyCandidateRequest.class);
+        org.mockito.Mockito.verify(workflow).applyCandidate(org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.eq(55L),
+                org.mockito.ArgumentMatchers.eq("application-key-1"),
+                org.mockito.ArgumentMatchers.eq("a".repeat(64)), request.capture());
+        assertThat(request.getValue().acceptedChangeIndexes()).containsExactly(0, 2);
+    }
 }

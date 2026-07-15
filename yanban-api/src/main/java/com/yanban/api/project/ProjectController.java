@@ -18,6 +18,13 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -29,22 +36,30 @@ public class ProjectController {
     private final ProjectService projectService;
     private final ProjectAgentRuntimeService projectAgentRuntimeService;
     private final ProjectUploadService projectUploadService;
+    private final ProjectRevisionWorkflowService revisionWorkflow;
 
     /** Compatibility constructor for focused existing controller tests. */
     public ProjectController(ProjectService projectService) {
-        this(projectService, null, (ProjectUploadService) null);
+        this(projectService, null, null, null);
     }
 
     public ProjectController(ProjectService projectService, ProjectAgentRuntimeService projectAgentRuntimeService) {
-        this(projectService, projectAgentRuntimeService, (ProjectUploadService) null);
+        this(projectService, projectAgentRuntimeService, null, null);
+    }
+
+    public ProjectController(ProjectService projectService, ProjectAgentRuntimeService projectAgentRuntimeService,
+                             ProjectUploadService projectUploadService) {
+        this(projectService, projectAgentRuntimeService, projectUploadService, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public ProjectController(ProjectService projectService, ProjectAgentRuntimeService projectAgentRuntimeService,
-                             ProjectUploadService projectUploadService) {
+                             ProjectUploadService projectUploadService,
+                             ProjectRevisionWorkflowService revisionWorkflow) {
         this.projectService = projectService;
         this.projectAgentRuntimeService = projectAgentRuntimeService;
         this.projectUploadService = projectUploadService;
+        this.revisionWorkflow = revisionWorkflow;
     }
 
     @GetMapping
@@ -79,6 +94,51 @@ public class ProjectController {
     public ProjectManifestResponse manifest(@AuthenticationPrincipal(expression = "id") Long userId,
                                             @PathVariable Long projectId) {
         return projectService.manifest(userId, projectId);
+    }
+
+    @PostMapping("/{projectId}/candidates/{artifactId}/applications")
+    public ProjectRevisionOperationResponse applyCandidate(
+            @AuthenticationPrincipal(expression = "id") Long userId,
+            @PathVariable Long projectId,
+            @PathVariable Long artifactId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader("If-Match") String ifMatch,
+            @RequestBody ApplyCandidateRequest request) {
+        requireRevisionWorkflow();
+        return revisionWorkflow.applyCandidate(userId, projectId, artifactId, idempotencyKey, ifMatch, request);
+    }
+
+    @GetMapping("/{projectId}/revisions")
+    public List<ProjectRevisionResponse> revisions(@AuthenticationPrincipal(expression = "id") Long userId,
+                                                   @PathVariable Long projectId) {
+        requireRevisionWorkflow();
+        return revisionWorkflow.listRevisions(userId, projectId);
+    }
+
+    @PostMapping("/{projectId}/revisions/{revisionId}/rollback")
+    public ProjectRevisionOperationResponse rollback(
+            @AuthenticationPrincipal(expression = "id") Long userId,
+            @PathVariable Long projectId,
+            @PathVariable Long revisionId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader("If-Match") String ifMatch) {
+        requireRevisionWorkflow();
+        return revisionWorkflow.rollback(userId, projectId, revisionId, idempotencyKey, ifMatch);
+    }
+
+    @GetMapping("/{projectId}/revisions/{revisionId}/export")
+    public ResponseEntity<StreamingResponseBody> exportRevision(
+            @AuthenticationPrincipal(expression = "id") Long userId,
+            @PathVariable Long projectId,
+            @PathVariable Long revisionId) {
+        requireRevisionWorkflow();
+        String filename = revisionWorkflow.exportFilename(userId, projectId, revisionId);
+        StreamingResponseBody body = output -> revisionWorkflow.exportRevision(userId, projectId, revisionId, output);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(filename).build().toString())
+                .body(body);
     }
 
     @GetMapping("/{projectId}/agent/sessions")
@@ -139,5 +199,9 @@ public class ProjectController {
                                                                   @PathVariable Long planId) {
         if (projectAgentRuntimeService == null) throw new IllegalStateException("Project runtime is not configured");
         return projectAgentRuntimeService.listPlanEvidence(userId, projectId, planId);
+    }
+
+    private void requireRevisionWorkflow() {
+        if (revisionWorkflow == null) throw new IllegalStateException("Project revision workflow is not configured");
     }
 }
