@@ -3,16 +3,16 @@
 > 文档状态：当前执行权威计划
 > 创建日期：2026-07-12
 > 最近同步：2026-07-15
-> 已审查工程基线：`823a820`（Worker 5 后本地回归闭环：Workspace Chat 装配、Project 上传诊断、受控 PARTIAL、字面量检索与自适应预算治理）
+> 已审查工程基线：`956ce42`（Worker 6：ProjectVersion 与版本化 Evidence 工程基础）
 > Worker 1 验收基线：`e1f733d`（离线发布门与本地验收矩阵）
 > Worker 2 契约工程基线：`8e274ab`（科研工具与结构化索引纯契约）
 > Worker 3 只读工具工程基线：`1fc1e0f`（五个受治理科研工具与 Evidence 闭环）
-> 当前工程基线：`823a820`（L0 Task Workspace、受治理短期记忆、统一运行投影与 Project 本地回归修复）
+> 当前工程基线：`956ce42`（服务端确定性 ProjectVersion、版本化 Evidence 与 Candidate/Artifact 版本绑定）
 > Worker 启动基线：以串行任务包中冻结的完整 `HEAD` 为准
-> 当前发布状态：`READ_ONLY_PROJECT_RUNTIME_REGRESSION_ACCEPTED / WORKER_6_AUTHORIZED`
+> 当前发布状态：`WORKER_6_ENGINEERING_ACCEPTED / WORKER_7_QUEUED`
 > 设计依据：《通用 Agent Runtime 设计》《Agent 对比分析与后续改造建议》
 
-> 当前进度：Worker 1 至 Worker 5 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环：补齐 Workspace DIRECT Chat 的受信 runtime 装配与 traceId，增强浏览器文件夹上传诊断和凭据脱敏，收紧受控 PARTIAL，修复单文件字面量检索，并将 Project 工具预算续期限制为真实新增且未重复的结构化观测。主对话独立验证：定向测试 82 项零失败（1 项既有跳过）、前端生产构建通过、完整 reactor 聚合 564 项零失败（8 项既有条件跳过）。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、ProjectVersion、长期记忆主链、沙箱或安全应用已经完成。
+> 当前进度：Worker 1 至 Worker 6 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环。Worker 6 基线 `956ce42` 以服务端 manifest 的 portable relative path、文件大小和 SHA-256 内容哈希确定性派生 ProjectVersion，并将 Project Evidence、Plan 持久化 Evidence、Candidate 与 Artifact 绑定到同一版本；旧 Evidence 缺少完整版本、范围或 parser provenance 时保持 fail-closed，不能伪造 VERIFIED。主对话独立复跑最新完整 reactor：573 项零失败、8 项既有条件跳过，`git diff --check` 通过。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、多版本历史与导出、长期记忆主链、沙箱或安全应用已经完成。
 
 ## 1. 目标与边界
 
@@ -414,12 +414,16 @@ Worker 开发
 
 ### Worker 6：ProjectVersion 与版本化 Evidence
 
-状态：`AUTHORIZED_NEXT_SERIAL_WORKER`
+状态：`ENGINEERING_ACCEPTED`
 
-- 不可变 ProjectVersion 和版本化 manifest。
-- 索引、Evidence、Artifact、Candidate 的版本绑定。
-- 多版本历史、比较和导出基础。
-- 不开放直接覆盖用户 Project。
+- ProjectVersion 由服务端对排序后的 portable relative path、文件大小和文件 SHA-256 确定性派生；支持空 manifest，拒绝重复路径和非 portable path，不依赖 `modifiedAt`。
+- Project 只读工具在单次调用中只读取一次受信 manifest；根输出、所有 search hit 及零命中结果共享同一 server-owned ProjectVersion。
+- Evidence 完整绑定 `projectVersion/fileHash/range/parserVersion/provenance`，显式区分 `VERIFIED/STALE/LEGACY_UNVERSIONED`。
+- 旧 Evidence 缺失完整版本字段时 fail-closed；只有服务器当前 manifest 明确再认证后才可形成 VERIFIED，不能由客户端或历史 JSON 自行升级。
+- Plan 持久化保留全部版本字段；Candidate/Artifact 同时校验 ProjectVersion 与文件 hash，继续保持 `NOT_APPLIED`。
+- Chat/ReAct/Plan 未增加 allowedTools、写入、命令、网络或模型权限；未新增 migration、Controller、前端或对象迁移。
+- 主对话独立验证：最新完整 `mvn -o -pl yanban-api -am test` 共 573 项零失败、8 项既有条件跳过；`git diff --check` 通过。
+- 当前完成的是版本身份和版本化证据工程基础；持久化多版本历史、比较、导出和回滚仍属后续任务，不开放直接覆盖用户 Project。
 
 ### Worker 7：长期记忆治理与只读接入
 
