@@ -37,7 +37,7 @@ router.beforeEach(async (to) => {
   }
   const hasToken = Boolean(authStore.token);
 
-  if (!hasToken && to.path !== '/login') {
+  if (!hasToken && to.meta.requiresAuth) {
     return { path: '/login', query: to.fullPath === '/' ? undefined : { redirect: to.fullPath } };
   }
 
