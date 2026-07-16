@@ -150,7 +150,8 @@ public class AgentStrategySelector {
         reasonCodes.addAll(additionalReasons);
         AgentStrategySelectionOrigin origin = selectionOrigin(requested, explicit, reasonCodes);
         AgentOrchestrationRequirements orchestration = new AgentOrchestrationRequirements(
-                analysis.signals(), List.copyOf(reasonCodes), analysis.materialRequirements(), origin);
+                analysis.signals(), List.copyOf(reasonCodes), analysis.materialRequirements(), origin,
+                analysis.consistencyChecks());
         return new AgentStrategySelection(requested, selected, explicit, degraded, degradedFrom,
                 candidates, orchestration, reason);
     }
@@ -190,6 +191,10 @@ public class AgentStrategySelector {
         boolean simpleQuestion = containsAny(normalized, "what is", "why", "how does", "explain", "是什么", "为什么", "解释")
                 && !toolUseRequested && materials.isEmpty();
         boolean crossMaterial = materials.size() >= 2;
+        List<DomainConsistencyCheck> consistencyChecks = crossMaterial
+                && containsAny(normalized, "same content hash", "same file hash", "identical file hash",
+                "content hash equality", "byte identical", "byte level identical")
+                ? List.of(DomainConsistencyCheck.EVIDENCE_FILE_HASH_EQUALITY) : List.of();
 
         List<ResearchMaterialRequirement> requirements = new ArrayList<>();
         for (ResearchMaterialKind material : materials) {
@@ -219,7 +224,7 @@ public class AgentStrategySelector {
                 : AgentStrategySignal.PLAN_BUDGET_INSUFFICIENT);
         if (isPlanReflectIntent(userMessage)) signals.add(AgentStrategySignal.REFLECTION_COMMAND);
 
-        return new Analysis(List.copyOf(signals), List.of(), List.copyOf(requirements), toolsAvailable,
+        return new Analysis(List.copyOf(signals), List.of(), List.copyOf(requirements), consistencyChecks, toolsAvailable,
                 toolBudgetAvailable, planBudgetAvailable, materialCoverageComplete, planTask, toolTask);
     }
 
@@ -302,6 +307,7 @@ public class AgentStrategySelector {
             List<AgentStrategySignal> signals,
             List<AgentStrategyReasonCode> reasonCodes,
             List<ResearchMaterialRequirement> materialRequirements,
+            List<DomainConsistencyCheck> consistencyChecks,
             boolean toolsAvailable,
             boolean toolBudgetAvailable,
             boolean planBudgetAvailable,

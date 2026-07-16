@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /** Fail-closed completion verifier shared by DIRECT, REACT and Plan step runtime calls. */
 @Component
@@ -20,12 +21,21 @@ public class CompletionVerifier {
     private final ObjectMapper objectMapper;
     private final ProjectEvidenceValidator projectEvidenceValidator;
     private final CandidateChangeArtifactService candidateArtifacts;
+    private final CrossMaterialDomainVerifier domainVerifier;
 
     public CompletionVerifier(ObjectMapper objectMapper, ProjectEvidenceValidator projectEvidenceValidator,
                               CandidateChangeArtifactService candidateArtifacts) {
+        this(objectMapper, projectEvidenceValidator, candidateArtifacts, new CrossMaterialDomainVerifier());
+    }
+
+    @Autowired
+    public CompletionVerifier(ObjectMapper objectMapper, ProjectEvidenceValidator projectEvidenceValidator,
+                              CandidateChangeArtifactService candidateArtifacts,
+                              CrossMaterialDomainVerifier domainVerifier) {
         this.objectMapper = objectMapper;
         this.projectEvidenceValidator = projectEvidenceValidator;
         this.candidateArtifacts = candidateArtifacts;
+        this.domainVerifier = domainVerifier;
     }
 
     public AgentRuntimeResult verify(AgentRuntimeRequest request, AgentRuntimeResult raw) {
@@ -53,17 +63,17 @@ public class CompletionVerifier {
     public CompletionVerification decide(AgentRuntimeRequest request, AgentRuntimeResult result,
                                          EvidenceLedger ledger, int reflectionAttempts) {
         List<String> reasons = new ArrayList<>();
+        DomainVerification domain = domainVerifier.verify(request, result, ledger, reflectionAttempts);
         boolean budgetStopped = result.runtimeStopSignal() != AgentRuntimeStopSignal.NONE;
-        boolean toolFailure = request.projectContext() != null && result.toolTrace().stream().map(value -> value == null ? "" : value.toLowerCase(java.util.Locale.ROOT))
-                .anyMatch(value -> value.contains("success=false") || value.contains("tool_error"));
+        boolean toolFailure = request.projectContext() != null && hasToolFailure(request, result);
         if (budgetStopped) {
             reasons.add("runtime budget stop: " + result.runtimeStopSignal());
-            return new CompletionVerification(CompletionStatus.PARTIAL, reasons, ids(ledger), false, reflectionAttempts);
+            return decision(CompletionStatus.PARTIAL, reasons, ledger, false, reflectionAttempts, domain);
         }
         if (request.strategy() == AgentStrategy.PLAN_EXECUTE && request.planId() == null
                 && result.planId() != null && "PLAN_CREATED".equals(result.outcome())) {
-            return new CompletionVerification(CompletionStatus.PARTIAL, List.of("plan was created but has not been executed"),
-                    ids(ledger), false, reflectionAttempts);
+            return decision(CompletionStatus.PARTIAL, List.of("plan was created but has not been executed"),
+                    ledger, false, reflectionAttempts, domain);
         }
         if (!result.success()) {
             CompletionStatus status = switch (StringUtils.hasText(result.outcome()) ? result.outcome() : "") {
@@ -72,29 +82,63 @@ public class CompletionVerifier {
                 default -> CompletionStatus.FAILED;
             };
             reasons.add(StringUtils.hasText(result.errorMessage()) ? result.errorMessage() : "runtime did not succeed");
-            return new CompletionVerification(status, reasons, ids(ledger),
+            return decision(status, reasons, ledger,
                     (status == CompletionStatus.INSUFFICIENT_EVIDENCE || status == CompletionStatus.PARTIAL)
-                            && reflectionAttempts == 0, reflectionAttempts);
+                            && reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         if (toolFailure) {
             reasons.add("at least one governed tool call failed");
-            return new CompletionVerification(CompletionStatus.PARTIAL, reasons, ids(ledger), reflectionAttempts == 0, reflectionAttempts);
+            return decision(CompletionStatus.PARTIAL, reasons, ledger,
+                    reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         if (request.projectContext() != null && requiresProjectFileEvidence(request.userMessage())
                 && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId())) {
             reasons.add("no current authorized Project file evidence for projectId=" + request.projectContext().projectId());
-            return new CompletionVerification(CompletionStatus.INSUFFICIENT_EVIDENCE, reasons, ids(ledger),
-                    reflectionAttempts == 0, reflectionAttempts);
+            return decision(CompletionStatus.INSUFFICIENT_EVIDENCE, reasons, ledger,
+                    reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
+        }
+        if (domain.applicable() && domain.status() != CompletionStatus.VERIFIED) {
+            return decision(domain.status(), List.of(), ledger, domain.reflectionEligible(), reflectionAttempts, domain);
         }
         if (!StringUtils.hasText(result.assistantContent())) {
             reasons.add("runtime returned no completion content");
-            return new CompletionVerification(CompletionStatus.PARTIAL, reasons, ids(ledger), reflectionAttempts == 0, reflectionAttempts);
+            return decision(CompletionStatus.PARTIAL, reasons, ledger,
+                    reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
-        return new CompletionVerification(CompletionStatus.VERIFIED, List.of("runtime outcome and required evidence verified"),
-                ids(ledger), false, reflectionAttempts);
+        return decision(CompletionStatus.VERIFIED, List.of("runtime outcome and required evidence verified"),
+                ledger, false, reflectionAttempts, domain);
+    }
+
+    private CompletionVerification decision(CompletionStatus status,
+                                            List<String> reasons,
+                                            EvidenceLedger ledger,
+                                            boolean repairable,
+                                            int reflectionAttempts,
+                                            DomainVerification domain) {
+        List<String> audit = new ArrayList<>(reasons == null ? List.of() : reasons);
+        if (domain != null && domain.applicable()) audit.addAll(domain.auditReasons());
+        return new CompletionVerification(status, audit, ids(ledger), repairable, reflectionAttempts, domain);
+    }
+
+    private boolean domainAllowsRepair(DomainVerification domain) {
+        return domain == null || !domain.applicable() || domain.reflectionEligible();
+    }
+
+    private boolean hasToolFailure(AgentRuntimeRequest request, AgentRuntimeResult result) {
+        DomainRuntimeFacts facts = result.domainRuntimeFacts();
+        if (facts != null && !facts.toolOutcomes().isEmpty()) {
+            return facts.hasUnrecoveredToolFailure(request.orchestrationRequirements());
+        }
+        return result.toolTrace().stream().map(value -> value == null ? "" : value.toLowerCase(java.util.Locale.ROOT))
+                .anyMatch(value -> value.contains("success=false") || value.contains("tool_error"));
     }
 
     private AgentRuntimeResult apply(AgentRuntimeResult result, AgentRuntimeRequest request, CompletionVerification verification) {
+        DomainVerification domain = verification.domainVerification();
+        if (domain != null && domain.applicable() && !domain.consistencyFacts().isEmpty()) {
+            result = result.withDomainRuntimeFacts(
+                    result.domainRuntimeFacts().withConsistencyFacts(domain.consistencyFacts()));
+        }
         CandidateArtifactResponse candidate = candidateFor(request, result, verification);
         return switch (verification.status()) {
             case VERIFIED -> result.withCompletionVerification(verification).withCandidateArtifact(candidate)
@@ -106,10 +150,27 @@ public class CompletionVerifier {
                     ? controlledPartial(result, verification, candidate, AgentStopReason.PLAN_PARTIAL)
                     : failure(result, verification, AgentStopReason.PLAN_PARTIAL, "PARTIAL", candidate);
             case INSUFFICIENT_EVIDENCE -> failure(request.projectContext() == null
-                            ? result : result.insufficientProjectEvidence(result.evidenceLedger(), request.history().size()), verification,
+                            ? result : insufficientEvidenceResult(request, result, verification), verification,
                     AgentStopReason.PLAN_PARTIAL, "INSUFFICIENT_EVIDENCE", candidate);
             case FAILED -> failure(result, verification, AgentStopReason.RUNTIME_FAILED, "FAILED", candidate);
         };
+    }
+
+    private AgentRuntimeResult insufficientEvidenceResult(AgentRuntimeRequest request,
+                                                           AgentRuntimeResult result,
+                                                           CompletionVerification verification) {
+        DomainVerification domain = verification.domainVerification();
+        if (domain == null || !domain.applicable()) {
+            return result.insufficientProjectEvidence(result.evidenceLedger(), request.history().size());
+        }
+        String missing = domain.materialCoverage().stream()
+                .filter(item -> item.status() != DomainVerification.MaterialStatus.COVERAGE_VERIFIED)
+                .map(item -> item.material().name())
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(", "));
+        String limitation = "Insufficient Project evidence: requested material coverage is not verified"
+                + (StringUtils.hasText(missing) ? " for " + missing : "") + "; this is not a complete review.";
+        return result.insufficientProjectEvidence(result.evidenceLedger(), request.history().size(), limitation);
     }
 
     private boolean controlledBudgetPartial(AgentRuntimeRequest request, AgentRuntimeResult result) {

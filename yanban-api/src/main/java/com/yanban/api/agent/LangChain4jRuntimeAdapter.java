@@ -23,6 +23,10 @@ public class LangChain4jRuntimeAdapter implements RuntimeAdapter {
 
     @Override
     public AgentRuntimeResult run(AgentRuntimeRequest request) {
-        return toolCallingStrategy.run(request);
+        AgentRuntimeResult result = toolCallingStrategy.run(request);
+        DomainRuntimeFacts facts = DomainRuntimeFacts.fromTrustedToolTrace(
+                result.toolTrace(), request.toolPolicy().allowedTools());
+        return facts.toolOutcomes().isEmpty() ? result
+                : result.withDomainRuntimeFacts(result.domainRuntimeFacts().merge(facts));
     }
 }

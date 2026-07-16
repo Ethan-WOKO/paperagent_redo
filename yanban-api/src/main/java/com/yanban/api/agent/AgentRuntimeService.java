@@ -45,7 +45,7 @@ public class AgentRuntimeService {
         AgentRuntimeResult verified = completionVerifier.verify(request, raw);
         CompletionVerification first = verified.completionVerification();
         if (completionReflection != null && completionRepairExecutor != null && completionReflection.mayAttempt(request, first, raw)) {
-            AgentRuntimeRequest repairRequest = completionReflection.repairRequest(request, raw);
+            AgentRuntimeRequest repairRequest = completionReflection.repairRequest(request, raw, first);
             AgentRuntimeResult repaired = completionRepairExecutor.repair(adapter, repairRequest);
             return completionVerifier.verifyAfterReflection(repairRequest, mergeRepairResult(verified, repaired), first);
         }
@@ -65,6 +65,8 @@ public class AgentRuntimeService {
         fallbacks.addAll(second.fallbacks());
         EvidenceLedger retainedTrustedEvidence = mergeExactEvidence(
                 firstVerified.trustedEvidenceLedger(), second.trustedEvidenceLedger());
+        DomainRuntimeFacts mergedFacts = firstVerified.domainRuntimeFacts().withExecutionAttempt(0)
+                .merge(second.domainRuntimeFacts().withExecutionAttempt(1));
         return new AgentRuntimeResult(second.success(), second.assistantContent(), second.messages(),
                 firstVerified.steps() + second.steps(), second.errorMessage(), trace, fallbacks,
                 sum(firstVerified.promptTokens(), second.promptTokens()),
@@ -72,7 +74,8 @@ public class AgentRuntimeService {
                 sum(firstVerified.totalTokens(), second.totalTokens()))
                 .withCoordination(second.selectedStrategy(), second.stopReason(), second.outcome(), second.degraded(), second.degradedFrom())
                 .withRuntimeStopSignal(second.runtimeStopSignal()).withPlanId(second.planId())
-                .withEvidenceLedger(second.evidenceLedger()).withTrustedEvidenceLedger(retainedTrustedEvidence);
+                .withEvidenceLedger(second.evidenceLedger()).withTrustedEvidenceLedger(retainedTrustedEvidence)
+                .withDomainRuntimeFacts(mergedFacts);
     }
 
     private EvidenceLedger mergeExactEvidence(EvidenceLedger left, EvidenceLedger right) {

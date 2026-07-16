@@ -148,6 +148,27 @@ class PlanRuntimeAdapterTest {
     }
 
     @Test
+    void adapterProjectsPersistedToolAndStepFactsWithoutUsingPlanSummaryProse() {
+        PlanAgentService service = mock(PlanAgentService.class);
+        DomainRuntimeFacts facts = new DomainRuntimeFacts(
+                List.of(new DomainRuntimeFacts.ToolOutcome("project_code_symbols", 1, "step_1",
+                        true, true, true, false, false)),
+                List.of(new DomainRuntimeFacts.PlanStepOutcome(
+                        "step_1", DomainRuntimeFacts.PlanStepStatus.COMPLETED, false)),
+                List.of());
+        when(service.executePlanResultWithinAdapter(7L, 19L, "trace", true)).thenReturn(
+                new PlanAgentService.PlanExecutionResult(
+                        plan("COMPLETED", null, List.of(step("COMPLETED"))),
+                        AgentRuntimeStopSignal.NONE, EvidenceLedger.empty(), facts));
+
+        AgentRuntimeResult result = new PlanRuntimeAdapter(service).run(projectRequest());
+
+        assertThat(result.domainRuntimeFacts()).isEqualTo(facts);
+        assertThat(result.domainRuntimeFacts().toolOutcomes()).singleElement()
+                .extracting(DomainRuntimeFacts.ToolOutcome::toolName).isEqualTo("project_code_symbols");
+    }
+
+    @Test
     void outerVerifierUsesTypedPlanEvidenceAndRejectsMissingOrOldEvidence() {
         PlanAgentService service = mock(PlanAgentService.class);
         String projectVersion = "b".repeat(64); String fileHash = "a".repeat(64);

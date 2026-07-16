@@ -7,12 +7,20 @@ public record AgentOrchestrationRequirements(
         List<AgentStrategySignal> signals,
         List<AgentStrategyReasonCode> reasonCodes,
         List<ResearchMaterialRequirement> materialRequirements,
-        AgentStrategySelectionOrigin selectionOrigin
+        AgentStrategySelectionOrigin selectionOrigin,
+        List<DomainConsistencyCheck> consistencyChecks
 ) {
     public AgentOrchestrationRequirements(List<AgentStrategySignal> signals,
                                           List<AgentStrategyReasonCode> reasonCodes,
                                           List<ResearchMaterialRequirement> materialRequirements) {
-        this(signals, reasonCodes, materialRequirements, AgentStrategySelectionOrigin.UNSPECIFIED);
+        this(signals, reasonCodes, materialRequirements, AgentStrategySelectionOrigin.UNSPECIFIED, List.of());
+    }
+
+    public AgentOrchestrationRequirements(List<AgentStrategySignal> signals,
+                                          List<AgentStrategyReasonCode> reasonCodes,
+                                          List<ResearchMaterialRequirement> materialRequirements,
+                                          AgentStrategySelectionOrigin selectionOrigin) {
+        this(signals, reasonCodes, materialRequirements, selectionOrigin, List.of());
     }
 
     public AgentOrchestrationRequirements {
@@ -20,11 +28,13 @@ public record AgentOrchestrationRequirements(
         reasonCodes = reasonCodes == null ? List.of() : List.copyOf(reasonCodes);
         materialRequirements = materialRequirements == null ? List.of() : List.copyOf(materialRequirements);
         selectionOrigin = selectionOrigin == null ? AgentStrategySelectionOrigin.UNSPECIFIED : selectionOrigin;
+        consistencyChecks = consistencyChecks == null ? List.of() : consistencyChecks.stream()
+                .filter(java.util.Objects::nonNull).distinct().toList();
     }
 
     public static AgentOrchestrationRequirements empty() {
         return new AgentOrchestrationRequirements(List.of(), List.of(), List.of(),
-                AgentStrategySelectionOrigin.UNSPECIFIED);
+                AgentStrategySelectionOrigin.UNSPECIFIED, List.of());
     }
 
     public boolean crossMaterial() {
@@ -53,6 +63,9 @@ public record AgentOrchestrationRequirements(
         }
         if (crossMaterial()) {
             instruction.append("- Keep material observations separate before cross-material synthesis.\n");
+        }
+        if (consistencyChecks.contains(DomainConsistencyCheck.EVIDENCE_FILE_HASH_EQUALITY)) {
+            instruction.append("- The server requested an evidence-file SHA-256 equality check. This can prove only byte-level identity or mismatch for the observed files, never semantic equivalence.\n");
         }
         if (verificationRequired()) {
             instruction.append("- Include a verification step with observable success criteria.\n");

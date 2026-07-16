@@ -37,6 +37,27 @@ class LangChain4jRuntimeAdapterTest {
         verify(strategy).run(request);
     }
 
+    @Test
+    void projectsOnlyStrictPolicyBoundRuntimeToolFacts() {
+        LangChain4jToolCallingStrategy strategy = mock(LangChain4jToolCallingStrategy.class);
+        LangChain4jRuntimeAdapter adapter = new LangChain4jRuntimeAdapter(strategy);
+        AgentRuntimeRequest request = request();
+        AgentRuntimeResult raw = new AgentRuntimeResult(true, "ok", List.of(ChatMessage.assistant("ok")), 1,
+                null, List.of(
+                "step=1 tool=search_web executed=true budgetConsumed=true success=true reused=false skipped=false args={q:' success=false '}",
+                "step=2 tool=forbidden executed=true budgetConsumed=true success=true reused=false skipped=false args={}"),
+                List.of(), null, null, null);
+        when(strategy.run(request)).thenReturn(raw);
+
+        AgentRuntimeResult result = adapter.run(request);
+
+        assertThat(result.domainRuntimeFacts().toolOutcomes()).singleElement().satisfies(outcome -> {
+            assertThat(outcome.toolName()).isEqualTo("search_web");
+            assertThat(outcome.success()).isTrue();
+            assertThat(outcome.budgetConsumed()).isTrue();
+        });
+    }
+
     private AgentRuntimeRequest request() {
         return new AgentRuntimeRequest(
                 AgentStrategy.DIRECT,

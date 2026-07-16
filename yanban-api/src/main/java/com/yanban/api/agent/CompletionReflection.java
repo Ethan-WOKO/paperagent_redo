@@ -17,6 +17,13 @@ public class CompletionReflection {
             the Project file-evidence requirement. Ground the answer only in retrieved observations,
             state any remaining limitation, and do not request or imply write or command authority.
             """;
+    private static final String DOMAIN_COVERAGE_REPAIR_INSTRUCTION = """
+            This is one bounded completion-repair turn for an authenticated read-only Project.
+            Repair only the server-observed missing material coverage listed below. Use only the
+            listed tools that are already present in the resolved policy, capture current authorized
+            file evidence for each material, and state any remaining limitation. Do not request or
+            imply write, command, network, identity, capability, endpoint, or strategy authority.
+            """;
 
     public boolean mayAttempt(AgentRuntimeRequest request, CompletionVerification verification, AgentRuntimeResult result) {
         return verification != null
@@ -27,7 +34,7 @@ public class CompletionReflection {
                 && result.runtimeStopSignal() == AgentRuntimeStopSignal.NONE
                 && (request.strategy() == AgentStrategy.DIRECT || request.strategy() == AgentStrategy.SINGLE_STEP_REACT)
                 && result.steps() < request.maxSteps()
-                && hasRepairAuthority(request, result);
+                && hasRepairAuthority(request, result, verification);
     }
 
     /** Returns the exact original request: reflection is not an authority-escalation path. */
@@ -36,21 +43,58 @@ public class CompletionReflection {
     }
 
     public AgentRuntimeRequest repairRequest(AgentRuntimeRequest request, AgentRuntimeResult first) {
+        return repairRequest(request, first, null);
+    }
+
+    public AgentRuntimeRequest repairRequest(AgentRuntimeRequest request,
+                                             AgentRuntimeResult first,
+                                             CompletionVerification verification) {
         int remainingSteps = request.maxSteps() - Math.max(0, first.steps());
-        int remainingTools = Math.max(0, request.toolPolicy().maxToolCalls() - first.toolTrace().size());
+        int remainingTools = Math.max(0, request.toolPolicy().maxToolCalls() - consumedToolCalls(first));
         AgentRuntimeRequest repair = preserveAuthority(request).withReducedBudget(remainingSteps, remainingTools);
         return request.projectContext() == null
                 ? repair
-                : repair.withAdditionalSystemInstruction(PROJECT_EVIDENCE_REPAIR_INSTRUCTION);
+                : repair.withAdditionalSystemInstruction(repairInstruction(verification));
     }
 
-    private boolean hasRepairAuthority(AgentRuntimeRequest request, AgentRuntimeResult result) {
+    private boolean hasRepairAuthority(AgentRuntimeRequest request,
+                                       AgentRuntimeResult result,
+                                       CompletionVerification verification) {
         if (request.projectContext() == null) {
             return request.toolPolicy().allowedTools().isEmpty()
                     || request.toolPolicy().maxToolCalls() > result.toolTrace().size();
         }
-        if (request.toolPolicy().maxToolCalls() <= result.toolTrace().size()) return false;
+        if (request.toolPolicy().maxToolCalls() <= consumedToolCalls(result)) return false;
+        DomainVerification domain = verification == null ? null : verification.domainVerification();
+        if (domain != null && domain.applicable()) {
+            return domain.materialCoverage().stream()
+                    .filter(item -> item.status() != DomainVerification.MaterialStatus.COVERAGE_VERIFIED)
+                    .flatMap(item -> item.availableTools().stream())
+                    .anyMatch(request.toolPolicy().allowedTools()::contains);
+        }
         return request.toolPolicy().allowedTools().stream().anyMatch(tool ->
                 "project_read_file".equals(tool) || "project_search".equals(tool));
+    }
+
+    private int consumedToolCalls(AgentRuntimeResult result) {
+        DomainRuntimeFacts facts = result == null ? null : result.domainRuntimeFacts();
+        if (facts != null && !facts.toolOutcomes().isEmpty()) return facts.consumedToolCalls();
+        return result == null || result.toolTrace() == null ? 0 : result.toolTrace().size();
+    }
+
+    private String repairInstruction(CompletionVerification verification) {
+        if (verification == null || verification.domainVerification() == null
+                || !verification.domainVerification().applicable()) {
+            return PROJECT_EVIDENCE_REPAIR_INSTRUCTION;
+        }
+        StringBuilder instruction = new StringBuilder(DOMAIN_COVERAGE_REPAIR_INSTRUCTION);
+        instruction.append("\nServer-observed missing material coverage for this one repair turn:\n");
+        verification.domainVerification().materialCoverage().stream()
+                .filter(item -> item.status() != DomainVerification.MaterialStatus.COVERAGE_VERIFIED)
+                .forEach(item -> instruction.append("- ").append(item.material())
+                        .append(" using only already-authorized tools: ")
+                        .append(String.join(", ", item.availableTools())).append(".\n"));
+        instruction.append("Do not claim cross-material consistency unless a deterministic structured domain fact is produced.");
+        return instruction.toString();
     }
 }

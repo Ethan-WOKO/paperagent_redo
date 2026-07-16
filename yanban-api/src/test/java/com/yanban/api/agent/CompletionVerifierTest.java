@@ -12,12 +12,15 @@ import com.yanban.core.model.ChatMessage;
 import com.yanban.core.research.FileHash;
 import com.yanban.core.research.ProjectRelativePath;
 import com.yanban.core.research.ProjectVersionRef;
+import com.yanban.core.research.ResearchToolContracts;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -34,7 +37,8 @@ class CompletionVerifierTest {
 
     CompletionVerifierTest() {
         when(projects.manifest(anyLong(), anyLong())).thenReturn(new ProjectManifestResponse(42L, PROJECT_VERSION, List.of(
-                new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, FILE_HASH))));
+                new ProjectFileEntry("src/Main.java", 1, Instant.EPOCH, FILE_HASH),
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, FILE_HASH))));
     }
 
     @Test
@@ -268,6 +272,72 @@ class CompletionVerifierTest {
         assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.VERIFIED);
     }
 
+    @ParameterizedTest
+    @EnumSource(value = AgentStrategy.class, names = {"DIRECT", "SINGLE_STEP_REACT"})
+    void failedFirstToolAttemptCanBeRecoveredByOneAuthorizedLaterSuccess(AgentStrategy strategy) {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<AgentRuntimeRequest> repairRequest = new AtomicReference<>();
+        RuntimeAdapter adapter = new RuntimeAdapter() {
+            @Override public boolean supports(AgentStrategy ignored) { return true; }
+            @Override public AgentRuntimeResult run(AgentRuntimeRequest request) {
+                int call = calls.incrementAndGet();
+                DomainRuntimeFacts.ToolOutcome outcome = new DomainRuntimeFacts.ToolOutcome(
+                        "project_read_file", 1, null, true, true, call > 1, false, false);
+                if (call == 1) {
+                    return success("first call failed", new ArrayList<>(request.history()))
+                            .withDomainRuntimeFacts(new DomainRuntimeFacts(List.of(outcome), List.of(), List.of()));
+                }
+                repairRequest.set(request);
+                List<ChatMessage> messages = new ArrayList<>(request.history());
+                messages.add(tool(42, "src/Main.java", "h1"));
+                return success("recovered", messages)
+                        .withDomainRuntimeFacts(new DomainRuntimeFacts(List.of(outcome), List.of(), List.of()));
+            }
+        };
+        AgentRuntimeRequest original = projectRequest(strategy);
+        AgentRuntimeService runtime = new AgentRuntimeService(List.of(adapter), verifier,
+                new CompletionReflection(), new AdapterCompletionRepairExecutor());
+
+        AgentRuntimeResult result = runtime.run(original);
+
+        assertThat(calls).hasValue(2);
+        assertThat(result.outcome()).isEqualTo("VERIFIED");
+        assertThat(result.completionVerification().reflectionAttempts()).isEqualTo(1);
+        assertThat(result.domainRuntimeFacts().hasUnrecoveredToolFailure(original.orchestrationRequirements()))
+                .isFalse();
+        assertThat(result.domainRuntimeFacts().toolOutcomes())
+                .extracting(DomainRuntimeFacts.ToolOutcome::executionAttempt).containsExactly(0, 1);
+        assertThat(repairRequest.get().toolPolicy().allowedTools())
+                .containsExactlyElementsOf(original.toolPolicy().allowedTools());
+        assertThat(repairRequest.get().projectContext()).isEqualTo(original.projectContext());
+    }
+
+    @Test
+    void failedRepairRemainsPartialAndCannotStartASecondReflection() {
+        AtomicInteger calls = new AtomicInteger();
+        RuntimeAdapter adapter = new RuntimeAdapter() {
+            @Override public boolean supports(AgentStrategy ignored) { return true; }
+            @Override public AgentRuntimeResult run(AgentRuntimeRequest request) {
+                calls.incrementAndGet();
+                DomainRuntimeFacts.ToolOutcome failed = new DomainRuntimeFacts.ToolOutcome(
+                        "project_read_file", 1, null, true, true, false, false, false);
+                return success("still unsupported", new ArrayList<>(request.history()))
+                        .withDomainRuntimeFacts(new DomainRuntimeFacts(List.of(failed), List.of(), List.of()));
+            }
+        };
+        AgentRuntimeService runtime = new AgentRuntimeService(List.of(adapter), verifier,
+                new CompletionReflection(), new AdapterCompletionRepairExecutor());
+
+        AgentRuntimeResult result = runtime.run(projectRequest(AgentStrategy.SINGLE_STEP_REACT));
+
+        assertThat(calls).hasValue(2);
+        assertThat(result.outcome()).isEqualTo("PARTIAL");
+        assertThat(result.completionVerification().reflectionAttempts()).isEqualTo(1);
+        assertThat(result.completionVerification().repairable()).isFalse();
+        assertThat(result.domainRuntimeFacts()
+                .hasUnrecoveredToolFailure(AgentOrchestrationRequirements.empty())).isTrue();
+    }
+
     @Test
     void manifestOnlyAttemptRepairsWithReadSearchInstructionAndKeepsOneFinalTranscript() {
         AtomicInteger calls = new AtomicInteger();
@@ -411,6 +481,189 @@ class CompletionVerifierTest {
         assertThat(repair.toolPolicy().allowedTools()).isEqualTo(request.toolPolicy().allowedTools());
         assertThat(repair.maxSteps()).isLessThanOrEqualTo(request.maxSteps());
         assertThat(repair.toolPolicy().maxToolCalls()).isLessThanOrEqualTo(request.toolPolicy().maxToolCalls());
+    }
+
+    @Test
+    void repairUsesRemainingTypedBudgetWithoutChangingPolicyEndpointOrIdentity() {
+        AgentRuntimeRequest request = projectRequest(AgentStrategy.SINGLE_STEP_REACT);
+        DomainRuntimeFacts firstFacts = new DomainRuntimeFacts(List.of(
+                new DomainRuntimeFacts.ToolOutcome("project_read_file", 1, null,
+                        true, true, true, false, false)), List.of(), List.of());
+        AgentRuntimeResult first = success("first", List.of()).withDomainRuntimeFacts(firstFacts);
+
+        AgentRuntimeRequest repair = new CompletionReflection().repairRequest(request, first);
+
+        assertThat(repair.userId()).isEqualTo(request.userId());
+        assertThat(repair.sessionId()).isEqualTo(request.sessionId());
+        assertThat(repair.projectContext()).isEqualTo(request.projectContext());
+        assertThat(repair.apiKey()).isEqualTo(request.apiKey());
+        assertThat(repair.apiUrl()).isEqualTo(request.apiUrl());
+        assertThat(repair.strategy()).isEqualTo(request.strategy());
+        assertThat(repair.toolPolicy().allowedTools()).containsExactlyElementsOf(request.toolPolicy().allowedTools());
+        assertThat(repair.toolPolicy().maxToolCalls()).isEqualTo(1);
+        assertThat(repair.maxSteps()).isEqualTo(1);
+    }
+
+    @Test
+    void autoCrossMaterialPlanWithCoverageButNoStructuredConsistencyFactIsPartial() {
+        String paperTool = ResearchToolContracts.PROJECT_LATEX_OUTLINE;
+        String codeTool = ResearchToolContracts.PROJECT_CODE_SYMBOLS;
+        List<ResearchMaterialRequirement> requirements = List.of(
+                new ResearchMaterialRequirement(ResearchMaterialKind.PAPER_LATEX,
+                        List.of(paperTool), List.of(paperTool), true),
+                new ResearchMaterialRequirement(ResearchMaterialKind.CODE,
+                        List.of(codeTool), List.of(codeTool), true));
+        AgentOrchestrationRequirements audit = new AgentOrchestrationRequirements(
+                List.of(AgentStrategySignal.PROJECT_SCOPE, AgentStrategySignal.CROSS_MATERIAL_TASK,
+                        AgentStrategySignal.VERIFICATION_REQUIRED),
+                List.of(AgentStrategyReasonCode.AUTO_CROSS_MATERIAL_PLAN), requirements,
+                AgentStrategySelectionOrigin.SERVER_AUTO);
+        AgentRuntimeRequest request = new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE, 1L, List.of(), 7L,
+                "compare paper and code, then verify consistency", "test", "model", null, null, 4,
+                true, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                new ResolvedToolPolicy(List.of(paperTool, codeTool), 4, 1, "project"), 4, 1,
+                "trace", null, null).withProjectContext(new ProjectRuntimeContext(7L, 42L))
+                .withOrchestrationRequirements(audit);
+        EvidenceLedger evidence = new EvidenceLedger(List.of(
+                new EvidenceRef("trusted-plan:42:19:1:paper", EvidenceSourceType.PROJECT, "PROJECT",
+                        "paper/main.tex", "step:paper", null, FILE_HASH, "plan", PROJECT_VERSION, FILE_HASH,
+                        1, 2, "latex@1", EvidenceVersionStatus.VERIFIED),
+                new EvidenceRef("trusted-plan:42:19:2:code", EvidenceSourceType.PROJECT, "PROJECT",
+                        "src/Main.java", "step:code", null, FILE_HASH, "plan", PROJECT_VERSION, FILE_HASH,
+                        1, 2, "code@1", EvidenceVersionStatus.VERIFIED)));
+        DomainRuntimeFacts facts = new DomainRuntimeFacts(List.of(
+                new DomainRuntimeFacts.ToolOutcome(paperTool, 1, "paper", true, true, true, false, false),
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "code", true, true, true, false, false)),
+                List.of(new DomainRuntimeFacts.PlanStepOutcome(
+                        "verify", DomainRuntimeFacts.PlanStepStatus.COMPLETED, false)), List.of());
+        AgentRuntimeResult raw = success("unsupported consistency claim", List.of())
+                .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.COMPLETED, "SUCCESS", false, null)
+                .withPlanId(19L).withTrustedEvidenceLedger(evidence).withDomainRuntimeFacts(facts);
+
+        AgentRuntimeResult result = verifier.verify(request, raw);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.outcome()).isEqualTo("PARTIAL");
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.PARTIAL);
+        assertThat(result.completionVerification().repairable()).isFalse();
+        assertThat(result.completionVerification().domainVerification().consistencyStatus())
+                .isEqualTo(DomainVerification.ConsistencyStatus.UNRESOLVED);
+        assertThat(result.completionVerification().domainVerification().materialCoverage())
+                .allMatch(item -> item.status() == DomainVerification.MaterialStatus.COVERAGE_VERIFIED);
+        verify(candidates, never()).store(anyLong(), anyLong(), any(), any(), any());
+    }
+
+    @Test
+    void requestedHashRuleProducesAndExposesProductionConsistencyFact() {
+        String paperTool = ResearchToolContracts.PROJECT_LATEX_OUTLINE;
+        String codeTool = ResearchToolContracts.PROJECT_CODE_SYMBOLS;
+        List<ResearchMaterialRequirement> requirements = List.of(
+                new ResearchMaterialRequirement(ResearchMaterialKind.PAPER_LATEX,
+                        List.of(paperTool), List.of(paperTool), true),
+                new ResearchMaterialRequirement(ResearchMaterialKind.CODE,
+                        List.of(codeTool), List.of(codeTool), true));
+        AgentOrchestrationRequirements audit = new AgentOrchestrationRequirements(
+                List.of(AgentStrategySignal.PROJECT_SCOPE, AgentStrategySignal.CROSS_MATERIAL_TASK,
+                        AgentStrategySignal.VERIFICATION_REQUIRED),
+                List.of(AgentStrategyReasonCode.AUTO_CROSS_MATERIAL_PLAN), requirements,
+                AgentStrategySelectionOrigin.SERVER_AUTO,
+                List.of(DomainConsistencyCheck.EVIDENCE_FILE_HASH_EQUALITY));
+        AgentRuntimeRequest request = new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE, 1L, List.of(), 7L,
+                "verify the paper and code evidence files have the same content hash", "test", "model",
+                null, null, 4, true, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                new ResolvedToolPolicy(List.of(paperTool, codeTool), 4, 1, "project"), 4, 1,
+                "trace", null, null).withProjectContext(new ProjectRuntimeContext(7L, 42L))
+                .withOrchestrationRequirements(audit);
+        EvidenceLedger evidence = new EvidenceLedger(List.of(
+                new EvidenceRef("trusted-plan:42:19:1:paper", EvidenceSourceType.PROJECT, "PROJECT",
+                        "paper/main.tex", "step:paper", null, FILE_HASH, "plan", PROJECT_VERSION, FILE_HASH,
+                        1, 2, "latex@1", EvidenceVersionStatus.VERIFIED),
+                new EvidenceRef("trusted-plan:42:19:2:code", EvidenceSourceType.PROJECT, "PROJECT",
+                        "src/Main.java", "step:code", null, FILE_HASH, "plan", PROJECT_VERSION, FILE_HASH,
+                        1, 2, "code@1", EvidenceVersionStatus.VERIFIED)));
+        DomainRuntimeFacts facts = new DomainRuntimeFacts(List.of(
+                new DomainRuntimeFacts.ToolOutcome(paperTool, 1, "paper", true, true, true, false, false),
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "code", true, true, true, false, false)),
+                List.of(new DomainRuntimeFacts.PlanStepOutcome(
+                        "verify", DomainRuntimeFacts.PlanStepStatus.COMPLETED, false)), List.of());
+        AgentRuntimeResult raw = success("hash audit complete", List.of())
+                .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.COMPLETED, "SUCCESS", false, null)
+                .withPlanId(19L).withTrustedEvidenceLedger(evidence).withDomainRuntimeFacts(facts);
+
+        AgentRuntimeResult result = verifier.verify(request, raw);
+
+        assertThat(result.outcome()).isEqualTo("VERIFIED");
+        assertThat(result.completionVerification().domainVerification().consistencyStatus())
+                .isEqualTo(DomainVerification.ConsistencyStatus.VERIFIED_CONSISTENT);
+        assertThat(result.domainRuntimeFacts().consistencyFacts()).singleElement().satisfies(fact -> {
+            assertThat(fact.ruleId()).isEqualTo(DomainConsistencyRuleEngine.EVIDENCE_FILE_HASH_EQUALITY_RULE);
+            assertThat(fact.consistent()).isTrue();
+        });
+    }
+
+    @Test
+    void laterSuccessfulPlanAttemptRecoversOlderFailureButUnrelatedFailureDoesNot() {
+        String codeTool = ResearchToolContracts.PROJECT_CODE_SYMBOLS;
+        AgentRuntimeRequest request = planRecoveryRequest(List.of(codeTool, "project_read_file"));
+        EvidenceLedger evidence = new EvidenceLedger(List.of(versionedPlan(
+                "trusted-plan:42:19:1:code", FILE_HASH)));
+        DomainRuntimeFacts recoveredFacts = new DomainRuntimeFacts(List.of(
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "step_1",
+                        true, true, false, false, false, 0),
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "step_1",
+                        true, true, true, false, false, 2)),
+                List.of(new DomainRuntimeFacts.PlanStepOutcome(
+                        "step_1", DomainRuntimeFacts.PlanStepStatus.COMPLETED, false)), List.of());
+        DomainRuntimeFacts unrelatedFacts = new DomainRuntimeFacts(List.of(
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "step_1",
+                        true, true, false, false, false, 0),
+                new DomainRuntimeFacts.ToolOutcome("project_read_file", 1, "step_1",
+                        true, true, true, false, false, 2)),
+                recoveredFacts.planStepOutcomes(), List.of());
+
+        AgentRuntimeResult recovered = verifier.verify(request, planResult(evidence, recoveredFacts));
+        AgentRuntimeResult unrelated = verifier.verify(request, planResult(evidence, unrelatedFacts));
+
+        assertThat(recovered.outcome()).isEqualTo("VERIFIED");
+        assertThat(unrelated.outcome()).isEqualTo("PARTIAL");
+        assertThat(unrelated.completionVerification().reasons())
+                .contains("at least one governed tool call failed");
+    }
+
+    @Test
+    void supersededFailedPlanStepDoesNotPoisonItsCompletedReplacement() {
+        String codeTool = ResearchToolContracts.PROJECT_CODE_SYMBOLS;
+        AgentRuntimeRequest request = planRecoveryRequest(List.of(codeTool));
+        EvidenceLedger evidence = new EvidenceLedger(List.of(versionedPlan(
+                "trusted-plan:42:19:2:code", FILE_HASH)));
+        DomainRuntimeFacts facts = new DomainRuntimeFacts(List.of(
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "step_1",
+                        true, true, false, false, false, 0),
+                new DomainRuntimeFacts.ToolOutcome(codeTool, 1, "repair_step_1",
+                        true, true, true, false, false, 0)),
+                List.of(
+                        new DomainRuntimeFacts.PlanStepOutcome(
+                                "step_1", DomainRuntimeFacts.PlanStepStatus.SUPERSEDED, false, "repair_step_1"),
+                        new DomainRuntimeFacts.PlanStepOutcome(
+                                "repair_step_1", DomainRuntimeFacts.PlanStepStatus.COMPLETED, false)),
+                List.of());
+
+        AgentRuntimeResult result = verifier.verify(request, planResult(evidence, facts));
+
+        assertThat(result.outcome()).isEqualTo("VERIFIED");
+
+        DomainRuntimeFacts missingReplacementMapping = new DomainRuntimeFacts(
+                facts.toolOutcomes(),
+                List.of(
+                        new DomainRuntimeFacts.PlanStepOutcome(
+                                "step_1", DomainRuntimeFacts.PlanStepStatus.SUPERSEDED, false),
+                        new DomainRuntimeFacts.PlanStepOutcome(
+                                "repair_step_1", DomainRuntimeFacts.PlanStepStatus.COMPLETED, false)),
+                List.of());
+        assertThat(verifier.verify(request, planResult(evidence, missingReplacementMapping)).outcome())
+                .isEqualTo("PARTIAL");
     }
 
     @Test
@@ -568,6 +821,22 @@ class CompletionVerifierTest {
                 true, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J, AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
                 new ResolvedToolPolicy(List.of("project_read_file"), 2, 1, "project"), null, null, "trace", null, null)
                 .withProjectContext(new ProjectRuntimeContext(7L, 42L));
+    }
+
+    private AgentRuntimeRequest planRecoveryRequest(List<String> tools) {
+        return new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE, 1L, List.of(), 7L,
+                "inspect current project evidence", "test", "model", null, null, 4,
+                true, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                new ResolvedToolPolicy(tools, 4, 1, "project"), 4, 1, "trace", null, null)
+                .withPlanId(19L).withProjectContext(new ProjectRuntimeContext(7L, 42L));
+    }
+
+    private AgentRuntimeResult planResult(EvidenceLedger evidence, DomainRuntimeFacts facts) {
+        return success("repaired plan result", List.of())
+                .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.COMPLETED,
+                        "SUCCESS", false, null)
+                .withPlanId(19L).withTrustedEvidenceLedger(evidence).withDomainRuntimeFacts(facts);
     }
 
     private AgentRuntimeRequest candidateRequest(AgentStrategy strategy) {

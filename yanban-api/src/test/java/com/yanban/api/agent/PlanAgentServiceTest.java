@@ -930,6 +930,34 @@ class PlanAgentServiceTest {
     }
 
     @Test
+    void planRetryPersistsLaterAttemptAsRecoveryOfOlderToolFailure() {
+        AgentPlanStep step = newStep("step_1", 1, List.of());
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID))
+                .thenAnswer(invocation -> org.mockito.Mockito.mockingDetails(events).getInvocations().stream()
+                        .filter(saved -> "save".equals(saved.getMethod().getName()))
+                        .map(saved -> (AgentPlanEvent) saved.getArgument(0))
+                        .toList());
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(toolAttempt(false, false, "first tool attempt failed"))
+                .thenReturn(toolAttempt(true, true, "recovered result"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        PlanAgentService.PlanExecutionResult result = service.executePlanResultWithinAdapter(
+                USER_ID, PLAN_ID, "trace-plan-retry", false);
+
+        assertThat(result.plan().status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(result.domainRuntimeFacts().toolOutcomes())
+                .extracting(DomainRuntimeFacts.ToolOutcome::success,
+                        DomainRuntimeFacts.ToolOutcome::executionAttempt)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(false, 0),
+                        org.assertj.core.groups.Tuple.tuple(true, 2));
+        assertThat(result.domainRuntimeFacts().hasUnrecoveredToolFailure(
+                AgentOrchestrationRequirements.empty())).isFalse();
+    }
+
+    @Test
     void executePlanRetriesWhenVerificationRejectsCandidateResult() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
@@ -1272,6 +1300,24 @@ class PlanAgentServiceTest {
     private AgentRuntimeResult successWithTrace(String content, String trace) {
         return new AgentRuntimeResult(true, content, List.of(ChatMessage.assistant(content)), 1, null,
                 List.of(trace), List.of(), null, null, null);
+    }
+
+    private AgentRuntimeResult toolAttempt(boolean runtimeSuccess, boolean toolSuccess, String detail) {
+        AgentRuntimeResult result = new AgentRuntimeResult(
+                runtimeSuccess,
+                runtimeSuccess ? detail : null,
+                List.of(ChatMessage.assistant(detail)),
+                1,
+                runtimeSuccess ? null : detail,
+                List.of("step=1 tool=project_read_file success=" + toolSuccess),
+                runtimeSuccess ? List.of() : List.of(detail),
+                null,
+                null,
+                null
+        );
+        DomainRuntimeFacts.ToolOutcome outcome = new DomainRuntimeFacts.ToolOutcome(
+                "project_read_file", 1, null, true, true, toolSuccess, false, false);
+        return result.withDomainRuntimeFacts(new DomainRuntimeFacts(List.of(outcome), List.of(), List.of()));
     }
 
     private AgentRuntimeResult failure(String error) {

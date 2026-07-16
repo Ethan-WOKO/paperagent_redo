@@ -418,6 +418,7 @@ public class LangChain4jToolCallingStrategy {
             ));
             toolTrace.add("step=" + step
                     + " tool=" + request.name()
+                    + " executed=false budgetConsumed=false success=false reused=false skipped=true"
                     + " args=" + defaultString(request.arguments(), "{}")
                     + " success=false error=" + reason);
         }
@@ -528,8 +529,11 @@ public class LangChain4jToolCallingStrategy {
     private String buildToolTraceLine(int step, ToolExecutionRequest toolRequest, ToolExecutionOutcome toolResult) {
         return "step=" + step
                 + " tool=" + toolRequest.name()
-                + " args=" + defaultString(toolRequest.arguments(), "{}")
+                + " executed=true"
+                + " budgetConsumed=" + !toolResult.scopeRefinementRequired()
                 + " success=" + toolResult.success()
+                + " reused=false skipped=false"
+                + " args=" + defaultString(toolRequest.arguments(), "{}")
                 + (toolResult.success() ? summarizeToolObservation(toolResult.content())
                 : " error=" + defaultString(toolResult.errorMessage(), "tool_failed"));
     }
@@ -587,9 +591,11 @@ public class LangChain4jToolCallingStrategy {
                                             String reason) {
         return "step=" + step
                 + " tool=" + toolRequest.name()
-                + " args=" + defaultString(toolRequest.arguments(), "{}")
+                + " executed=false budgetConsumed=false"
                 + " success=" + previous.outcome().success()
-                + " reused=true originalToolCallId=" + defaultString(previous.sourceToolCallId(), "unknown")
+                + " reused=true skipped=false"
+                + " args=" + defaultString(toolRequest.arguments(), "{}")
+                + " originalToolCallId=" + defaultString(previous.sourceToolCallId(), "unknown")
                 + " reason=" + reason
                 + (previous.outcome().success() ? ""
                 : " error=" + defaultString(previous.outcome().errorMessage(), "tool_failed"));

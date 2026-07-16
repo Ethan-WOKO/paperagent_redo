@@ -70,7 +70,8 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
                         terminal.degraded(), terminal.degraded() ? AgentStrategy.PLAN_EXECUTE : null)
                 .withRuntimeStopSignal(terminal.stopSignal())
                 .withPlanId(plan.id())
-                .withTrustedEvidenceLedger(execution.evidenceLedger());
+                .withTrustedEvidenceLedger(execution.evidenceLedger())
+                .withDomainRuntimeFacts(execution.domainRuntimeFacts());
     }
 
     static boolean isServerAutoProjectPlan(AgentRuntimeRequest request) {

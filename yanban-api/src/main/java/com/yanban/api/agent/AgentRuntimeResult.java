@@ -29,7 +29,8 @@ public record AgentRuntimeResult(
         CompletionVerification completionVerification,
         CandidateChangeSet candidateChangeSet,
         @JsonIgnore CandidateIntent candidateIntent,
-        CandidateArtifactResponse candidateArtifact
+        CandidateArtifactResponse candidateArtifact,
+        DomainRuntimeFacts domainRuntimeFacts
 ) {
     public AgentRuntimeResult {
         messages = messages == null ? List.of() : List.copyOf(messages);
@@ -38,6 +39,24 @@ public record AgentRuntimeResult(
         runtimeStopSignal = runtimeStopSignal == null ? AgentRuntimeStopSignal.NONE : runtimeStopSignal;
         evidenceLedger = evidenceLedger == null ? EvidenceLedger.empty() : evidenceLedger;
         trustedEvidenceLedger = trustedEvidenceLedger == null ? EvidenceLedger.empty() : trustedEvidenceLedger;
+        domainRuntimeFacts = domainRuntimeFacts == null ? DomainRuntimeFacts.empty() : domainRuntimeFacts;
+    }
+
+    /** Source-compatible bridge for callers using the pre-domain-facts canonical result. */
+    public AgentRuntimeResult(boolean success, String assistantContent, List<ChatMessage> messages, int steps,
+                              String errorMessage, List<String> toolTrace, List<String> fallbacks,
+                              Integer promptTokens, Integer completionTokens, Integer totalTokens,
+                              AgentStrategy selectedStrategy, AgentStopReason stopReason, String outcome,
+                              boolean degraded, AgentStrategy degradedFrom,
+                              AgentRuntimeStopSignal runtimeStopSignal, Long planId,
+                              EvidenceLedger evidenceLedger, EvidenceLedger trustedEvidenceLedger,
+                              CompletionVerification completionVerification, CandidateChangeSet candidateChangeSet,
+                              CandidateIntent candidateIntent, CandidateArtifactResponse candidateArtifact) {
+        this(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
+                promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded,
+                degradedFrom, runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger,
+                completionVerification, candidateChangeSet, candidateIntent, candidateArtifact,
+                DomainRuntimeFacts.empty());
     }
 
     /** Source-compatible result constructor for adapters that do not coordinate themselves. */
@@ -60,32 +79,32 @@ public record AgentRuntimeResult(
         this(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded,
                 degradedFrom, runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger,
-                completionVerification, candidateChangeSet, null, null);
+                completionVerification, candidateChangeSet, null, null, DomainRuntimeFacts.empty());
     }
 
     public AgentRuntimeResult withCoordination(AgentStrategy selectedStrategy, AgentStopReason stopReason,
                                                String outcome, boolean degraded, AgentStrategy degradedFrom) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal == null ? AgentRuntimeStopSignal.NONE : runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal == null ? AgentRuntimeStopSignal.NONE : runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withRuntimeStopSignal(AgentRuntimeStopSignal signal) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                signal == null ? AgentRuntimeStopSignal.NONE : signal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                signal == null ? AgentRuntimeStopSignal.NONE : signal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withPlanId(Long planId) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withEvidenceLedger(EvidenceLedger ledger) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, ledger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, ledger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult insufficientProjectEvidence(EvidenceLedger ledger) {
@@ -93,7 +112,13 @@ public record AgentRuntimeResult(
     }
 
     public AgentRuntimeResult insufficientProjectEvidence(EvidenceLedger ledger, int historySize) {
-        String limitation = "Insufficient Project evidence: no authorized file read/search observation was captured; this is not a complete review.";
+        return insufficientProjectEvidence(ledger, historySize,
+                "Insufficient Project evidence: no authorized file read/search observation was captured; this is not a complete review.");
+    }
+
+    public AgentRuntimeResult insufficientProjectEvidence(EvidenceLedger ledger, int historySize, String limitation) {
+        String safeLimitation = limitation == null || limitation.isBlank()
+                ? "Insufficient Project evidence: the requested review is not verified." : limitation;
         java.util.ArrayList<ChatMessage> safeMessages = new java.util.ArrayList<>();
         int boundary = Math.max(0, Math.min(historySize, messages.size()));
         safeMessages.addAll(messages.subList(0, boundary));
@@ -104,54 +129,61 @@ public record AgentRuntimeResult(
                 safeMessages.add(message);
             }
         }
-        safeMessages.add(ChatMessage.assistant(limitation));
-        return new AgentRuntimeResult(false, limitation, safeMessages, steps, limitation, toolTrace, fallbacks,
+        safeMessages.add(ChatMessage.assistant(safeLimitation));
+        return new AgentRuntimeResult(false, safeLimitation, safeMessages, steps, safeLimitation, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, AgentStopReason.PLAN_PARTIAL, "INSUFFICIENT_EVIDENCE",
-                true, degradedFrom, runtimeStopSignal, planId, ledger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                true, degradedFrom, runtimeStopSignal, planId, ledger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withCompletionVerification(CompletionVerification verification) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, verification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, verification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withCandidateChangeSet(CandidateChangeSet candidate) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidate, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidate, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withCandidateIntent(CandidateIntent intent) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
                 runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification,
-                candidateChangeSet, intent, candidateArtifact);
+                candidateChangeSet, intent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withCandidateArtifact(CandidateArtifactResponse artifact) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
                 runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification,
-                null, null, artifact);
+                null, null, artifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult asVerifiedFailure(String message) {
         return new AgentRuntimeResult(false, assistantContent, messages, steps, message, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     /** A controlled partial has useful chat-visible content and is delivered normally without claiming verification. */
     public AgentRuntimeResult asControlledPartial() {
         return new AgentRuntimeResult(true, assistantContent, messages, steps, null, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withTrustedEvidenceLedger(EvidenceLedger ledger) {
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
-                runtimeStopSignal, planId, evidenceLedger, ledger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact);
+                runtimeStopSignal, planId, evidenceLedger, ledger, completionVerification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
+    }
+
+    public AgentRuntimeResult withDomainRuntimeFacts(DomainRuntimeFacts facts) {
+        return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
+                promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification,
+                candidateChangeSet, candidateIntent, candidateArtifact, facts);
     }
 }

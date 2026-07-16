@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -52,6 +53,29 @@ class AgentRuntimeServiceTest {
         assertThatThrownBy(() -> service.run(request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("PLAN_EXECUTE_WITH_REFLECTION");
+    }
+
+    @Test
+    void planCompletionNeverStartsAnAutomaticRepairOrSecondPlanExecution() {
+        RuntimeAdapter adapter = mock(RuntimeAdapter.class);
+        CompletionVerifier verifier = mock(CompletionVerifier.class);
+        CompletionRepairExecutor repair = mock(CompletionRepairExecutor.class);
+        AgentRuntimeRequest request = request(AgentStrategy.PLAN_EXECUTE).withPlanId(19L);
+        AgentRuntimeResult raw = new AgentRuntimeResult(true, "plan result", List.of(), 2,
+                null, List.of(), List.of(), null, null, null).withPlanId(19L);
+        CompletionVerification decision = new CompletionVerification(CompletionStatus.PARTIAL,
+                List.of("repairable-looking plan"), List.of(), true, 0);
+        AgentRuntimeResult verified = raw.withCompletionVerification(decision);
+        when(adapter.supports(request)).thenReturn(true);
+        when(adapter.run(request)).thenReturn(raw);
+        when(verifier.verify(request, raw)).thenReturn(verified);
+
+        AgentRuntimeResult result = new AgentRuntimeService(List.of(adapter), verifier,
+                new CompletionReflection(), repair).run(request);
+
+        assertThat(result).isSameAs(verified);
+        verify(adapter, times(1)).run(request);
+        verify(repair, never()).repair(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     private AgentRuntimeRequest request(AgentStrategy strategy) {

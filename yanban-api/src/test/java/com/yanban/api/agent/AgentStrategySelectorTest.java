@@ -102,9 +102,25 @@ class AgentStrategySelectorTest {
                 .containsExactly(ResearchMaterialKind.PAPER_LATEX, ResearchMaterialKind.CODE,
                         ResearchMaterialKind.EXPERIMENT_CONFIG, ResearchMaterialKind.BIBTEX);
         assertThat(first.orchestration().materialRequirements()).allMatch(ResearchMaterialRequirement::covered);
+        assertThat(first.orchestration().consistencyChecks()).isEmpty();
         assertThat(new ObjectMapper().writeValueAsString(first))
                 .contains("AUTO", "SERVER_AUTO", "AUTO_CROSS_MATERIAL_PLAN", "PAPER_LATEX")
                 .doesNotContain(task);
+    }
+
+    @Test
+    void explicitHashEqualityRequestSelectsNarrowDeterministicCheckWithoutChangingPlanAuthority() {
+        String task = "Compare the LaTeX paper and source code, then verify they have the same content hash.";
+        AgentRuntimeRequest request = projectRequest(AgentStrategy.AUTO, task, RESEARCH_TOOLS, 8, 12);
+
+        AgentStrategySelection decision = selector.decide(AgentCoordinationRequest.projectRead(request));
+
+        assertThat(decision.selectedStrategy()).isEqualTo(AgentStrategy.PLAN_EXECUTE);
+        assertThat(decision.orchestration().consistencyChecks())
+                .containsExactly(DomainConsistencyCheck.EVIDENCE_FILE_HASH_EQUALITY);
+        assertThat(decision.orchestration().plannerInstruction())
+                .contains("SHA-256 equality", "never semantic equivalence");
+        assertThat(request.allowedToolNames()).containsExactlyElementsOf(RESEARCH_TOOLS);
     }
 
     @Test

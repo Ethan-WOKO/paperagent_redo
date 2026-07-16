@@ -537,8 +537,9 @@ public class PlanAgentService {
                 if (deadlineExceeded(deadlineAt)) {
                     markPlanBudgetExceeded(plan, allSteps, session.getId(), userId, traceId, persistConversationSummary);
                     allSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
-                    return new PlanExecutionResult(toResponse(plan, allSteps), AgentRuntimeStopSignal.MAX_STEPS_BUDGET_EXHAUSTED,
-                            evidenceFromStepEvents(plan.getId()));
+                    AgentPlanResponse response = toResponse(plan, allSteps);
+                    return new PlanExecutionResult(response, AgentRuntimeStopSignal.MAX_STEPS_BUDGET_EXHAUSTED,
+                            evidenceFromStepEvents(plan.getId()), domainRuntimeFacts(response));
                 }
 
                 AgentPlanStep failedStep = firstFailedStep(allSteps);
@@ -606,12 +607,18 @@ public class PlanAgentService {
     }
 
     private PlanExecutionResult completedExecution(AgentPlanResponse plan) {
-        return new PlanExecutionResult(plan, AgentRuntimeStopSignal.NONE, evidenceFromStepEvents(plan.id()));
+        return new PlanExecutionResult(plan, AgentRuntimeStopSignal.NONE, evidenceFromStepEvents(plan.id()),
+                domainRuntimeFacts(plan));
     }
 
-    record PlanExecutionResult(AgentPlanResponse plan, AgentRuntimeStopSignal stopSignal, EvidenceLedger evidenceLedger) {
+    record PlanExecutionResult(AgentPlanResponse plan, AgentRuntimeStopSignal stopSignal,
+                               EvidenceLedger evidenceLedger, DomainRuntimeFacts domainRuntimeFacts) {
         PlanExecutionResult(AgentPlanResponse plan, AgentRuntimeStopSignal stopSignal) {
-            this(plan, stopSignal, EvidenceLedger.empty());
+            this(plan, stopSignal, EvidenceLedger.empty(), DomainRuntimeFacts.empty());
+        }
+
+        PlanExecutionResult(AgentPlanResponse plan, AgentRuntimeStopSignal stopSignal, EvidenceLedger evidenceLedger) {
+            this(plan, stopSignal, evidenceLedger, DomainRuntimeFacts.empty());
         }
     }
 
@@ -1500,18 +1507,55 @@ public class PlanAgentService {
                                         String traceId,
                                         int attempt) {
         if (result == null || result.toolTrace() == null) return;
-        for (String trace : result.toolTrace()) {
-            if (!StringUtils.hasText(trace) || !trace.contains(" tool=")) continue;
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("stepKey", step.getStepKey());
-            payload.put("attempt", attempt);
-            payload.put("observationFingerprint", Integer.toHexString(trace.hashCode()));
-            payload.put("success", trace.contains(" success=true"));
-            payload.put("reused", trace.contains(" reused=true"));
-            payload.put("trace", abbreviate(trace, 1600));
-            payload.put("traceId", traceId);
-            if (projectContext != null) payload.put("projectId", projectContext.projectId());
-            recordEvent(plan.getId(), step.getId(), "step_tool_observation", payload);
+        List<DomainRuntimeFacts.ToolOutcome> typedOutcomes = result.domainRuntimeFacts().toolOutcomes();
+        if (!typedOutcomes.isEmpty()) {
+            for (int index = 0; index < typedOutcomes.size(); index++) {
+                DomainRuntimeFacts.ToolOutcome outcome = typedOutcomes.get(index);
+                String trace = index < result.toolTrace().size() ? result.toolTrace().get(index) : "";
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("stepKey", step.getStepKey());
+                payload.put("attempt", attempt);
+                payload.put("toolName", outcome.toolName());
+                payload.put("runtimeStep", outcome.runtimeStep());
+                payload.put("executionAttempt", Math.max(0,
+                        ((attempt - 1) * 2) + outcome.executionAttempt()));
+                payload.put("executed", outcome.executed());
+                payload.put("budgetConsumed", outcome.budgetConsumed());
+                payload.put("success", outcome.success());
+                payload.put("reused", outcome.reused());
+                payload.put("skipped", outcome.skipped());
+                if (StringUtils.hasText(trace)) {
+                    payload.put("observationFingerprint", Integer.toHexString(trace.hashCode()));
+                    payload.put("trace", abbreviate(trace, 1600));
+                }
+                payload.put("traceId", traceId);
+                if (projectContext != null) payload.put("projectId", projectContext.projectId());
+                recordEvent(plan.getId(), step.getId(), "step_tool_observation", payload);
+            }
+        } else {
+            for (String trace : result.toolTrace()) {
+                if (!StringUtils.hasText(trace) || !trace.contains(" tool=")) continue;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("stepKey", step.getStepKey());
+                payload.put("attempt", attempt);
+                payload.put("observationFingerprint", Integer.toHexString(trace.hashCode()));
+                payload.put("success", trace.contains(" success=true"));
+                payload.put("reused", trace.contains(" reused=true"));
+                payload.put("trace", abbreviate(trace, 1600));
+                payload.put("traceId", traceId);
+                if (projectContext != null) payload.put("projectId", projectContext.projectId());
+                recordEvent(plan.getId(), step.getId(), "step_tool_observation", payload);
+            }
+        }
+        for (DomainRuntimeFacts.ConsistencyFact fact : result.domainRuntimeFacts().consistencyFacts()) {
+            DomainRuntimeFacts.ConsistencyFact persistedFact = persistedConsistencyFact(
+                    fact, result, projectContext, plan, step, attempt);
+            if (persistedFact == null) continue;
+            recordEvent(plan.getId(), step.getId(), "step_domain_consistency_fact", Map.of(
+                    "stepKey", step.getStepKey(),
+                    "fact", persistedFact,
+                    "traceId", traceId
+            ));
         }
         for (BoundedToolResult toolResult : boundedToolResults(result)) {
             Map<String, Object> payload = new LinkedHashMap<>();
@@ -1822,6 +1866,78 @@ public class PlanAgentService {
         return new EvidenceLedger(refs);
     }
 
+    /** Reconstructs only typed server-owned Plan observations; legacy diagnostic text proves nothing. */
+    private DomainRuntimeFacts domainRuntimeFacts(AgentPlanResponse plan) {
+        if (plan == null || plan.id() == null) return DomainRuntimeFacts.empty();
+        List<AgentPlanEvent> persisted = events.findByPlanIdOrderByCreatedAtAsc(plan.id());
+        if (persisted == null) persisted = List.of();
+        Set<Long> controlledStops = persisted.stream()
+                .filter(event -> "step_completed_after_controlled_stop".equals(event.getEventType()))
+                .map(AgentPlanEvent::getStepId)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        Map<String, String> replacements = new LinkedHashMap<>();
+        for (AgentPlanEvent event : persisted) {
+            if (!"plan_repaired".equals(event.getEventType()) || !StringUtils.hasText(event.getPayloadJson())) continue;
+            try {
+                JsonNode payload = objectMapper.readTree(event.getPayloadJson());
+                String failedStepKey = payload.path("failedStepKey").asText(null);
+                String replacementStepKey = payload.path("replacementStepKey").asText(null);
+                if (StringUtils.hasText(failedStepKey) && StringUtils.hasText(replacementStepKey)) {
+                    replacements.put(failedStepKey, replacementStepKey);
+                }
+            } catch (Exception ignored) {
+                // A malformed repair event cannot authorize recovery of an older failed step.
+            }
+        }
+
+        List<DomainRuntimeFacts.ToolOutcome> toolOutcomes = new ArrayList<>();
+        List<DomainRuntimeFacts.ConsistencyFact> consistencyFacts = new ArrayList<>();
+        for (AgentPlanEvent event : persisted) {
+            if ("step_domain_consistency_fact".equals(event.getEventType())
+                    && StringUtils.hasText(event.getPayloadJson())) {
+                try {
+                    JsonNode fact = objectMapper.readTree(event.getPayloadJson()).path("fact");
+                    consistencyFacts.add(objectMapper.treeToValue(fact, DomainRuntimeFacts.ConsistencyFact.class));
+                } catch (Exception ignored) {
+                    // Malformed or unsupported facts cannot prove cross-material consistency.
+                }
+                continue;
+            }
+            if (!"step_tool_observation".equals(event.getEventType())
+                    || !StringUtils.hasText(event.getPayloadJson())) continue;
+            try {
+                JsonNode payload = objectMapper.readTree(event.getPayloadJson());
+                if (!payload.hasNonNull("toolName") || !payload.has("executed")
+                        || !payload.has("budgetConsumed") || !payload.has("success")
+                        || !payload.has("reused") || !payload.has("skipped")) continue;
+                toolOutcomes.add(new DomainRuntimeFacts.ToolOutcome(
+                        payload.path("toolName").asText(),
+                        payload.path("runtimeStep").asInt(0),
+                        payload.path("stepKey").asText(null),
+                        payload.path("executed").asBoolean(false),
+                        payload.path("budgetConsumed").asBoolean(false),
+                        payload.path("success").asBoolean(false),
+                        payload.path("reused").asBoolean(false),
+                        payload.path("skipped").asBoolean(false),
+                        payload.has("executionAttempt")
+                                ? payload.path("executionAttempt").asInt(0)
+                                : Math.max(0, (payload.path("attempt").asInt(1) - 1) * 2)
+                ));
+            } catch (Exception ignored) {
+                // Malformed or legacy event payloads cannot become verification facts.
+            }
+        }
+
+        List<DomainRuntimeFacts.PlanStepOutcome> stepOutcomes = (plan.steps() == null ? List.<AgentPlanStepResponse>of()
+                : plan.steps()).stream()
+                .map(step -> new DomainRuntimeFacts.PlanStepOutcome(
+                        step.stepKey(), DomainRuntimeFacts.PlanStepStatus.from(step.status()),
+                        step.id() != null && controlledStops.contains(step.id()), replacements.get(step.stepKey())))
+                .toList();
+        return new DomainRuntimeFacts(toolOutcomes, stepOutcomes, consistencyFacts);
+    }
+
     private List<EvidenceRef> trustedStepEvidence(AgentRuntimeResult result, ProjectRuntimeContext context,
                                                   List<String> allowedTools, EvidenceLedger inherited,
                                                   AgentPlan plan, AgentPlanStep step, int attempt) {
@@ -1858,6 +1974,33 @@ public class PlanAgentService {
                 EvidenceSourceType.PROJECT, "PROJECT", ref.file(), ref.chunk(), ref.citation(), ref.version(),
                 "persisted plan step project observation", ref.projectVersion(), ref.fileHash(), ref.startLine(),
                 ref.endLine(), ref.parserVersion(), ref.versionStatus());
+    }
+
+    private DomainRuntimeFacts.ConsistencyFact persistedConsistencyFact(
+            DomainRuntimeFacts.ConsistencyFact fact,
+            AgentRuntimeResult result,
+            ProjectRuntimeContext context,
+            AgentPlan plan,
+            AgentPlanStep step,
+            int attempt) {
+        if (fact == null || context == null || result == null) return null;
+        Map<String, EvidenceRef> trustedById = result.trustedEvidenceLedger().evidence().stream()
+                .filter(ProjectEvidenceValidator::isTrusted)
+                .collect(java.util.stream.Collectors.toMap(EvidenceRef::id, ref -> ref, (left, right) -> left));
+        List<String> persistedRefs = new ArrayList<>();
+        for (String evidenceId : fact.evidenceRefs()) {
+            EvidenceRef ref = trustedById.get(evidenceId);
+            if (ref == null) return null;
+            if (evidenceId.startsWith("trusted-plan:" + context.projectId() + ":")) {
+                persistedRefs.add(evidenceId);
+            } else if (evidenceId.startsWith("trusted-tool:" + context.projectId() + ":")) {
+                persistedRefs.add(persistedStepEvidence(ref, context, plan, step, attempt).id());
+            } else {
+                return null;
+            }
+        }
+        return new DomainRuntimeFacts.ConsistencyFact(fact.ruleId(), fact.materials(), persistedRefs,
+                fact.consistent(), fact.source());
     }
 
     private AgentPlan getOwnedPlan(Long userId, Long planId) {
