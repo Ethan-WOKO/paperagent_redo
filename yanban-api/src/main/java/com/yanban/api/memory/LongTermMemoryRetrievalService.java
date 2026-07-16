@@ -35,6 +35,7 @@ public class LongTermMemoryRetrievalService {
     private static final Set<String> SAFE_MEMORY_TYPES = Set.of(
             "PREFERENCE", "RESEARCH_PROFILE", "RESEARCH_FIELD", "STYLE", "FACT", "WARNING", "DECISION", "TERMINOLOGY");
     private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{L}\\p{N}]{2,}");
+    private static final Pattern HAN_RUN_PATTERN = Pattern.compile("\\p{IsHan}{2,}");
     private static final Pattern PROJECT_VERSION_PATTERN = Pattern.compile("[a-f0-9]{64}");
     private static final Pattern ABSOLUTE_PATH_PATTERN = Pattern.compile(
             "(?i)(?:(?:^|[\\s\\(\\\"'=])[a-z]:[\\\\/]|\\\\\\\\[^\\s]+|file://|"
@@ -328,6 +329,13 @@ public class LongTermMemoryRetrievalService {
             String token = matcher.group().trim();
             if (token.length() >= 2) {
                 tokens.add(token);
+            }
+        }
+        Matcher hanMatcher = HAN_RUN_PATTERN.matcher(value);
+        while (hanMatcher.find()) {
+            String run = hanMatcher.group();
+            for (int index = 0; index + 2 <= run.length(); index++) {
+                tokens.add(run.substring(index, index + 2));
             }
         }
         return tokens;

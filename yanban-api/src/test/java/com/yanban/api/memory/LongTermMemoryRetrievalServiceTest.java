@@ -57,6 +57,21 @@ class LongTermMemoryRetrievalServiceTest {
     }
 
     @Test
+    void retrievesChineseMemoryWhenRelatedPhrasesUseDifferentSuffixes() {
+        when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(
+                        memory("RESEARCH_PROFILE", "我的研究领域是极化FDA-MIMO雷达，目前在学习Java和Agent。", "[]", "0.90"),
+                        memory("PREFERENCE", "我喜欢简洁的写作风格。", "[]", "0.90")
+                ));
+
+        AgentLongTermMemoryContext context = service.retrieve(USER_ID, "我的研究方向是什么？");
+
+        assertThat(context.hitCount()).isEqualTo(1);
+        assertThat(context.content()).contains("极化FDA-MIMO雷达")
+                .doesNotContain("简洁的写作风格");
+    }
+
+    @Test
     void returnsEmptyWhenNoMemoryMatchesQuery() {
         when(memories.findGovernedUserCandidates(eq(USER_ID), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(memory("FACT", "User studies reinforcement learning.", "[\"RL\"]", "0.80")));
