@@ -3,13 +3,13 @@
 > 文档状态：当前执行权威计划
 > 创建日期：2026-07-12
 > 最近同步：2026-07-16
-> 已审查工程基线：`f2ee67d`（Worker 9：用户确认、Project revision 应用、回滚与导出）
+> 已审查工程基线：`02022b7`（Worker 7-9 本地验收缺陷修复与 Candidate 生产闭环）
 > Worker 1 验收基线：`e1f733d`（离线发布门与本地验收矩阵）
 > Worker 2 契约工程基线：`8e274ab`（科研工具与结构化索引纯契约）
 > Worker 3 只读工具工程基线：`1fc1e0f`（五个受治理科研工具与 Evidence 闭环）
-> 当前工程基线：`f2ee67d`（受治理 Candidate 应用、不可变 Project revision 历史、回滚与 ZIP 导出）
+> 当前工程基线：`02022b7`（受治理 Candidate 应用、不可变 revision 历史及本地验收修复）
 > Worker 启动基线：以串行任务包中冻结的完整 `HEAD` 为准
-> 当前发布状态：`WORKER_9_ENGINEERING_ACCEPTED / AWAITING_LOCAL_UI_ACCEPTANCE`
+> 当前发布状态：`LOCAL_UI_ACCEPTED`
 > 设计依据：《通用 Agent Runtime 设计》《Agent 对比分析与后续改造建议》
 
 > 当前进度：Worker 1 至 Worker 7 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环。Worker 6 基线 `956ce42` 以服务端 manifest 的 portable relative path、文件大小和 SHA-256 内容哈希确定性派生 ProjectVersion，并将 Project Evidence、Plan 持久化 Evidence、Candidate 与 Artifact 绑定到同一版本；旧 Evidence 缺少完整版本、范围或 parser provenance 时保持 fail-closed，不能伪造 VERIFIED。Worker 7A 至 7D 完成长短期记忆治理、受信只读接入、用户确认/拒绝/纠正/删除和双语治理界面。Worker 8A 基线 `d4970cd` 冻结受信 ProjectVersion 沙箱快照、不可变 UTF-8 全文替换 Candidate、base/result hash、EvidenceRefs、审查 diff、预算和 `NOT_APPLIED` 验证契约。Worker 8B 基线 `83c6b56` 将该契约接入服务端受信工作副本：只读取 Candidate 与 Evidence 涉及的文本文件，读取前后对完整 manifest 二次校验，任意未请求文件并发变化也返回 409；Candidate 只能由显式结构化 intent 和当前受信 Evidence ledger 生成，公共 artifact API 不能伪造保留类型，持久化后每次读取都重新物化、证明和验证，始终保持 `NOT_APPLIED`。Worker 8C 基线 `8ff3339` 新增受治理的 `project_propose_candidate` 生产入口，并通过当前轮真实工具结果和服务端 artifact 再认证投影 Candidate；Project 页从真实 API 展示多文件变更、ProjectVersion、指纹、验证状态、review diff 与 Evidence provenance，始终保持 `NOT_APPLIED`。主对话独立验证 Worker 8C 定向后端 66/66、完整 reactor 889 项零失败且 9 项既有条件跳过、前端 3/3、生产构建及 `git diff --check` 通过。Worker 8 不包含真实 Project 写入、命令、外部网络、migration 或自动应用；真实模型生成、多文件展示、409 STALE 和 422 INVALID 仍由用户进行本地 UI 验收。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、多版本历史与导出或安全应用已经完成。
@@ -448,19 +448,19 @@ Worker 开发
 
 ### Worker 8：沙箱与 Candidate ChangeSet
 
-状态：`WORKER_8_ENGINEERING_ACCEPTED / AWAITING_LOCAL_UI_ACCEPTANCE`
+状态：`LOCAL_UI_ACCEPTED`
 
 - Worker 8A 已冻结受信 ProjectVersion 沙箱快照、不可变 UTF-8 全文替换 Candidate ChangeSet、base/result hash、EvidenceRefs、审查 diff、逐项/总量预算和 `NOT_APPLIED` 验证契约；ADD/MODIFY/DELETE 对目标存在性、路径大小写、base hash、Evidence 文件与哈希和结果内容哈希均 fail-closed。
 - Worker 8A 的快照身份由 `ProjectManifestIdentity` 确定性派生；服务器证明必须同时匹配 `ResearchRuntimeScope` 的 projectId、ProjectVersion 和既有 `research:project-read` 能力。运行时身份、能力、证明和验证决策不可被 Candidate、快照或审查 diff 序列化后伪造。
 - Worker 8A 主对话独立验证：定向 18/18、core 全量 85/85、完整 reactor API 聚合 594 项零失败且 8 项既有条件跳过；`git diff --check` 通过。基线提交为 `d4970cd`。
 - Worker 8B 已完成受信只读沙箱物化、显式结构化 intent 到多文件 Candidate 的适配、保留 artifact 类型持久化边界和逐次再认证；读取请求文件后必须重新比较完整 manifest，Candidate 只能引用当前用户、当前 Project、当前 ProjectVersion 的受信 Evidence ledger。公共 artifact 创建不能伪造 Candidate，旧格式和未知 schema fail-closed。主对话独立验证：定向 62/62、完整 reactor 607 项零失败且 8 项既有条件跳过；`git diff --check` 通过。基线提交为 `83c6b56`。
 - Worker 8C 已提供生产可用但不扩权的 `project_propose_candidate` 结构化 Candidate 生成入口，并将 Project 页 Candidate 审阅升级为多文件、版本化、状态可解释的真实 API 体验。后端只接受当前受信 user/project/allowlist、当前 manifest 和 portable Evidence selector，持久化后由 artifact 服务逐次再认证；前端重新读取 artifact API，展示 `NOT_APPLIED`、VALIDATED/STALE/INVALID、Evidence provenance、逐文件 ADD/MODIFY/DELETE 与审查 diff。主对话独立验证：定向后端 66/66、完整 reactor 889 项零失败且 9 项既有条件跳过、前端 3/3、生产构建和 `git diff --check` 通过。基线提交为 `8ff3339`。
-- Worker 8 工程实现已完成，等待用户在本地真实模型和真实 Project 上验收 Candidate 生成、多文件展示、409 STALE、422 INVALID 与长内容布局；通过前不得宣称用户本地科研验收完成。
+- 2026-07-16 本地真实验收通过：真实模型先读取当前 Project manifest、标题与摘要 Evidence，再生成两文件 Candidate；页面确认 `VALIDATED / NOT_APPLIED`、4 条 Evidence provenance 与 STRUCTURE/VERSION/EVIDENCE/CONTENT_HASH/BUDGET 全部通过。另以隔离 Project 验证 STALE、INVALID、409、422、长 portable path、8.3 KB/131 行长 diff、空状态、loading 与 error 页面，未出现页面横向溢出或不可操作控件。
 - 未经专门审查，不开放宿主机任意命令、外部网络、密钥、自动应用或多 Agent 并行写入；Candidate 必须始终从 `NOT_APPLIED` 开始，不能覆盖用户当前 Project。
 
 ### Worker 9：用户确认、Project revision 应用、回滚与导出
 
-状态：`WORKER_9_ENGINEERING_ACCEPTED / AWAITING_LOCAL_UI_ACCEPTANCE`
+状态：`LOCAL_UI_ACCEPTED`
 
 - 仅对当前用户拥有、使用 `MINIO_OBJECTS` 托管存储且仍匹配当前 ProjectVersion 的 Project 开放应用；旧绝对路径 Project、跨用户/跨 Project、STALE/INVALID Candidate、非 portable path、哈希或 manifest 不一致均 fail-closed。
 - Candidate 仍保持不可变和 `NOT_APPLIED`。用户可逐文件选择接受项，服务端在新的 MinIO revision 前缀中复制完整快照并执行精确 ADD/MODIFY/DELETE，复核文件哈希和 manifest 后才通过悲观锁与版本条件原子切换当前 revision 指针。
@@ -469,7 +469,8 @@ Worker 开发
 - ZIP 导出只读取选定 revision 的受信 manifest，逐文件复核对象、portable relative path、大小与哈希，并受 Project 存储预算限制；未增加 Agent allowedTools、命令、外部网络、模型、MCP、多 Agent 或 Pro 权限。
 - Project 页面提供逐文件选择、显式二次确认、Versions 历史、回滚确认、ZIP 下载以及 409/422 可解释提示；不把 Candidate 状态伪装为已应用。
 - 主对话独立验证：Worker 9 定向后端共 71 项，其中 70 项通过、1 项条件跳过；完整 reactor 共 627 项，其中 618 项通过、8 项条件跳过，唯一错误为测试环境 `localhost:9092` 不可用导致既有 `TaskControlControllerIntegrationTest.retryPendingLiteratureDeliveryThroughUnifiedEndpoint` Kafka 发送超时，与 Worker 9 Project revision 路径无关；前端 revision/candidate API 5/5、Markdown 6/6、生产构建和 `git diff --check` 通过。
-- 用户本地仍需使用真实 MySQL 8、MinIO、后端和 Vite 验收 V34 迁移、应用后新 ProjectVersion、历史列表、回滚、ZIP 内容、并发 409、非法 Candidate 422，以及长路径/长 diff/空状态/错误状态布局。通过前不得宣称用户本地科研验收完成。
+- 2026-07-16 本地真实验收通过：用户逐文件应用后仅选中文件进入原子生成的新 ProjectVersion，revision 1/2 均保留且可双向回滚；回滚按设计只切换 Current 指针，不额外制造 revision。旧 `If-Match` 返回 409，同一幂等键安全重放并复用同一 operation/result revision，并发应用恰有一个 200、另一个 409，非法 Candidate 返回 422，STALE Candidate 返回 409。
+- 真实 MySQL 8 已确认 V34 成功及 `project_revisions`、`project_revision_operations` 的 revision、operation、幂等唯一约束和关联数据；真实 MinIO revision 前缀中的 manifest 与 3 个文件对象逐项 SHA-256 一致。真实 API 导出的 ZIP 含同一 3 个文件，其大小与 SHA-256 再次全部匹配 manifest。前端 Candidate/revision API 5/5 与生产构建通过。
 - 按用户要求，Worker 9 完成后停止，不自动启动 Worker 10。
 
 ## 16. 审查与停止条件
