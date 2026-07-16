@@ -429,7 +429,7 @@ Worker 开发
 
 ### Worker 7：长期记忆治理与只读接入
 
-状态：`7A_ACCEPTED / 7B_ACCEPTED / 7C_ACCEPTED / 7D_ACCEPTED / WORKER_7_ENGINEERING_ACCEPTED`
+状态：`WORKER_7_ENGINEERING_FOUNDATION_ACCEPTED / LOCAL_ACCEPTANCE_INCOMPLETE / DEFERRED_GAPS_RECORDED`
 
 - Worker 7A 已完成 USER 范围只读基础：只选择服务器受信 userId 下 ACTIVE、显式用户确认来源、无 projectId、允许类型、合法标签、达到置信度且与任务相关的记忆。
 - Worker 7A 已实现敏感信息和绝对路径整条拒绝、确定性排序、内容去重、5 条/1600 字符预算，以及“辅助且不作为 Evidence”的注入标记。
@@ -441,7 +441,10 @@ Worker 开发
 - Worker 7C 使用悲观写锁保证并发状态转换确定性；重复确认、拒绝和删除具有受控幂等语义，冲突转换返回 409，客户端提供的 source/provenance 不会成为受信来源。主对话独立验证：定向 26/26；完整 reactor 594 项零失败、8 项既有条件跳过；`git diff --check` 通过。
 - Worker 7D 已实现双语长期记忆治理界面，覆盖查看、创建、确认、拒绝、修正、过期和软删除；状态动作矩阵与后端一致，SUPERSEDED/DELETED/invalidated 维持只读，PROJECT stale 409 显式提示刷新且不伪造成功。
 - Worker 7D 已在真实 MySQL 8 上验证 V33，从真实后端和真实 API 完成 USER 范围治理闭环，并在 `1920x1080`、`1440x900`、`1280x800` 复审中文界面、长内容和动作可达性。主对话独立验证：前端 11/11、后端 29/29、生产构建和现场 DOM 均通过；仅保留既有大 chunk 警告及列表 200 条上限。
-- Worker 7B 至 7D 必须逐个完成主对话复审、独立测试和 baseline 提交后才能进入下一项。
+- 本地验收遗留 1（已确认延期）：受治理长期记忆目前尚未完整接入 Project Plan 的规划、执行和 Reflection 上下文。后续接入必须沿用 trusted user/project identity、ProjectVersion、scope、provenance、confirmation、expiry 和预算边界，不能让记忆替代 Evidence 或扩大 Plan 的工具与写入权限。
+- 本地验收遗留 2（已确认延期）：普通会话和 Project 会话中识别出的长期记忆候选目前尚未自动沉淀到“待用户确认”的治理队列。后续只能保存结构化候选及来源引用，不得自动确认为 ACTIVE，不得保存思维链、敏感信息或绝对路径，也不得跨用户/Project 串用。
+- 上述两项均为 Worker 7 本地验收发现的真实功能缺口，本轮按用户决定暂不实现。它们不推翻 Worker 7 已完成的治理契约、后端接口和界面基础，但在收口并通过真实验收前，不得宣称 Worker 7 或长期记忆闭环完整通过。
+- 后续恢复这两项时必须创建独立串行任务，记录 baseline、文件所有权、迁移/API 需求和回归矩阵；不得在 Worker 10 或其他任务中无记录地顺手实现。
 
 ### Worker 8：沙箱与 Candidate ChangeSet
 
