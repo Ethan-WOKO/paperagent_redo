@@ -19,6 +19,20 @@ public interface AgentLongTermMemoryRepository extends JpaRepository<AgentLongTe
 
     List<AgentLongTermMemory> findByUserIdAndStatusOrderByUpdatedAtDesc(Long userId, String status, Pageable page);
 
+    @Query("""
+            select memory from AgentLongTermMemory memory
+            where memory.userId = :userId
+              and memory.status = 'ACTIVE'
+              and memory.invalidatedAt is null
+              and memory.deletedAt is null
+              and (memory.expiresAt is null or memory.expiresAt > :now)
+            order by memory.updatedAt desc
+            """)
+    List<AgentLongTermMemory> findActiveForGovernance(
+            @Param("userId") Long userId,
+            @Param("now") Instant now,
+            Pageable page);
+
     List<AgentLongTermMemory> findByUserIdOrderByUpdatedAtDesc(Long userId, Pageable page);
 
     @Query("""

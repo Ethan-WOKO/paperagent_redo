@@ -3,6 +3,7 @@ package com.yanban.api.memory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
@@ -65,6 +66,17 @@ class LongTermMemoryServiceTest {
         assertThat(response.sourceType()).isEqualTo(AgentLongTermMemory.SOURCE_USER_CONFIRMED);
         assertThat(response.sourceRefId()).isNull();
         assertThat(response.confirmedAt()).isNull();
+    }
+
+    @Test
+    void activeListUsesTimeAwareGovernanceQuery() {
+        AgentLongTermMemory active = userMemory(42L);
+        when(memories.findActiveForGovernance(eq(42L), any(Instant.class), any()))
+                .thenReturn(List.of(active));
+
+        List<LongTermMemoryResponse> response = service.listMemories(42L, "ACTIVE", 50);
+
+        assertThat(response).extracting(LongTermMemoryResponse::id).containsExactly(11L);
     }
 
     @Test

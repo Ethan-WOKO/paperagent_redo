@@ -182,6 +182,20 @@ class AgentRepositoryTest {
                 AgentLongTermMemory.STATUS_ACTIVE,
                 PageRequest.of(0, 10)
         )).containsExactly(memory);
+        assertThat(longTermMemories.findActiveForGovernance(
+                1004L,
+                java.time.Instant.now(),
+                PageRequest.of(0, 10)
+        )).containsExactly(memory);
+
+        memory.setExpiresAt(java.time.Instant.now().minusSeconds(1));
+        longTermMemories.saveAndFlush(memory);
+
+        assertThat(longTermMemories.findActiveForGovernance(
+                1004L,
+                java.time.Instant.now(),
+                PageRequest.of(0, 10)
+        )).isEmpty();
 
         memory.markDeleted();
         longTermMemories.saveAndFlush(memory);

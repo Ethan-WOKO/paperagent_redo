@@ -55,7 +55,7 @@ public class LongTermMemoryService {
         PageRequest page = PageRequest.of(0, safeLimit(limit));
         List<AgentLongTermMemory> rows = STATUS_ALL.equals(normalizedStatus)
                 ? memories.findByUserIdOrderByUpdatedAtDesc(userId, page)
-                : memories.findByUserIdAndStatusOrderByUpdatedAtDesc(userId, normalizedStatus, page);
+                : memories.findActiveForGovernance(userId, Instant.now(), page);
         return rows.stream().map(this::toResponse).toList();
     }
 
