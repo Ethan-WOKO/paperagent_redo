@@ -2,6 +2,7 @@ package com.yanban.api.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -108,6 +109,52 @@ class PlanStepVerifierTest {
     }
 
     @Test
+    void verifierReceivesCompletedResultsAcrossTheDependencyClosure() {
+        when(modelProvider.chat(any())).thenReturn(new ChatResponse(
+                ChatMessage.assistant("{\"passed\":true,\"reason\":\"The transitive evidence is present.\"}"),
+                "stop",
+                null
+        ));
+        PlanStepVerifier.VerificationRequest base = newRequest("bounded final synthesis");
+        AgentPlanStep research = base.allSteps().get(0);
+        AgentPlanStep crossCheck = new AgentPlanStep(
+                19L,
+                "step_2",
+                2,
+                "Cross-check",
+                "Compare the research results",
+                "VERIFICATION",
+                "[\"step_1\"]",
+                "[]",
+                "A bounded comparison exists."
+        );
+        crossCheck.markDegraded("cross-material partial result", "semantic consistency unresolved");
+        AgentPlanStep synthesis = new AgentPlanStep(
+                19L,
+                "step_3",
+                3,
+                "Synthesis",
+                "Produce the final report",
+                "ANALYSIS",
+                "[\"step_2\"]",
+                "[]",
+                "The final report preserves evidence and limitations."
+        );
+
+        PlanStepVerifier.VerificationResult result = verifier.verify(new PlanStepVerifier.VerificationRequest(
+                base.plan(), base.session(), synthesis, List.of(research, crossCheck, synthesis),
+                "bounded final synthesis", "", "test-api-key", null, "trace-transitive"));
+
+        assertThat(result.passed()).isTrue();
+        ArgumentCaptor<ChatRequest> request = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider).chat(request.capture());
+        assertThat(request.getValue().messages().get(1).content())
+                .contains("dependency result")
+                .contains("cross-material partial result")
+                .contains("Dependency limitation: semantic consistency unresolved");
+    }
+
+    @Test
     void verifyRequiresOneDecisionForEveryServerNumberedCriterion() {
         when(modelProvider.chat(any())).thenReturn(new ChatResponse(
                 ChatMessage.assistant("""
@@ -189,6 +236,22 @@ class PlanStepVerifierTest {
         ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
         verify(modelProvider, org.mockito.Mockito.times(2)).chat(requests.capture());
         assertThat(requests.getAllValues()).extracting(ChatRequest::maxTokens).containsExactly(256, 160);
+    }
+
+    @Test
+    void deterministicFinalSynthesisCheckRejectsMissingRequestedSectionsBeforeLlmApproval() {
+        PlanStepVerifier.VerificationRequest request = newRequest(
+                "## 一致点\n算法流程一致。\n## 证据位置\npaper.tex:10。\n## 待确认事项\n参数仍待确认。");
+        ReflectionTestUtils.setField(request.plan(), "goal",
+                "形成包含一致点、差异点、证据位置和待确认事项的综合结论");
+        ReflectionTestUtils.setField(request.step(), "title", "综合结论");
+
+        PlanStepVerifier.VerificationResult result = verifier.verify(request);
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.conclusive()).isTrue();
+        assertThat(result.reason()).contains("差异点");
+        verify(modelProvider, never()).chat(any());
     }
 
     private PlanStepVerifier.VerificationRequest newRequest(String candidateResult) {

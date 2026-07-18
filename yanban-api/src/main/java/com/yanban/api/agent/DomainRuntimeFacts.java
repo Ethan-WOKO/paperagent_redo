@@ -38,13 +38,14 @@ public record DomainRuntimeFacts(
         }
         Set<String> allowed = Set.copyOf(allowedTools);
         List<ToolOutcome> outcomes = new ArrayList<>();
+        int observationOrder = 0;
         for (String line : trace) {
             if (!StringUtils.hasText(line)) continue;
             Matcher matcher = TRUSTED_TRACE_PREFIX.matcher(line);
             if (!matcher.find() || !allowed.contains(matcher.group(2))) continue;
             outcomes.add(new ToolOutcome(
                     matcher.group(2),
-                    Integer.parseInt(matcher.group(1)),
+                    ++observationOrder,
                     null,
                     Boolean.parseBoolean(matcher.group(3)),
                     Boolean.parseBoolean(matcher.group(4)),

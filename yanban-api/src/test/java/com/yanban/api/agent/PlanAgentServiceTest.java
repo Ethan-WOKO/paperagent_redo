@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
@@ -278,7 +279,7 @@ class PlanAgentServiceTest {
 
     @Test
     @MockitoSettings(strictness = Strictness.LENIENT)
-    void emptyPreferredToolsStillExposeLowRiskReadOnlyProjectTools() {
+    void projectPersistedEmptyAllowedToolsRemainExplicitDenyAll() {
         String hash = "a".repeat(64);
         ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
         AgentPlanStep step = newStep("deny", 1, List.of(), "[]");
@@ -286,28 +287,61 @@ class PlanAgentServiceTest {
         when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(42L, "m", List.of(
                 new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
         when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(List.of("project_latex_outline"), 3, 1, "project"));
-        String envelope = "{\"status\":\"COMPLETE\",\"items\":[],\"evidenceRefs\":[{\"projectVersion\":\"" + "b".repeat(64)
-                + "\",\"relativePath\":\"paper/main.tex\",\"fileHash\":\"" + hash + "\",\"range\":{\"startLine\":1,\"endLine\":1},\"parserVersion\":\"latex-outline@1\",\"trustLabel\":\"SERVER_ATTESTED_METADATA\"}]}";
-        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall("deny-call", "function",
-                new com.yanban.core.model.ToolCall.FunctionCall("project_latex_outline", "{}"));
-        when(agentRuntimeService.run(any())).thenReturn(new AgentRuntimeResult(true, "result", List.of(
-                new ChatMessage("assistant", null, List.of(call), null), ChatMessage.tool("deny-call", envelope)), 1, null, List.of(), List.of(), null, null, null));
+        when(agentRuntimeService.run(any())).thenReturn(success("tool-free synthesis"));
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
 
         service.executePlan(USER_ID, PLAN_ID);
 
         ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class); verify(agentRuntimeService, atLeast(1)).run(request.capture());
-        assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools())
-                .containsExactly("project_latex_outline"));
+        assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools()).isEmpty());
         assertThat(request.getValue().toolPolicy().reason()).isEqualTo("project_plan_low_risk_read_only_tools");
         ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class); verify(events, atLeast(1)).save(event.capture());
-        assertThat(event.getAllValues()).anyMatch(value -> "step_project_evidence".equals(value.getEventType()));
+        assertThat(event.getAllValues()).noneMatch(value -> "step_project_evidence".equals(value.getEventType()));
     }
 
     @Test
     @MockitoSettings(strictness = Strictness.LENIENT)
-    void projectSynthesisMayChooseNoToolWhileAllLowRiskToolsRemainAvailable() throws Exception {
+    void legacyProjectStepWithoutPersistedAllowlistInheritsCurrentReadOnlyPolicy() {
         String hash = "a".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
+                objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("legacy", 1, List.of(), null);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, "m", List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_latex_outline"), 3, 1, "project"));
+        when(agentRuntimeService.run(any())).thenReturn(success("legacy read-only result"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, atLeast(1)).run(request.capture());
+        assertThat(request.getAllValues()).allSatisfy(value ->
+                assertThat(value.toolPolicy().allowedTools()).containsExactly("project_latex_outline"));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void repairWithUnknownLegacyPlanCeilingRemainsDenyAll() {
+        AgentPlanStep legacy = newStep("legacy", 1, List.of(), null);
+        when(toolPolicyEngine.decide(any(), org.mockito.ArgumentMatchers.anyBoolean(), any()))
+                .thenReturn(new AgentToolPolicyEngine.Decision(
+                        List.of("search_web"), 6, 1, "current_policy"));
+
+        ResolvedToolPolicy repairPolicy = ReflectionTestUtils.invokeMethod(
+                service, "resolveRepairToolPolicy", plan, List.of(legacy), null, null);
+
+        assertThat(repairPolicy.allowedTools()).isEmpty();
+        assertThat(repairPolicy.reason()).contains("unknown_plan_ceiling_deny_all");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void projectSynthesisWithExplicitEmptyToolsReusesEvidenceWithoutToolAuthority() throws Exception {
+        String hash = "a".repeat(64);
+        String projectVersion = "b".repeat(64);
         ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
                 objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
         AgentPlanStep research = newStep("research", 1, List.of(), "[\"project_latex_outline\"]");
@@ -315,11 +349,12 @@ class PlanAgentServiceTest {
         AgentPlanStep synthesis = newStep("synthesis", 2, List.of("research"), "[]");
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(research, synthesis));
         when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
-                42L, "m", List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+                42L, projectVersion, List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
         when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
                 List.of("project_latex_outline", "project_search"), 8, 1, "project"));
         EvidenceRef ref = new EvidenceRef("trusted-plan:42:paper/main.tex:" + hash + ":research",
-                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:research", null, hash, "test");
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:research", null, hash, "test",
+                projectVersion, hash, 1, 1, "test-parser@1", EvidenceVersionStatus.VERIFIED);
         AgentPlanEvent evidenceEvent = new AgentPlanEvent(PLAN_ID, research.getId(), "step_project_evidence",
                 objectMapper.writeValueAsString(java.util.Map.of("evidence", List.of(ref))));
         when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(evidenceEvent));
@@ -330,13 +365,14 @@ class PlanAgentServiceTest {
 
         ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
         verify(agentRuntimeService).run(request.capture());
-        assertThat(request.getValue().toolPolicy().allowedTools())
-                .containsExactly("project_latex_outline", "project_search");
+        assertThat(request.getValue().toolPolicy().allowedTools()).isEmpty();
         assertThat(request.getValue().inheritedTrustedEvidence().evidence())
                 .containsExactly(ref);
         assertThat(request.getValue().history().get(0).content())
                 .contains("trusted research result")
-                .contains("planning hints, not the complete tool set");
+                .contains("exact server-authorized tools: []")
+                .contains("complete server-enforced allowlist")
+                .contains("do not request or imitate a tool call");
         assertThat(synthesis.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
         ArgumentCaptor<AgentPlanEvent> recorded = ArgumentCaptor.forClass(AgentPlanEvent.class);
         verify(events, atLeast(1)).save(recorded.capture());
@@ -346,8 +382,221 @@ class PlanAgentServiceTest {
 
     @Test
     @MockitoSettings(strictness = Strictness.LENIENT)
+    void toolFreeSynthesisInheritsCurrentEvidenceAndResultsAcrossDegradedDependencyClosure() throws Exception {
+        String projectVersion = "c".repeat(64);
+        String paperHash = "d".repeat(64);
+        String codeHash = "e".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
+                objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep paper = newStep("paper", 1, List.of(), "[\"project_read_file\"]");
+        paper.markCompleted("paper algorithm and assumptions");
+        AgentPlanStep code = newStep("code", 2, List.of(), "[\"project_code_symbols\",\"project_read_file\"]");
+        code.markCompleted("code implementation evidence");
+        AgentPlanStep crossCheck = newStep("cross_check", 3, List.of("paper", "code"), "[]");
+        crossCheck.markDegraded("bounded cross-material assessment", "semantic consistency remains unresolved");
+        AgentPlanStep synthesis = newStep("synthesis", 4, List.of("cross_check"), "[]");
+        List<AgentPlanStep> ordered = List.of(paper, code, crossCheck, synthesis);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(ordered);
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, projectVersion, List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, paperHash),
+                new ProjectFileEntry("src/main.py", 1, Instant.EPOCH, codeHash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_code_symbols", "project_read_file"), 12, 1, "project"));
+        EvidenceRef paperEvidence = new EvidenceRef("trusted-plan:42:paper",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:paper", null, paperHash, "paper read",
+                projectVersion, paperHash, 1, 100, "project-read@1", EvidenceVersionStatus.VERIFIED);
+        EvidenceRef codeEvidence = new EvidenceRef("trusted-plan:42:code",
+                EvidenceSourceType.PROJECT, "PROJECT", "src/main.py", "tool:code", null, codeHash, "code read",
+                projectVersion, codeHash, 10, 80, "project-read@1", EvidenceVersionStatus.VERIFIED);
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, paper.getId(), "step_project_evidence",
+                        objectMapper.writeValueAsString(java.util.Map.of("evidence", List.of(paperEvidence)))),
+                new AgentPlanEvent(PLAN_ID, code.getId(), "step_project_evidence",
+                        objectMapper.writeValueAsString(java.util.Map.of("evidence", List.of(codeEvidence))))));
+        when(agentRuntimeService.run(any())).thenReturn(success("final bounded synthesis"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(response.executionOutcome()).isEqualTo("PARTIAL");
+        assertThat(synthesis.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
+        assertThat(synthesis.getErrorMessage()).contains("DEPENDENCY_PARTIAL", "cross_check");
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService).run(request.capture());
+        assertThat(request.getValue().toolPolicy().allowedTools()).isEmpty();
+        assertThat(request.getValue().inheritedTrustedEvidence().evidence())
+                .containsExactlyInAnyOrder(paperEvidence, codeEvidence);
+        assertThat(request.getValue().history().get(0).content())
+                .contains("paper algorithm and assumptions")
+                .contains("code implementation evidence")
+                .contains("bounded cross-material assessment")
+                .contains("Dependency limitation: semantic consistency remains unresolved");
+        ArgumentCaptor<AgentPlanEvent> recorded = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(recorded.capture());
+        assertThat(recorded.getAllValues()).anyMatch(value ->
+                "step_dependency_evidence_reused".equals(value.getEventType()));
+        assertThat(recorded.getAllValues()).noneMatch(value ->
+                "step_project_evidence".equals(value.getEventType())
+                        && synthesis.getId().equals(value.getStepId()));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void transitiveDependencyEvidenceRejectsLegacyForeignAndNonUsableAncestors() throws Exception {
+        String projectVersion = "1".repeat(64);
+        String currentHash = "2".repeat(64);
+        AgentPlanStep current = newStep("current", 1, List.of());
+        current.markCompleted("current result");
+        AgentPlanStep legacy = newStep("legacy", 2, List.of());
+        legacy.markCompleted("legacy result");
+        AgentPlanStep foreign = newStep("foreign", 3, List.of());
+        foreign.markCompleted("foreign result");
+        AgentPlanStep failed = newStep("failed", 4, List.of());
+        failed.markFailed("failed result");
+        AgentPlanStep superseded = newStep("superseded", 5, List.of());
+        superseded.markSuperseded("replaced");
+        AgentPlanStep bridge = newStep("bridge", 6,
+                List.of("current", "legacy", "foreign", "failed", "superseded"));
+        bridge.markDegraded("bounded bridge", "unresolved");
+        AgentPlanStep synthesis = newStep("synthesis", 7, List.of("bridge"));
+        List<AgentPlanStep> allSteps = List.of(
+                current, legacy, foreign, failed, superseded, bridge, synthesis);
+        EvidenceRef currentEvidence = new EvidenceRef("trusted-plan:42:current",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:current", null,
+                currentHash, "current", projectVersion, currentHash, 1, 20,
+                "project-read@1", EvidenceVersionStatus.VERIFIED);
+        EvidenceRef legacyEvidence = new EvidenceRef("trusted-plan:42:legacy",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:legacy", null,
+                currentHash, "legacy");
+        EvidenceRef foreignEvidence = new EvidenceRef("trusted-plan:99:foreign",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:foreign", null,
+                currentHash, "foreign", projectVersion, currentHash, 1, 20,
+                "project-read@1", EvidenceVersionStatus.VERIFIED);
+        EvidenceRef failedEvidence = new EvidenceRef("trusted-plan:42:failed",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:failed", null,
+                currentHash, "failed", projectVersion, currentHash, 1, 20,
+                "project-read@1", EvidenceVersionStatus.VERIFIED);
+        EvidenceRef supersededEvidence = new EvidenceRef("trusted-plan:42:superseded",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:superseded", null,
+                currentHash, "superseded", projectVersion, currentHash, 1, 20,
+                "project-read@1", EvidenceVersionStatus.VERIFIED);
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                evidenceEvent(current, currentEvidence),
+                evidenceEvent(legacy, legacyEvidence),
+                evidenceEvent(foreign, foreignEvidence),
+                evidenceEvent(failed, failedEvidence),
+                evidenceEvent(superseded, supersededEvidence)));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, projectVersion,
+                List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, currentHash))));
+
+        EvidenceLedger inherited = ReflectionTestUtils.invokeMethod(
+                service, "dependencyEvidence", PLAN_ID, allSteps, synthesis);
+        EvidenceLedger currentOnly = new ProjectEvidenceValidator(projectService).current(
+                USER_ID, new ProjectRuntimeContext(USER_ID, 42L), inherited);
+
+        assertThat(inherited.evidence())
+                .containsExactlyInAnyOrder(currentEvidence, legacyEvidence, foreignEvidence)
+                .doesNotContain(failedEvidence, supersededEvidence);
+        assertThat(currentOnly.evidence()).containsExactly(currentEvidence);
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void toolFreePlanRepairInheritsCurrentEvidenceFromTransitivePrerequisites() throws Exception {
+        String projectVersion = "3".repeat(64);
+        String paperHash = "4".repeat(64);
+        String codeHash = "5".repeat(64);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
+                objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep paper = newStep("paper", 1, List.of(), "[\"project_read_file\"]");
+        paper.markCompleted("paper findings");
+        AgentPlanStep code = newStep("code", 2, List.of(), "[\"project_read_file\"]");
+        code.markCompleted("code findings");
+        AgentPlanStep crossCheck = newStep("cross_check", 3, List.of("paper", "code"), "[]");
+        crossCheck.markDegraded("bounded comparison", "semantic consistency unresolved");
+        AgentPlanStep failedSynthesis = newStep("synthesis", 4, List.of("cross_check"), "[]");
+        failedSynthesis.markFailed(
+                "Step result did not satisfy success criteria: required report sections are missing.",
+                "incomplete report");
+        List<AgentPlanStep> ordered = new ArrayList<>(List.of(paper, code, crossCheck, failedSynthesis));
+        AtomicLong generatedIds = new AtomicLong(300);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenAnswer(invocation -> ordered.stream()
+                .sorted(Comparator.comparing(AgentPlanStep::getSortOrder))
+                .toList());
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> {
+            AgentPlanStep saved = invocation.getArgument(0);
+            if (saved.getId() == null) ReflectionTestUtils.setField(saved, "id", generatedIds.getAndIncrement());
+            if (!ordered.contains(saved)) ordered.add(saved);
+            return saved;
+        });
+        when(planner.createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PlanningAgentPlanner.PlanSpec(
+                        "Repair synthesis from existing evidence",
+                        List.of(new PlanningAgentPlanner.StepSpec(
+                                "repair_1",
+                                "Rebuild bounded report",
+                                "Rebuild the requested report from completed Project evidence and preserve unresolved limitations.",
+                                "ANALYSIS",
+                                List.of(),
+                                List.of(),
+                                "The report contains findings, evidence positions, differences, and unresolved items."
+                        )),
+                        "{}"
+                ));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, projectVersion, List.of(
+                new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, paperHash),
+                new ProjectFileEntry("src/main.py", 1, Instant.EPOCH, codeHash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file", "project_search"), 12, 1, "project"));
+        EvidenceRef paperEvidence = new EvidenceRef("trusted-plan:42:repair-paper",
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:paper", null,
+                paperHash, "paper", projectVersion, paperHash, 1, 50,
+                "project-read@1", EvidenceVersionStatus.VERIFIED);
+        EvidenceRef codeEvidence = new EvidenceRef("trusted-plan:42:repair-code",
+                EvidenceSourceType.PROJECT, "PROJECT", "src/main.py", "tool:code", null,
+                codeHash, "code", projectVersion, codeHash, 1, 50,
+                "project-read@1", EvidenceVersionStatus.VERIFIED);
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                evidenceEvent(paper, paperEvidence), evidenceEvent(code, codeEvidence)));
+        when(agentRuntimeService.run(any())).thenReturn(success("repaired bounded report"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        AgentPlanStepResponse repair = response.steps().stream()
+                .filter(value -> value.stepKey().startsWith("repair_synthesis"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(failedSynthesis.getStatus()).isEqualTo(AgentPlanStepStatus.SUPERSEDED.name());
+        assertThat(response.executionOutcome()).isEqualTo("PARTIAL");
+        assertThat(repair.status()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService).run(request.capture());
+        assertThat(request.getValue().toolPolicy().allowedTools()).isEmpty();
+        assertThat(request.getValue().inheritedTrustedEvidence().evidence())
+                .containsExactlyInAnyOrder(paperEvidence, codeEvidence);
+        assertThat(request.getValue().history().get(0).content())
+                .contains("paper findings")
+                .contains("code findings")
+                .contains("bounded comparison")
+                .contains("Dependency limitation: semantic consistency unresolved");
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(),
+                eq(List.of("project_read_file")));
+        ArgumentCaptor<AgentPlanEvent> recorded = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(recorded.capture());
+        assertThat(recorded.getAllValues()).anyMatch(value -> "plan_repaired".equals(value.getEventType()));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
     void projectSummaryWithInheritedEvidenceDoesNotRerunWhenVerifierRejectsCoverage() throws Exception {
         String hash = "d".repeat(64);
+        String projectVersion = "f".repeat(64);
         ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
                 objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
         AgentPlanStep research = newStep("research", 1, List.of(), "[\"project_search\"]");
@@ -355,11 +604,12 @@ class PlanAgentServiceTest {
         AgentPlanStep summary = newStep("summary", 2, List.of("research"), "[]");
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(research, summary));
         when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
-                42L, "m", List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
+                42L, projectVersion, List.of(new ProjectFileEntry("paper/main.tex", 1, Instant.EPOCH, hash))));
         when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
                 List.of("project_search", "project_read_file"), 8, 1, "project"));
         EvidenceRef ref = new EvidenceRef("trusted-plan:42:paper/main.tex:" + hash + ":research",
-                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:research", null, hash, "test");
+                EvidenceSourceType.PROJECT, "PROJECT", "paper/main.tex", "tool:research", null, hash, "test",
+                projectVersion, hash, 1, 1, "test-parser@1", EvidenceVersionStatus.VERIFIED);
         AgentPlanEvent evidenceEvent = new AgentPlanEvent(PLAN_ID, research.getId(), "step_project_evidence",
                 objectMapper.writeValueAsString(java.util.Map.of("evidence", List.of(ref))));
         when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(evidenceEvent));
@@ -617,7 +867,37 @@ class PlanAgentServiceTest {
         ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
         verify(agentRuntimeService).run(requestCaptor.capture());
         assertThat(requestCaptor.getValue().toolPolicy().allowedTools()).containsExactly("search_web");
-        assertThat(requestCaptor.getValue().toolPolicy().maxToolCalls()).isEqualTo(8);
+        assertThat(requestCaptor.getValue().toolPolicy().maxToolCalls()).isEqualTo(6);
+    }
+
+    @Test
+    void projectPlanStepInheritsSessionAndServerToolBudgetsWithoutExpandingTools() throws Exception {
+        session.updateMaxSteps(20);
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
+                objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = newStep("inspect_code", 1, List.of(),
+                "[\"project_code_symbols\",\"project_read_file\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_code_symbols", "project_read_file", "project_search"), 12, 1, "project"));
+        when(agentRuntimeService.run(any())).thenReturn(success("targeted code analysis"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, times(2)).run(request.capture());
+        assertThat(request.getAllValues()).allSatisfy(value -> {
+            assertThat(value.maxSteps()).isEqualTo(20);
+            assertThat(value.toolPolicy().maxToolCalls()).isEqualTo(12);
+            assertThat(value.toolPolicy().allowedTools())
+                    .containsExactly("project_code_symbols", "project_read_file");
+        });
+        assertThat(request.getAllValues().get(0).history().get(0).content())
+                .contains("do not scan sequentially from the first line")
+                .contains("Use project_code_symbols")
+                .contains("project_search")
+                .contains("project_read_file only for targeted evidence ranges")
+                .contains("Never claim that an entire file was read");
     }
 
     @Test
@@ -681,6 +961,44 @@ class PlanAgentServiceTest {
         assertThat(plannerTools.getValue()).containsExactly("project_code_symbols");
         assertThat(response.steps()).singleElement().satisfies(step ->
                 assertThat(step.allowedTools()).containsExactly("project_code_symbols"));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void projectPlannerToolHintsAreResolvedByServerSemanticsWithinTheRuntimeCeiling() {
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_code_symbols", "project_search", "project_read_file"), 12, 1, "project_policy"));
+        when(planner.createPlan(any(), any(), any(), any(), any(), any(), any(),
+                any(AgentOrchestrationRequirements.class)))
+                .thenReturn(new PlanningAgentPlanner.PlanSpec("summary", List.of(
+                        new PlanningAgentPlanner.StepSpec("code", "Analyze code implementation",
+                                "Inspect the Python implementation and collect evidence.", "ANALYSIS",
+                                List.of(), List.of("project_read_file"), "Code implementation is grounded in evidence."),
+                        new PlanningAgentPlanner.StepSpec("final", "Final synthesis",
+                                "Synthesize the code findings.", "SYNTHESIS",
+                                List.of("code"), List.of(), "A final conclusion is produced.")), "{}"));
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        AgentOrchestrationRequirements requirements = new AgentOrchestrationRequirements(
+                List.of(AgentStrategySignal.PROJECT_SCOPE, AgentStrategySignal.MATERIAL_CODE),
+                List.of(AgentStrategyReasonCode.AUTO_CROSS_MATERIAL_PLAN),
+                List.of(new ResearchMaterialRequirement(ResearchMaterialKind.CODE,
+                        List.of("project_code_symbols", "project_read_file"),
+                        List.of("project_code_symbols", "project_read_file"), true)));
+        AgentRuntimeRequest runtimeRequest = new AgentRuntimeRequest(
+                AgentStrategy.PLAN_EXECUTE, SESSION_ID, List.of(), USER_ID, "Analyze Project code",
+                "test", "model", null, null, 4, true, null, "key", "url", null,
+                AgentRuntimeMode.LANGCHAIN4J, AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                new ResolvedToolPolicy(List.of("project_code_symbols", "project_search", "project_read_file"),
+                        12, 1, "runtime_ceiling"), 12, 1, "trace-semantic-tools", null, null)
+                .withProjectContext(new ProjectRuntimeContext(USER_ID, 42L))
+                .withOrchestrationRequirements(requirements);
+
+        AgentPlanResponse response = service.createPlanWithinAdapter(runtimeRequest);
+
+        assertThat(response.steps()).hasSize(2);
+        assertThat(response.steps().get(0).allowedTools())
+                .containsExactly("project_code_symbols", "project_search", "project_read_file");
+        assertThat(response.steps().get(1).allowedTools()).isEmpty();
     }
 
     @Test
@@ -1017,9 +1335,14 @@ class PlanAgentServiceTest {
     }
 
     @Test
-    void executePlanCompletesControlledRuntimePartialWhenVerifierAcceptsPreservedResult() {
+    void executePlanKeepsControlledRuntimePartialDegradedWhenVerifierAcceptsPreservedResult() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID))
+                .thenAnswer(invocation -> org.mockito.Mockito.mockingDetails(events).getInvocations().stream()
+                        .filter(saved -> "save".equals(saved.getMethod().getName()))
+                        .map(saved -> (AgentPlanEvent) saved.getArgument(0))
+                        .toList());
         AgentRuntimeResult partial = new AgentRuntimeResult(
                 true,
                 "Evidence was collected, but final synthesis timed out.",
@@ -1037,12 +1360,19 @@ class PlanAgentServiceTest {
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(partial);
         when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("criteria covered"));
 
-        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+        PlanAgentService.PlanExecutionResult execution = service.executePlanResultWithinAdapter(
+                USER_ID, PLAN_ID, "trace-controlled-partial", false);
+        AgentPlanResponse response = execution.plan();
 
         assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
-        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
+        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
         assertThat(step.getAttemptCount()).isEqualTo(1);
         assertThat(step.getResult()).contains("Evidence was collected");
+        assertThat(step.getErrorMessage()).contains("RUNTIME_PARTIAL").contains("timeout");
+        assertThat(execution.domainRuntimeFacts().planStepOutcomes()).singleElement().satisfies(outcome -> {
+            assertThat(outcome.status()).isEqualTo(DomainRuntimeFacts.PlanStepStatus.DEGRADED);
+            assertThat(outcome.controlledStop()).isTrue();
+        });
         verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier).verify(any());
 
@@ -1050,7 +1380,28 @@ class PlanAgentServiceTest {
         verify(events, times(6)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_tool_observation", "step_controlled_stop_ready_for_verification",
-                        "step_completed_after_controlled_stop", "plan_completed");
+                        "step_degraded_after_controlled_stop", "plan_completed")
+                .doesNotContain("step_completed_after_controlled_stop");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void historicalControlledStopEventRemainsGovernedAsPartial() {
+        AgentPlanStep step = newStep("legacy_partial", 1, List.of());
+        step.markCompleted("historically preserved result");
+        plan.markCompleted();
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, step.getId(), "step_completed_after_controlled_stop", "{}")));
+
+        PlanAgentService.PlanExecutionResult execution = service.executePlanResultWithinAdapter(
+                USER_ID, PLAN_ID, "trace-legacy-controlled-stop", false);
+
+        assertThat(execution.domainRuntimeFacts().planStepOutcomes()).singleElement().satisfies(outcome -> {
+            assertThat(outcome.status()).isEqualTo(DomainRuntimeFacts.PlanStepStatus.COMPLETED);
+            assertThat(outcome.controlledStop()).isTrue();
+        });
+        verify(agentRuntimeService, org.mockito.Mockito.never()).run(any());
     }
 
     @Test
@@ -1233,13 +1584,14 @@ class PlanAgentServiceTest {
 
         assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
         assertThat(response.steps()).extracting(AgentPlanStepResponse::status)
-                .containsExactly(AgentPlanStepStatus.DEGRADED.name(), AgentPlanStepStatus.COMPLETED.name());
+                .containsExactly(AgentPlanStepStatus.DEGRADED.name(), AgentPlanStepStatus.DEGRADED.name());
         assertThat(first.getResult())
                 .contains("better but incomplete first answer")
                 .contains("[Degraded warning]")
                 .contains("still missing architecture details");
         assertThat(first.getErrorMessage()).contains("Degraded after verification failure");
         assertThat(second.getResult()).isEqualTo("downstream result");
+        assertThat(second.getErrorMessage()).contains("DEPENDENCY_PARTIAL", "step_1");
         verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
         verify(agentRuntimeService, times(3)).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier, times(3)).verify(any(PlanStepVerifier.VerificationRequest.class));
@@ -1280,6 +1632,107 @@ class PlanAgentServiceTest {
         verify(events, times(9)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_failed", "step_repair_started", "step_repair_unavailable", "step_skipped", "plan_failed");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void missingExplicitMaterialStopsAfterOneAttemptAndUsesServerBoundedFinalSynthesis() throws Exception {
+        String missingPath = "good_code/s2/__worker10_11_missing_boundary_test__.py";
+        ProjectRuntimeContext projectContext = new ProjectRuntimeContext(USER_ID, 42L);
+        plan = new AgentPlan(
+                SESSION_ID, USER_ID,
+                "Compare paper.tex with " + missingPath + " and form a cross-material conclusion.",
+                "Cross-material missing target boundary", false, null,
+                ProjectPlanEnvelope.wrap(objectMapper, "{}", projectContext));
+        ReflectionTestUtils.setField(plan, "id", PLAN_ID);
+        when(plans.findByIdAndUserId(PLAN_ID, USER_ID)).thenReturn(Optional.of(plan));
+
+        AgentPlanStep paper = newStep("paper", 1, List.of());
+        paper.markCompleted("Paper algorithm evidence at lines 650-940.");
+        AgentPlanStep code = new AgentPlanStep(
+                PLAN_ID, "code", 2, "Analyze requested code",
+                "Use project_read_file to read " + missingPath + " and analyze its implementation.",
+                "ANALYSIS", "[]", "[\"project_read_file\",\"project_search\"]",
+                "The requested code file is read and analyzed.");
+        ReflectionTestUtils.setField(code, "id", 2L);
+        AgentPlanStep synthesis = new AgentPlanStep(
+                PLAN_ID, "cross_check", 3, "Cross-check paper and code consistency",
+                "Form the final cross-material conclusion with consistent points, differences, evidence and open items.",
+                "ANALYSIS", writeJson(List.of("paper", "code")), "[]",
+                "A bounded final conclusion exists.");
+        ReflectionTestUtils.setField(synthesis, "id", 3L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(paper, code, synthesis));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, "b".repeat(64), List.of(new ProjectFileEntry(
+                "paper.tex", 100L, Instant.EPOCH, "a".repeat(64)))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file", "project_search"), 12, 1, "project"));
+
+        String trace = "step=1 tool=project_read_file executed=true budgetConsumed=true success=false "
+                + "reused=false skipped=false args={\"relativePath\":\"" + missingPath
+                + "\"} error=404 NOT_FOUND Project file not found";
+        AgentRuntimeResult missingResult = new AgentRuntimeResult(
+                true,
+                "The requested target file " + missingPath + " does not exist; code analysis is unavailable.",
+                List.of(ChatMessage.assistant("The requested target file is missing.")),
+                2, null, List.of(trace),
+                List.of(ProjectMaterialScope.MISSING_TARGET_PREFIX + " " + missingPath),
+                null, null, null)
+                .withDomainRuntimeFacts(new DomainRuntimeFacts(List.of(new DomainRuntimeFacts.ToolOutcome(
+                        "project_read_file", 1, null, true, true, false, false, false)), List.of(), List.of()));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(missingResult);
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(response.executionOutcome()).isEqualTo("PARTIAL");
+        assertThat(response.steps()).extracting(AgentPlanStepResponse::status)
+                .containsExactly(AgentPlanStepStatus.COMPLETED.name(), AgentPlanStepStatus.DEGRADED.name(),
+                        AgentPlanStepStatus.DEGRADED.name());
+        assertThat(code.getAttemptCount()).isEqualTo(1);
+        assertThat(code.getErrorMessage()).startsWith(ProjectMaterialScope.MISSING_TARGET_PREFIX);
+        assertThat(response.finalAnswer())
+                .contains("一致点", "差异点", "证据位置", "待确认事项", "综合结论")
+                .contains("无法判定", missingPath, "NOT_FOUND", "PARTIAL", "UNRESOLVED")
+                .contains("Paper algorithm evidence at lines 650-940")
+                .doesNotContain("WaveformPhaseNet", "PolarizationNet", "其他文件替代后的一致结论");
+        verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
+        verify(stepVerifier, org.mockito.Mockito.never()).verify(any());
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void failedMaterialStepRetainsCompletedObservationInBoundedPartialSynthesis() {
+        AgentPlanStep paper = newStep("paper", 1, List.of());
+        paper.markCompleted("paper algorithm evidence");
+        AgentPlanStep code = newStep("code", 2, List.of());
+        AgentPlanStep synthesis = new AgentPlanStep(
+                PLAN_ID, "cross_check", 3, "Cross-check paper and code consistency",
+                "Form the final cross-material conclusion.", "ANALYSIS",
+                writeJson(List.of("paper", "code")), "[]", "A bounded final conclusion exists.");
+        ReflectionTestUtils.setField(synthesis, "id", 3L);
+        List<AgentPlanStep> orderedSteps = List.of(paper, code, synthesis);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(orderedSteps);
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
+                .thenReturn(failure("no current authorized Project file evidence for code"))
+                .thenReturn(failure("no current authorized Project file evidence for code"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.FAILED.name());
+        assertThat(response.executionOutcome()).isEqualTo("PARTIAL");
+        assertThat(response.steps()).extracting(AgentPlanStepResponse::status)
+                .containsExactly(AgentPlanStepStatus.COMPLETED.name(), AgentPlanStepStatus.FAILED.name(),
+                        AgentPlanStepStatus.DEGRADED.name());
+        assertThat(response.finalAnswer())
+                .contains("Governed completion status: PARTIAL")
+                .contains("Cross-material consistency: UNRESOLVED")
+                .contains("paper algorithm evidence")
+                .contains("no current authorized Project file evidence for code")
+                .contains("cannot establish", "VERIFIED");
+        assertThat(synthesis.getErrorMessage()).contains("DEPENDENCY_PARTIAL", "code");
+        verify(agentRuntimeService, org.mockito.Mockito.times(2)).run(any(AgentRuntimeRequest.class));
     }
 
     private AgentRuntimeResult success(String content) {
@@ -1402,6 +1855,15 @@ class PlanAgentServiceTest {
     private String writeJson(List<String> values) {
         try {
             return objectMapper.writeValueAsString(values);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    private AgentPlanEvent evidenceEvent(AgentPlanStep step, EvidenceRef evidence) {
+        try {
+            return new AgentPlanEvent(PLAN_ID, step.getId(), "step_project_evidence",
+                    objectMapper.writeValueAsString(java.util.Map.of("evidence", List.of(evidence))));
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException(ex);
         }

@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.project.ProjectFileEntry;
 import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
+import com.yanban.core.model.ChatMessage;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,26 @@ class PlanRuntimeAdapterTest {
         assertThat(PlanRuntimeAdapter.classify(plan("RUNNING", null, List.of())).outcome()).isEqualTo("WAITING");
         assertThat(PlanRuntimeAdapter.classify(plan("FAILED", "arbitrary error text", List.of()),
                 AgentRuntimeStopSignal.MAX_STEPS_BUDGET_EXHAUSTED).outcome()).isEqualTo("BUDGET_STOP");
+    }
+
+    @Test
+    void failedPlanWithPreservedEvidenceIsPartialAndDoesNotReuseAnIntermediateAsFinalAnswer() {
+        AgentPlanStepResponse paper = new AgentPlanStepResponse(
+                1L, "paper", 1, "Paper", "description", "ANALYSIS", List.of(), List.of(),
+                "done", "COMPLETED", 1, "paper intermediate result", null, null, null);
+        AgentPlanStepResponse code = new AgentPlanStepResponse(
+                2L, "code", 2, "Code", "description", "ANALYSIS", List.of(), List.of(),
+                "done", "FAILED", 2, null, "missing code evidence", null, null);
+        AgentPlanStepResponse synthesis = new AgentPlanStepResponse(
+                3L, "cross_check", 3, "Cross-check", "description", "ANALYSIS",
+                List.of("paper", "code"), List.of(), "done", "SKIPPED", 0,
+                null, "Dependency step failed: code", null, null);
+        AgentPlanResponse response = plan("FAILED", "code failed", List.of(paper, code, synthesis));
+
+        assertThat(response.executionOutcome()).isEqualTo("PARTIAL");
+        assertThat(response.finalAnswer()).isNull();
+        assertThat(PlanRuntimeAdapter.classify(response).outcome()).isEqualTo("PARTIAL");
+        assertThat(PlanRuntimeAdapter.classify(response).stopReason()).isEqualTo(AgentStopReason.PLAN_PARTIAL);
     }
 
     @Test
@@ -83,13 +104,36 @@ class PlanRuntimeAdapterTest {
     }
 
     @Test
+    void nestedReflectionPlanCanSuppressDuplicateConversationSummaryPersistence() {
+        PlanAgentService service = mock(PlanAgentService.class);
+        when(service.executePlanResultWithinAdapter(7L, 19L, "trace", false))
+                .thenReturn(new PlanAgentService.PlanExecutionResult(
+                        plan("COMPLETED", null, List.of(step("COMPLETED", "Reflection result", null))),
+                        AgentRuntimeStopSignal.NONE));
+
+        AgentRuntimeRequest nestedReflection = autoProjectRequest().withPlanId(19L)
+                .withPlanConversationSummaryPersistence(false);
+        AgentRuntimeResult result = new PlanRuntimeAdapter(service).run(nestedReflection);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.planId()).isEqualTo(19L);
+        verify(service).executePlanResultWithinAdapter(7L, 19L, "trace", false);
+        verify(service, never()).executePlanResultWithinAdapter(7L, 19L, "trace", true);
+        verify(service, never()).createPlanWithinAdapter(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void serverAutoProjectPlanIsCreatedAndExecutedWithRealStepResults() {
         PlanAgentService service = mock(PlanAgentService.class);
         when(service.createPlanWithinAdapter(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(plan("REVIEWING", null, List.of()));
         when(service.executePlanResultWithinAdapter(7L, 19L, "trace", false))
                 .thenReturn(new PlanAgentService.PlanExecutionResult(plan("COMPLETED", null,
-                        List.of(step("COMPLETED", "Cross-material analysis result", null))),
+                        List.of(step("COMPLETED", "Cross-material analysis result\n"
+                                + "[projectEvidenceRefs=trusted-tool:42:paper.tex:hash:call-1]\n"
+                                + "Q1: semantic consistency remains unresolved.\n"
+                                + "Inline [projectEvidenceRefs=trusted-tool:43:code.py:hash:call-2] marker removed.\n"
+                                + "[projectEvidenceRefs=trusted-tool:44:paper.tex:hash:call-3]", null))),
                         AgentRuntimeStopSignal.NONE));
 
         AgentRuntimeResult result = new PlanRuntimeAdapter(service).run(autoProjectRequest());
@@ -97,7 +141,10 @@ class PlanRuntimeAdapterTest {
         assertThat(result.success()).isTrue();
         assertThat(result.outcome()).isEqualTo("SUCCESS");
         assertThat(result.planId()).isEqualTo(19L);
-        assertThat(result.assistantContent()).contains("status COMPLETED", "Cross-material analysis result");
+        assertThat(result.assistantContent())
+                .contains("execution lifecycle status: COMPLETED", "Cross-material analysis result",
+                        "Q1: semantic consistency remains unresolved.", "Inline  marker removed.")
+                .doesNotContain("outcome SUCCESS", "projectEvidenceRefs=");
         verify(service).createPlanWithinAdapter(org.mockito.ArgumentMatchers.any());
         verify(service).executePlanResultWithinAdapter(7L, 19L, "trace", false);
         verify(service, never()).executePlanResultWithinAdapter(7L, 19L, "trace", true);
@@ -120,7 +167,61 @@ class PlanRuntimeAdapterTest {
         assertThat(result.stopReason()).isEqualTo(AgentStopReason.PLAN_PARTIAL);
         assertThat(result.degraded()).isTrue();
         assertThat(result.planId()).isEqualTo(19L);
-        assertThat(result.assistantContent()).contains("Partial governed result");
+        assertThat(result.assistantContent())
+                .contains("execution lifecycle status: COMPLETED")
+                .contains("Plan execution outcome: PARTIAL")
+                .contains("Partial governed result")
+                .doesNotContain("finished with status COMPLETED");
+    }
+
+    @Test
+    void canonicalChatUsesTheCompleteFinalSynthesisWithoutConcatenatingOrTruncatingEarlierSteps() {
+        PlanAgentService service = mock(PlanAgentService.class);
+        when(service.createPlanWithinAdapter(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(plan("REVIEWING", null, List.of()));
+        String finalSynthesis = "FINAL-BEGIN\n" + "evidence row\n".repeat(1800) + "FINAL-END.";
+        AgentPlanResponse completed = plan("COMPLETED", null, List.of(
+                step("COMPLETED", "EARLY-STEP-BLOB", null),
+                new AgentPlanStepResponse(2L, "step_2", 2, "Final synthesis", "description", "ANALYSIS",
+                        List.of("step_1"), List.of(), "done", "COMPLETED", 1,
+                        finalSynthesis, null, null, null)));
+        when(service.executePlanResultWithinAdapter(7L, 19L, "trace", false))
+                .thenReturn(new PlanAgentService.PlanExecutionResult(completed, AgentRuntimeStopSignal.NONE));
+
+        AgentRuntimeResult result = new PlanRuntimeAdapter(service).run(autoProjectRequest());
+
+        assertThat(result.assistantContent())
+                .contains("FINAL-BEGIN", "FINAL-END.")
+                .doesNotContain("EARLY-STEP-BLOB");
+        assertThat(result.assistantContent().length()).isGreaterThan(12_000);
+    }
+
+    @Test
+    void serverAutoProjectPlanWithHistoryPersistsOneCanonicalAssistantForSuccessAndPartial() {
+        List<ChatMessage> history = List.of(
+                ChatMessage.user("Earlier request"),
+                ChatMessage.assistant("Earlier answer"));
+
+        for (String stepStatus : List.of("COMPLETED", "DEGRADED")) {
+            PlanAgentService service = mock(PlanAgentService.class);
+            when(service.createPlanWithinAdapter(org.mockito.ArgumentMatchers.any()))
+                    .thenReturn(plan("REVIEWING", null, List.of()));
+            when(service.executePlanResultWithinAdapter(7L, 19L, "trace", false))
+                    .thenReturn(new PlanAgentService.PlanExecutionResult(plan("COMPLETED", null,
+                            List.of(step(stepStatus, stepStatus + " governed result", null))),
+                            AgentRuntimeStopSignal.NONE));
+            AgentRuntimeRequest request = autoProjectRequest(history);
+
+            AgentRuntimeResult result = new PlanRuntimeAdapter(service).run(request);
+
+            assertThat(result.messages()).startsWith(history.toArray(ChatMessage[]::new));
+            assertThat(AgentService.runtimeMessagesToPersist(result.messages(), request.history().size()))
+                    .singleElement()
+                    .satisfies(message -> {
+                        assertThat(message.role()).isEqualTo("assistant");
+                        assertThat(message.content()).isEqualTo(result.assistantContent());
+                    });
+        }
     }
 
     @Test
@@ -210,11 +311,15 @@ class PlanRuntimeAdapterTest {
     }
 
     private static AgentRuntimeRequest autoProjectRequest() {
+        return autoProjectRequest(List.of());
+    }
+
+    private static AgentRuntimeRequest autoProjectRequest(List<ChatMessage> history) {
         AgentOrchestrationRequirements audit = new AgentOrchestrationRequirements(
                 List.of(AgentStrategySignal.PROJECT_SCOPE, AgentStrategySignal.CROSS_MATERIAL_TASK),
                 List.of(AgentStrategyReasonCode.AUTO_CROSS_MATERIAL_PLAN), List.of(),
                 AgentStrategySelectionOrigin.SERVER_AUTO);
-        return new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE, 11L, List.of(), 7L, "cross material", "test", "model",
+        return new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE, 11L, history, 7L, "cross material", "test", "model",
                 null, null, 4, true, null, null, null, null, AgentRuntimeMode.LANGCHAIN4J,
                 AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
                 new ResolvedToolPolicy(List.of("project_read_file"), 4, 1, "project"), 4, 1,

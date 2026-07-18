@@ -281,4 +281,97 @@ class PlanningAgentPlannerTest {
 
         assertThat(plan.steps()).singleElement().satisfies(step -> assertThat(step.allowedTools()).isEmpty());
     }
+
+    @Test
+    void recoveryPlanFailsClosedWhenItRequestsAToolOutsideTheResolvedAllowlist() {
+        when(modelProvider.chat(any())).thenReturn(new ChatResponse(ChatMessage.assistant("""
+                {
+                  "summary": "Recover missing evidence",
+                  "steps": [{
+                    "id": "repair_1",
+                    "title": "Search outside the Project",
+                    "description": "Use search_web to replace the missing Project evidence.",
+                    "type": "TOOL",
+                    "dependencies": [],
+                    "allowedTools": ["search_web"],
+                    "successCriteria": "A replacement source is found."
+                  }]
+                }
+                """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createRecoveryPlan(
+                "Compare the Project paper and code.",
+                "A synthesis step failed.",
+                "deepseek",
+                "deepseek-v4-flash",
+                "test-key",
+                null,
+                null,
+                List.of("project_read_file"));
+
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+        assertThat(plan.failureMessage()).contains("outside the resolved allowlist");
+    }
+
+    @Test
+    void recoveryPlanRejectsMalformedToolFieldsInsteadOfConvertingThemToDenyAll() {
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"bad scalar","steps":[{"id":"r1","title":"Search","description":"Search",
+                        "type":"TOOL","dependencies":[],"allowedTools":"search_web","successCriteria":"found"}]}
+                        """), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"bad mixed","steps":[{"id":"r1","title":"Read","description":"Read",
+                        "type":"TOOL","dependencies":[],"allowedTools":["project_read_file",7],"successCriteria":"read"}]}
+                        """), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"missing tools","steps":[{"id":"r1","title":"Search","description":"Use search_web",
+                        "type":"TOOL","dependencies":[],"successCriteria":"found"}]}
+                        """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec scalar = planner.createRecoveryPlan(
+                "Inspect Project", "failed", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+        PlanningAgentPlanner.PlanSpec mixed = planner.createRecoveryPlan(
+                "Inspect Project", "failed", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+        PlanningAgentPlanner.PlanSpec missing = planner.createRecoveryPlan(
+                "Inspect Project", "failed", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+
+        assertThat(scalar.executable()).isFalse();
+        assertThat(mixed.executable()).isFalse();
+        assertThat(missing.executable()).isFalse();
+        assertThat(scalar.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+        assertThat(mixed.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+        assertThat(missing.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+    }
+
+    @Test
+    void recoveryPlanAcceptsAuthorizedAndExplicitToolFreeSteps() {
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"authorized","steps":[{"id":"r1","title":"Read","description":"Read Project evidence",
+                        "type":"TOOL","dependencies":[],"allowedTools":[" project_read_file "],"successCriteria":"read"}]}
+                        """), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"synthesize","steps":[{"id":"r1","title":"Synthesize","description":"Reuse dependency evidence",
+                        "type":"ANALYSIS","dependencies":[],"allowedTools":[],"successCriteria":"report"}]}
+                        """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec authorized = planner.createRecoveryPlan(
+                "Inspect Project", "failed", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+        PlanningAgentPlanner.PlanSpec toolFree = planner.createRecoveryPlan(
+                "Inspect Project", "failed", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+
+        assertThat(authorized.executable()).isTrue();
+        assertThat(authorized.steps()).singleElement().satisfies(step ->
+                assertThat(step.allowedTools()).containsExactly("project_read_file"));
+        assertThat(toolFree.executable()).isTrue();
+        assertThat(toolFree.steps()).singleElement().satisfies(step ->
+                assertThat(step.allowedTools()).isEmpty());
+    }
 }

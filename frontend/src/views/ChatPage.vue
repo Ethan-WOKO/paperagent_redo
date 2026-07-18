@@ -364,6 +364,7 @@ import { listSkills, type SkillListItemResponse } from '@/api/skills';
 import { getSettings, type UserSettingsResponse } from '@/api/settings';
 import { useAuthStore } from '@/stores/auth';
 import { useI18n } from '@/composables/useI18n';
+import { projectPlanExecutionOutcome, projectPlanFinalAnswer, projectPlanLifecycle } from '@/utils/projectCompletion';
 import { ui } from '@/ui';
 
 type MessageRole = 'user' | 'assistant' | 'system' | 'tool' | 'process';
@@ -1963,21 +1964,26 @@ function buildChatWebSocketUrl(token: string) {
 }
 
 function buildPlanAssistantContent(plan: AgentPlanResponse) {
+  const terminalHeader = [
+    `Plan lifecycle status: ${projectPlanLifecycle(plan)}.`,
+    `Plan execution outcome: ${projectPlanExecutionOutcome(plan)}.`,
+  ].join('\n');
   if (isTerminalPlanStatus(plan.status)) {
-    const finalStepResult = lastPlanStepResult(plan);
+    const finalStepResult = projectPlanFinalAnswer(plan);
     if (finalStepResult) {
-      return finalStepResult;
+      return `${terminalHeader}\n\n${finalStepResult}`;
     }
     if (plan.errorMessage) {
-      return plan.errorMessage;
+      return `${terminalHeader}\n\n${plan.errorMessage}`;
     }
     if (plan.summary) {
-      return plan.summary;
+      return `${terminalHeader}\n\n${plan.summary}`;
     }
   }
 
   const lines = [
-    '计划执行状态：' + plan.status,
+    `Plan lifecycle status: ${projectPlanLifecycle(plan)}.`,
+    `Plan execution outcome: ${projectPlanExecutionOutcome(plan)}.`,
     plan.summary ? ('摘要：' + plan.summary) : '',
     '',
     '步骤：',
@@ -1987,14 +1993,6 @@ function buildPlanAssistantContent(plan: AgentPlanResponse) {
     lines.push('', '错误：' + plan.errorMessage);
   }
   return lines.join('\n');
-}
-
-function lastPlanStepResult(plan: AgentPlanResponse) {
-  const finalStep = [...plan.steps]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .reverse()
-    .find((step) => step.result?.trim());
-  return finalStep?.result?.trim() || '';
 }
 
 function artifactIconLabel(artifact: ChatArtifactCard) {

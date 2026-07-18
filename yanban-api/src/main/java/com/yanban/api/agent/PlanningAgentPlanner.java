@@ -121,7 +121,7 @@ public class PlanningAgentPlanner {
                     attemptLabel + " output was truncated by the model" + finishReasonSuffix(response) + "."));
         }
         try {
-            return PlannerAttempt.of(parsePlan(goal, content, maxSteps, skillAllowedTools));
+            return PlannerAttempt.of(parsePlan(goal, content, maxSteps, skillAllowedTools, false));
         } catch (PlannerFailureException ex) {
             return PlannerAttempt.of(PlanSpec.failure(ex.code, abbreviate(ex.getMessage(), 300)));
         } catch (Exception ex) {
@@ -162,7 +162,7 @@ public class PlanningAgentPlanner {
             return PlanSpec.failure(PlannerFailureCode.EMPTY_RESPONSE, "Recovery planner returned an empty plan.");
         }
         try {
-            return parsePlan(goal, content, DEFAULT_MAX_RECOVERY_STEPS, skillAllowedTools);
+            return parsePlan(goal, content, DEFAULT_MAX_RECOVERY_STEPS, skillAllowedTools, true);
         } catch (PlannerFailureException ex) {
             return PlanSpec.failure(ex.code, ex.getMessage());
         } catch (Exception ex) {
@@ -311,7 +311,11 @@ public class PlanningAgentPlanner {
         return sb.toString();
     }
 
-    private PlanSpec parsePlan(String goal, String raw, int maxSteps, List<String> exposedToolNames) throws Exception {
+    private PlanSpec parsePlan(String goal,
+                               String raw,
+                               int maxSteps,
+                               List<String> exposedToolNames,
+                               boolean rejectUnsupportedTools) throws Exception {
         String cleaned = stripCodeFence(raw);
         JsonNode root = objectMapper.readTree(cleaned);
         if (root == null || !root.isObject()) {
@@ -357,13 +361,13 @@ public class PlanningAgentPlanner {
             if (dependencies.isEmpty() && node.path("deps").isArray()) {
                 dependencies = normalizeDependencies(node.path("deps"), idMapping, stepId);
             }
-            List<String> allowedTools = normalizeAllowedTools(node.path("allowedTools"), registeredTools);
-            if (!node.has("allowedTools")) {
-                allowedTools = normalizeAllowedTools(node.path("allowed_tools"), registeredTools);
+            JsonNode requestedTools = node.has("allowedTools") ? node.path("allowedTools")
+                    : node.has("allowed_tools") ? node.path("allowed_tools") : node.path("tools");
+            if (rejectUnsupportedTools && containsUnsupportedTool(requestedTools, registeredTools)) {
+                throw new PlannerFailureException(PlannerFailureCode.INVALID_PLAN,
+                        "Recovery step " + (i + 1) + " requested a tool outside the resolved allowlist.");
             }
-            if (!node.has("allowedTools") && !node.has("allowed_tools")) {
-                allowedTools = normalizeAllowedTools(node.path("tools"), registeredTools);
-            }
+            List<String> allowedTools = normalizeAllowedTools(requestedTools, registeredTools);
             String successCriteria = abbreviate(textOrDefault(
                     node.path("successCriteria"),
                     textOrDefault(node.path("success_criteria"),
@@ -441,11 +445,29 @@ public class PlanningAgentPlanner {
         ArrayNode array = (ArrayNode) node;
         for (JsonNode item : array) {
             String tool = item.asText(null);
-            if (StringUtils.hasText(tool) && registeredTools.contains(tool)) {
-                values.add(tool.trim());
+            String normalized = StringUtils.hasText(tool) ? tool.trim() : null;
+            if (StringUtils.hasText(normalized) && registeredTools.contains(normalized)) {
+                values.add(normalized);
             }
         }
         return List.copyOf(values);
+    }
+
+    private boolean containsUnsupportedTool(JsonNode node, Set<String> registeredTools) {
+        if (node == null || node.isMissingNode()) {
+            return true;
+        }
+        if (!node.isArray()) return true;
+        for (JsonNode item : node) {
+            if (item == null || !item.isTextual() || !StringUtils.hasText(item.asText())) {
+                return true;
+            }
+            String tool = item.asText().trim();
+            if (!registeredTools.contains(tool)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String normalizeType(String raw) {

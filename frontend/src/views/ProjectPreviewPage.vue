@@ -420,7 +420,7 @@
                       :class="{ 'project-plan-message--selected': selectedPlan?.id === plan.id }"
                       @click="selectPlan(plan)"
                     >
-                      <small>Project Agent - {{ planTerminal(plan.status) ? 'Final answer' : 'Progress update' }}</small>
+                      <small>Project Agent - {{ projectPlanFinalAnswer(plan) ? 'Final step synthesis' : planTerminal(plan.status) ? 'Terminal status' : 'Progress update' }}</small>
                       <MarkdownMessage :content="planFinalMessageContent(plan)" variant="project" />
                     </div>
                   </div>
@@ -556,6 +556,13 @@ import { candidateReviewFailure, getCandidateChange, isCandidateArtifactV1, list
 import { applyProjectCandidate, createProjectPlan, createProjectSession, deleteProject, exportProjectRevision, filterProjectUploadFiles, getProjectManifest, listProjectEvidence, listProjectRevisions, listProjectSessions, listProjects, readProjectFile, rollbackProjectRevision, searchProject, sendProjectMessage, uploadProject, type ProjectEvidenceResponse, type ProjectFileResponse, type ProjectManifestResponse, type ProjectRevisionResponse, type ProjectSearchHit, type ProjectSummaryResponse } from '@/api/project';
 import { useAuthStore } from '@/stores/auth';
 import { useI18n } from '@/composables/useI18n';
+import {
+  isControlledProjectPartial,
+  projectPlanExecutionOutcome,
+  projectPlanFinalAnswer,
+  projectPlanLifecycle,
+  withoutInternalProjectEvidenceRefs,
+} from '@/utils/projectCompletion';
 
 type ProjectChatRole = 'user' | 'assistant' | 'process';
 type ProjectInspectorTab = 'preview' | 'evidence' | 'changes' | 'versions';
@@ -885,9 +892,7 @@ function resetProjectFolderSelection() {
 }
 
 function planDisplayStatus(plan: AgentPlanResponse) {
-  return plan.status.toUpperCase() === 'COMPLETED' && plan.steps.some((step) => ['DEGRADED', 'SKIPPED'].includes(step.status.toUpperCase()))
-    ? 'PARTIAL'
-    : plan.status;
+  return projectPlanExecutionOutcome(plan);
 }
 
 function planTagType(status: string): 'default' | 'success' | 'warning' | 'error' | 'info' {
@@ -964,7 +969,8 @@ async function scrollToProjectNavItem(item: ProjectContentNavItem) {
 function planConversationIntro(plan: AgentPlanResponse) {
   const lines = [
     plan.summary || 'I created a plan and will execute it step by step.',
-    `Current status: ${planDisplayStatus(plan)}.`,
+    `Plan lifecycle status: ${projectPlanLifecycle(plan)}.`,
+    `Plan execution outcome: ${projectPlanExecutionOutcome(plan)}.`,
   ];
   return lines.join('\n');
 }
@@ -1013,7 +1019,7 @@ function formatPlanElapsed(value: number | null) {
 }
 
 function planStepPreviewLine(step: AgentPlanResponse['steps'][number]) {
-  const source = step.errorMessage || step.result || step.description || '';
+  const source = withoutInternalProjectEvidenceRefs(step.errorMessage || step.result || step.description || '');
   if (source.trim()) return abbreviateText(source, 140);
   const status = step.status.toUpperCase();
   if (status === 'RUNNING') return 'Running now.';
@@ -1024,13 +1030,13 @@ function planStepPreviewLine(step: AgentPlanResponse['steps'][number]) {
 function planStepMessageContent(step: AgentPlanResponse['steps'][number]) {
   const lines: string[] = [];
   if (step.description && step.description !== step.title) {
-    lines.push(step.description);
+    lines.push(withoutInternalProjectEvidenceRefs(step.description));
   }
   const status = step.status.toUpperCase();
   if (step.errorMessage) {
-    lines.push(`Error: ${step.errorMessage}`);
+    lines.push(`Error: ${withoutInternalProjectEvidenceRefs(step.errorMessage)}`);
   } else if (step.result) {
-    lines.push(step.result);
+    lines.push(withoutInternalProjectEvidenceRefs(step.result));
   } else if (status === 'RUNNING') {
     lines.push('This step is running now.');
   } else if (status === 'PENDING') {
@@ -1045,9 +1051,9 @@ function planFinalMessageContent(plan: AgentPlanResponse) {
   const status = planDisplayStatus(plan);
   if (!planTerminal(plan.status)) return `Still working. Current status: ${status}.`;
 
-  const finalStepResult = lastPlanStepResult(plan);
+  const finalStepResult = projectPlanFinalAnswer(plan);
   if (finalStepResult) {
-    return finalStepResult;
+    return `This is the final step synthesis. See Chat for the governed completion status and canonical answer.\n\n${finalStepResult}`;
   }
 
   const failedStep = [...plan.steps]
@@ -1058,14 +1064,6 @@ function planFinalMessageContent(plan: AgentPlanResponse) {
   if (failedStep?.errorMessage) return failedStep.errorMessage;
   if (plan.summary) return plan.summary;
   return `Finished with status: ${status}.`;
-}
-
-function lastPlanStepResult(plan: AgentPlanResponse) {
-  const finalStep = [...plan.steps]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .reverse()
-    .find((step) => step.result?.trim());
-  return finalStep?.result?.trim() || '';
 }
 
 function toggleInspector(tab: ProjectInspectorTab) {
@@ -1675,7 +1673,9 @@ async function sendProjectHttp(projectId: number, sessionId: number, content: st
   const response = (await sendProjectMessage(projectId, sessionId, { content, ragDisabled: true, clientRequestId })).data;
   evidence.value = response.projectEvidence || [];
   if (response.assistantContent != null) replaceAssistantContent(response.assistantContent);
-  if (!response.success) throw new Error(response.errorMessage || 'Project Agent request failed.');
+  if (!response.success && !isControlledProjectPartial(response)) {
+    throw new Error(response.errorMessage || 'Project Agent request failed.');
+  }
 }
 
 async function sendProjectWithFallback(projectId: number, sessionId: number, content: string, clientRequestId: string) {
@@ -1708,12 +1708,20 @@ async function sendChat() {
     appendChatMessage({ localId: currentAssistantMessageId, role: 'assistant', content: '', pending: true });
     await scrollMessagesToBottom();
     await sendProjectWithFallback(projectId, sessionId, content, requestId);
+    finishProcess();
     if (epoch !== projectEpoch) return;
-    await Promise.all([loadMessages(sessionId, epoch), loadCandidates(sessionId, epoch)]);
+    await Promise.all([
+      loadMessages(sessionId, epoch).catch(() => undefined),
+      loadPlans(sessionId, epoch).catch(() => undefined),
+      loadCandidates(sessionId, epoch).catch(() => undefined),
+    ]);
   } catch (cause) {
     if (requestId && activeClientRequestId === requestId) finishProcess();
     if (epoch === projectEpoch) {
-      await loadMessages(currentSessionId(), epoch).catch(() => undefined);
+      await Promise.all([
+        loadMessages(currentSessionId(), epoch).catch(() => undefined),
+        loadPlans(currentSessionId(), epoch).catch(() => undefined),
+      ]);
       if (!messages.value.some((item) => item.role === 'assistant' && item.content)) chatInput.value = content;
       error.value = apiError(cause);
     }

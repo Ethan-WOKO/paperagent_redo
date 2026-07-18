@@ -30,25 +30,21 @@ public class PlanReflectionRuntimeAdapter implements RuntimeAdapter {
     @Override
     public AgentRuntimeResult run(AgentRuntimeRequest request) {
         String goal = extractGoal(request.userMessage());
-        AgentPlanResponse plan = planAgentService.createAndExecuteRuntimeReflectionPlan(
-                request.userId(),
-                request.sessionId(),
-                goal,
-                request.ragDisabled(),
-                request.skillId()
-        );
+        PlanAgentService.PlanExecutionResult execution =
+                planAgentService.createAndExecuteRuntimeReflectionPlan(request, goal);
+        AgentPlanResponse plan = execution.plan();
         String summary = buildReflectionSummary(plan);
         if (request.tokenConsumer() != null && StringUtils.hasText(summary)) {
             request.tokenConsumer().accept(summary);
         }
         List<ChatMessage> messages = new ArrayList<>(request.history());
         messages.add(ChatMessage.assistant(summary));
-        PlanRuntimeAdapter.PlanTerminal terminal = PlanRuntimeAdapter.classify(plan);
+        PlanRuntimeAdapter.PlanTerminal terminal = PlanRuntimeAdapter.classify(plan, execution.stopSignal());
         return new AgentRuntimeResult(
                 terminal.success(),
                 summary,
                 messages,
-                1,
+                plan.steps() == null ? 0 : plan.steps().size(),
                 terminal.success() ? null : plan.errorMessage(),
                 List.of(),
                 List.of(),
@@ -57,7 +53,10 @@ public class PlanReflectionRuntimeAdapter implements RuntimeAdapter {
                 null
         ).withCoordination(AgentStrategy.PLAN_EXECUTE_WITH_REFLECTION, terminal.stopReason(), terminal.outcome(),
                 terminal.degraded(), terminal.degraded() ? AgentStrategy.PLAN_EXECUTE : null)
-                .withRuntimeStopSignal(terminal.stopSignal());
+                .withRuntimeStopSignal(terminal.stopSignal())
+                .withPlanId(plan.id())
+                .withTrustedEvidenceLedger(execution.evidenceLedger())
+                .withDomainRuntimeFacts(execution.domainRuntimeFacts());
     }
 
     private String extractGoal(String userMessage) {
@@ -133,6 +132,12 @@ public class PlanReflectionRuntimeAdapter implements RuntimeAdapter {
 
         sb.append("Follow-up suggestions:\n");
         followUps.forEach(item -> sb.append(item).append("\n"));
+        String finalAnswer = PlanRuntimeAdapter.withoutInternalPresentationMetadata(plan.finalAnswer());
+        if (StringUtils.hasText(finalAnswer)) {
+            sb.append("Final Plan synthesis:\n")
+                    .append(finalAnswer)
+                    .append("\n");
+        }
         return sb.toString().trim();
     }
 

@@ -287,6 +287,36 @@ class CrossMaterialDomainVerifierTest {
         });
     }
 
+    @Test
+    void laterSuccessInSameModelStepRecoversEarlierTrustedToolFailure() {
+        List<String> trace = List.of(
+                "step=1 tool=project_read_file executed=true budgetConsumed=true success=false reused=false skipped=false error=VALIDATION_ERROR",
+                "step=1 tool=project_read_file executed=true budgetConsumed=true success=true reused=false skipped=false observation=lines:4766-4830");
+
+        DomainRuntimeFacts facts = DomainRuntimeFacts.fromTrustedToolTrace(
+                trace, List.of("project_read_file"));
+
+        assertThat(facts.toolOutcomes())
+                .extracting(DomainRuntimeFacts.ToolOutcome::runtimeStep)
+                .containsExactly(1, 2);
+        assertThat(facts.hasUnrecoveredToolFailure(AgentOrchestrationRequirements.empty())).isFalse();
+    }
+
+    @Test
+    void earlierSuccessInSameModelStepDoesNotHideLaterTrustedToolFailure() {
+        List<String> trace = List.of(
+                "step=1 tool=project_read_file executed=true budgetConsumed=true success=true reused=false skipped=false observation=lines:4766-4830",
+                "step=1 tool=project_read_file executed=true budgetConsumed=true success=false reused=false skipped=false error=VALIDATION_ERROR");
+
+        DomainRuntimeFacts facts = DomainRuntimeFacts.fromTrustedToolTrace(
+                trace, List.of("project_read_file"));
+
+        assertThat(facts.toolOutcomes())
+                .extracting(DomainRuntimeFacts.ToolOutcome::runtimeStep)
+                .containsExactly(1, 2);
+        assertThat(facts.hasUnrecoveredToolFailure(AgentOrchestrationRequirements.empty())).isTrue();
+    }
+
     private Fixture crossMaterialFixture() {
         return crossMaterialFixture(List.of(), FILE_HASH);
     }

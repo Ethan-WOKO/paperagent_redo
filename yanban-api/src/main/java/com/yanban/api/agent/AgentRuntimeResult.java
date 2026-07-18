@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.yanban.api.agent.sandbox.CandidateArtifactResponse;
 import com.yanban.api.agent.sandbox.CandidateIntent;
 import com.yanban.core.model.ChatMessage;
+import java.util.ArrayList;
 import java.util.List;
 
 public record AgentRuntimeResult(
@@ -139,6 +140,33 @@ public record AgentRuntimeResult(
         return new AgentRuntimeResult(success, assistantContent, messages, steps, errorMessage, toolTrace, fallbacks,
                 promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
                 runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, verification, candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
+    }
+
+    /**
+     * Replaces the current turn's final chat-visible assistant with the canonical projection.
+     * Tool-call assistants and the persisted history prefix remain byte-for-byte unchanged.
+     */
+    public AgentRuntimeResult withCanonicalAssistantContent(String content, int historySize) {
+        ArrayList<ChatMessage> canonicalMessages = new ArrayList<>(messages);
+        int boundary = Math.max(0, Math.min(historySize, canonicalMessages.size()));
+        int finalVisibleAssistant = -1;
+        for (int i = canonicalMessages.size() - 1; i >= boundary; i--) {
+            ChatMessage message = canonicalMessages.get(i);
+            if (message != null && "assistant".equalsIgnoreCase(message.role())
+                    && (message.toolCalls() == null || message.toolCalls().isEmpty())) {
+                finalVisibleAssistant = i;
+                break;
+            }
+        }
+        if (finalVisibleAssistant >= 0) {
+            canonicalMessages.set(finalVisibleAssistant, ChatMessage.assistant(content));
+        } else {
+            canonicalMessages.add(ChatMessage.assistant(content));
+        }
+        return new AgentRuntimeResult(success, content, canonicalMessages, steps, errorMessage, toolTrace, fallbacks,
+                promptTokens, completionTokens, totalTokens, selectedStrategy, stopReason, outcome, degraded, degradedFrom,
+                runtimeStopSignal, planId, evidenceLedger, trustedEvidenceLedger, completionVerification,
+                candidateChangeSet, candidateIntent, candidateArtifact, domainRuntimeFacts);
     }
 
     public AgentRuntimeResult withCandidateChangeSet(CandidateChangeSet candidate) {

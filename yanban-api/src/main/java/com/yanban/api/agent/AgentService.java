@@ -28,7 +28,9 @@ import com.yanban.core.model.ToolCall;
 import com.yanban.core.user.UserAccountPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -516,11 +518,8 @@ public class AgentService {
             if (projectContext != null) {
                 runtimeRequest = runtimeRequest.withProjectContext(projectContext);
             }
-            AgentCoordinationRequest coordinationRequest = projectContext != null
-                    ? AgentCoordinationRequest.projectRead(runtimeRequest)
-                    : STRATEGY_SELECTOR.isPlanReflectIntent(request.content())
-                    ? AgentCoordinationRequest.legacyPlanReflect(runtimeRequest)
-                    : AgentCoordinationRequest.chat(runtimeRequest);
+            AgentCoordinationRequest coordinationRequest = coordinationRequestFor(
+                    runtimeRequest, projectContext, request.content());
             AgentCoordinationResult coordination = agentRuntimeCoordinator.coordinate(coordinationRequest);
             AgentRuntimeResult result = enforceProjectEvidenceRequirement(projectContext, request.content(),
                     coordination.runtimeResult(), effectiveHistory.size());
@@ -655,6 +654,20 @@ public class AgentService {
                     modelSource
             );
         }
+    }
+
+    static AgentCoordinationRequest coordinationRequestFor(AgentRuntimeRequest runtimeRequest,
+                                                             ProjectRuntimeContext projectContext,
+                                                             String content) {
+        // The exact command is server-validated and remains the only Chat route that can request Reflection.
+        // It must win over the ordinary Project read capability while retaining the Project context carried
+        // by runtimeRequest.
+        if (STRATEGY_SELECTOR.isPlanReflectIntent(content)) {
+            return AgentCoordinationRequest.legacyPlanReflect(runtimeRequest);
+        }
+        return projectContext != null
+                ? AgentCoordinationRequest.projectRead(runtimeRequest)
+                : AgentCoordinationRequest.chat(runtimeRequest);
     }
 
     private boolean hasVisibleNonSuccessResult(AgentRuntimeResult result) {
@@ -1257,17 +1270,36 @@ public class AgentService {
         }
         List<String> lines = new ArrayList<>();
         appendRagProcessLines(lines, experimentContext);
+        int toolLineLimit = isPlanRuntime(result)
+                ? PROCESS_SUMMARY_MAX_LINES - 1 : PROCESS_SUMMARY_MAX_LINES;
         if (result.toolTrace() != null && !result.toolTrace().isEmpty()) {
             for (String trace : result.toolTrace()) {
+                if (lines.size() + 2 > toolLineLimit) break;
                 String toolName = extractToolName(trace);
                 lines.add(processStartLabel(toolName));
                 lines.add(processDoneLabel(toolName, trace != null && trace.contains("success=true")));
-                if (lines.size() >= PROCESS_SUMMARY_MAX_LINES) {
-                    break;
-                }
             }
-        } else if (lines.isEmpty() && result.steps() > 0) {
-            lines.add("已分析问题，直接生成回答。");
+        } else if (result.domainRuntimeFacts() != null
+                && result.domainRuntimeFacts().toolOutcomes().stream()
+                .anyMatch(DomainRuntimeFacts.ToolOutcome::executed)) {
+            Map<String, Boolean> observedTools = new LinkedHashMap<>();
+            for (DomainRuntimeFacts.ToolOutcome outcome : result.domainRuntimeFacts().toolOutcomes()) {
+                if (outcome == null || !outcome.executed()) continue;
+                observedTools.merge(outcome.toolName(), outcome.success(), (left, right) -> left && right);
+            }
+            for (Map.Entry<String, Boolean> observed : observedTools.entrySet()) {
+                if (lines.size() + 2 > toolLineLimit) break;
+                lines.add(processStartLabel(observed.getKey()));
+                lines.add(processDoneLabel(observed.getKey(), observed.getValue()));
+            }
+        } else if (lines.isEmpty() && result.steps() > 0 && !isPlanRuntime(result)) {
+            lines.add("\u5df2\u5206\u6790\u95ee\u9898\uff0c\u76f4\u63a5\u751f\u6210\u56de\u7b54\u3002");
+        }
+        if (isPlanRuntime(result)) {
+            while (lines.size() >= PROCESS_SUMMARY_MAX_LINES) {
+                lines.remove(lines.size() - 1);
+            }
+            lines.add(planRuntimeProcessLabel(result));
         }
         if (result.fallbacks() != null && !result.fallbacks().isEmpty() && lines.size() < PROCESS_SUMMARY_MAX_LINES) {
             lines.add("部分步骤未完成，已尝试降级处理。");
@@ -1276,6 +1308,52 @@ public class AgentService {
                 .filter(StringUtils::hasText)
                 .limit(PROCESS_SUMMARY_MAX_LINES)
                 .toList());
+    }
+
+    private boolean isPlanRuntime(AgentRuntimeResult result) {
+        return result != null && (result.selectedStrategy() == AgentStrategy.PLAN_EXECUTE
+                || result.planId() != null);
+    }
+
+    private String planRuntimeProcessLabel(AgentRuntimeResult result) {
+        if (result != null && "PLAN_CREATED".equalsIgnoreCase(result.outcome())) {
+            return "\u5df2\u521b\u5efa\u6267\u884c\u8ba1\u5212\uff0c\u7b49\u5f85\u8fd0\u884c\u3002";
+        }
+        List<DomainRuntimeFacts.PlanStepOutcome> stepOutcomes = result == null
+                || result.domainRuntimeFacts() == null
+                ? List.of() : result.domainRuntimeFacts().planStepOutcomes();
+        boolean lifecycleCompleted = !stepOutcomes.isEmpty() && stepOutcomes.stream().allMatch(step ->
+                step.status() == DomainRuntimeFacts.PlanStepStatus.COMPLETED
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.DEGRADED
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.SUPERSEDED);
+        boolean lifecycleIncomplete = stepOutcomes.stream().anyMatch(step ->
+                step.status() == DomainRuntimeFacts.PlanStepStatus.FAILED
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.SKIPPED
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.PENDING
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.RUNNING
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.REPAIRING);
+        boolean hasPreservedSteps = stepOutcomes.stream().anyMatch(step ->
+                step.status() == DomainRuntimeFacts.PlanStepStatus.COMPLETED
+                        || step.status() == DomainRuntimeFacts.PlanStepStatus.DEGRADED);
+        if (lifecycleCompleted) {
+            if (result != null && result.success() && !result.degraded()
+                    && !"PARTIAL".equalsIgnoreCase(result.outcome())) {
+                return "\u8ba1\u5212\u6b65\u9aa4\u5df2\u6267\u884c\u5b8c\u6210\u3002";
+            }
+            return "\u8ba1\u5212\u6b65\u9aa4\u5df2\u6267\u884c\u5b8c\u6210\uff0c\u6700\u7ec8\u6821\u9a8c\u4ecd\u6709\u672a\u51b3\u9879\u3002";
+        }
+        if (lifecycleIncomplete) {
+            return hasPreservedSteps
+                    ? "\u8ba1\u5212\u672a\u5b8c\u6574\u6267\u884c\uff0c\u5df2\u4fdd\u7559\u5b8c\u6210\u6b65\u9aa4\u7684\u7ed3\u679c\u3002"
+                    : "\u8ba1\u5212\u672a\u5b8c\u6574\u6267\u884c\u3002";
+        }
+        if (result != null && "PAUSED".equalsIgnoreCase(result.outcome())) {
+            return "\u8ba1\u5212\u5df2\u6682\u505c\uff0c\u7b49\u5f85\u7ee7\u7eed\u3002";
+        }
+        if (result != null && "WAITING".equalsIgnoreCase(result.outcome())) {
+            return "\u8ba1\u5212\u6b63\u5728\u7b49\u5f85\u540e\u7eed\u64cd\u4f5c\u3002";
+        }
+        return "\u8ba1\u5212\u6267\u884c\u7ed3\u679c\u672a\u901a\u8fc7\u6700\u7ec8\u6821\u9a8c\u3002";
     }
 
     private void appendRagProcessLines(List<String> lines, AgentExperimentContext experimentContext) {
@@ -1317,6 +1395,10 @@ public class AgentService {
 
     private String processStartLabel(String toolName) {
         return switch (toolName == null ? "" : toolName) {
+            case "project_read_file" -> "\u6b63\u5728\u8bfb\u53d6\u9879\u76ee\u6587\u4ef6\u3002";
+            case "project_code_symbols" -> "\u6b63\u5728\u5206\u6790\u9879\u76ee\u4ee3\u7801\u7ed3\u6784\u3002";
+            case "project_latex_outline" -> "\u6b63\u5728\u5206\u6790\u9879\u76ee\u8bba\u6587\u7ed3\u6784\u3002";
+            case "project_cross_material_search", "project_search" -> "\u6b63\u5728\u68c0\u7d22\u9879\u76ee\u8de8\u6750\u6599\u8bc1\u636e\u3002";
             case "search_knowledge" -> "正在检索知识库。";
             case "search_web" -> "正在联网搜索资料。";
             case "recommend_literature" -> "正在检索并整理相关文献。";
@@ -1335,6 +1417,10 @@ public class AgentService {
             return "工具调用未完成，已尝试继续处理。";
         }
         return switch (toolName == null ? "" : toolName) {
+            case "project_read_file" -> "\u9879\u76ee\u6587\u4ef6\u8bfb\u53d6\u5b8c\u6210\u3002";
+            case "project_code_symbols" -> "\u9879\u76ee\u4ee3\u7801\u7ed3\u6784\u5206\u6790\u5b8c\u6210\u3002";
+            case "project_latex_outline" -> "\u9879\u76ee\u8bba\u6587\u7ed3\u6784\u5206\u6790\u5b8c\u6210\u3002";
+            case "project_cross_material_search", "project_search" -> "\u9879\u76ee\u8de8\u6750\u6599\u8bc1\u636e\u68c0\u7d22\u5b8c\u6210\u3002";
             case "search_knowledge" -> "知识库检索完成。";
             case "search_web" -> "联网搜索完成。";
             case "recommend_literature", "literature_search_result" -> "文献检索完成。";

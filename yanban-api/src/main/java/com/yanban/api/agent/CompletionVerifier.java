@@ -66,6 +66,7 @@ public class CompletionVerifier {
         DomainVerification domain = domainVerifier.verify(request, result, ledger, reflectionAttempts);
         boolean budgetStopped = result.runtimeStopSignal() != AgentRuntimeStopSignal.NONE;
         boolean toolFailure = request.projectContext() != null && hasToolFailure(request, result);
+        boolean deterministicMissingTarget = ProjectMaterialScope.hasDeterministicMissingTarget(result);
         if (budgetStopped) {
             reasons.add("runtime budget stop: " + result.runtimeStopSignal());
             return decision(CompletionStatus.PARTIAL, reasons, ledger, false, reflectionAttempts, domain);
@@ -84,26 +85,31 @@ public class CompletionVerifier {
             reasons.add(StringUtils.hasText(result.errorMessage()) ? result.errorMessage() : "runtime did not succeed");
             return decision(status, reasons, ledger,
                     (status == CompletionStatus.INSUFFICIENT_EVIDENCE || status == CompletionStatus.PARTIAL)
+                            && !deterministicMissingTarget
                             && reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         if (toolFailure) {
             reasons.add("at least one governed tool call failed");
             return decision(CompletionStatus.PARTIAL, reasons, ledger,
-                    reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
+                    !deterministicMissingTarget
+                            && reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         if (request.projectContext() != null && requiresProjectFileEvidence(request.userMessage())
                 && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId())) {
             reasons.add("no current authorized Project file evidence for projectId=" + request.projectContext().projectId());
             return decision(CompletionStatus.INSUFFICIENT_EVIDENCE, reasons, ledger,
-                    reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
+                    !deterministicMissingTarget
+                            && reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         if (domain.applicable() && domain.status() != CompletionStatus.VERIFIED) {
-            return decision(domain.status(), List.of(), ledger, domain.reflectionEligible(), reflectionAttempts, domain);
+            return decision(domain.status(), List.of(), ledger,
+                    !deterministicMissingTarget && domain.reflectionEligible(), reflectionAttempts, domain);
         }
         if (!StringUtils.hasText(result.assistantContent())) {
             reasons.add("runtime returned no completion content");
             return decision(CompletionStatus.PARTIAL, reasons, ledger,
-                    reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
+                    !deterministicMissingTarget
+                            && reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         return decision(CompletionStatus.VERIFIED, List.of("runtime outcome and required evidence verified"),
                 ledger, false, reflectionAttempts, domain);
@@ -140,12 +146,12 @@ public class CompletionVerifier {
                     result.domainRuntimeFacts().withConsistencyFacts(domain.consistencyFacts()));
         }
         CandidateArtifactResponse candidate = candidateFor(request, result, verification);
-        return switch (verification.status()) {
+        AgentRuntimeResult applied = switch (verification.status()) {
             case VERIFIED -> result.withCompletionVerification(verification).withCandidateArtifact(candidate)
                     .withCoordination(result.selectedStrategy(), AgentStopReason.COMPLETED, "VERIFIED", result.degraded(), result.degradedFrom());
-            case PARTIAL -> controlledBudgetPartial(request, result)
+            case PARTIAL -> controlledRuntimePartial(request, result)
                     ? controlledPartial(result, verification, candidate,
-                            AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED)
+                            runtimeStopReason(result.runtimeStopSignal()))
                     : controlledEvidencePartial(request, result)
                     ? controlledPartial(result, verification, candidate, AgentStopReason.PLAN_PARTIAL)
                     : failure(result, verification, AgentStopReason.PLAN_PARTIAL, "PARTIAL", candidate);
@@ -154,6 +160,49 @@ public class CompletionVerifier {
                     AgentStopReason.PLAN_PARTIAL, "INSUFFICIENT_EVIDENCE", candidate);
             case FAILED -> failure(result, verification, AgentStopReason.RUNTIME_FAILED, "FAILED", candidate);
         };
+        return projectCanonicalCompletion(request, applied, verification);
+    }
+
+    /**
+     * Completion verification runs after the runtime adapter, so this is the only layer allowed to
+     * label the chat-visible answer VERIFIED or PARTIAL. Keep the adapter's useful result, but make
+     * the governed status explicit in both assistantContent and the canonical transcript message.
+     */
+    private AgentRuntimeResult projectCanonicalCompletion(AgentRuntimeRequest request,
+                                                           AgentRuntimeResult result,
+                                                           CompletionVerification verification) {
+        if (!StringUtils.hasText(result.assistantContent())) return result;
+        DomainVerification domain = verification.domainVerification();
+        boolean hasConsistencyDecision = domain != null && domain.applicable()
+                && domain.consistencyStatus() != DomainVerification.ConsistencyStatus.NOT_REQUIRED;
+        boolean usefulPartial = verification.status() == CompletionStatus.PARTIAL && result.success();
+        boolean governedUnresolvedPlanPartial = verification.status() == CompletionStatus.PARTIAL
+                && request.strategy() == AgentStrategy.PLAN_EXECUTE
+                && result.planId() != null
+                && hasConsistencyDecision
+                && domain.consistencyStatus() == DomainVerification.ConsistencyStatus.UNRESOLVED
+                && request.projectContext() != null
+                && hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId());
+        boolean governedConsistency = verification.status() == CompletionStatus.VERIFIED && hasConsistencyDecision;
+        if (!usefulPartial && !governedUnresolvedPlanPartial && !governedConsistency) return result;
+
+        StringBuilder header = new StringBuilder("Governed completion status: ")
+                .append(verification.status());
+        if (hasConsistencyDecision) {
+            header.append("\nCross-material consistency: ").append(domain.consistencyStatus());
+        }
+        if (domain != null && domain.applicable()
+                && domain.consistencyStatus() == DomainVerification.ConsistencyStatus.UNRESOLVED) {
+            header.append("\nScope: No trusted deterministic rule verified semantic consistency; ")
+                    .append("the analysis below is preserved as a bounded assessment, not a VERIFIED consistency result.");
+        } else if (hasConsistencyDecision) {
+            header.append("\nScope: This consistency status is established only by the requested deterministic ")
+                    .append("current-Project Evidence rule; it does not prove broader semantic equivalence.");
+        } else {
+            header.append("\nScope: The available answer is preserved, but the run did not meet full completion criteria.");
+        }
+        String canonical = header.append("\n\n").append(result.assistantContent()).toString();
+        return result.withCanonicalAssistantContent(canonical, request.history().size());
     }
 
     private AgentRuntimeResult insufficientEvidenceResult(AgentRuntimeRequest request,
@@ -173,14 +222,23 @@ public class CompletionVerifier {
         return result.insufficientProjectEvidence(result.evidenceLedger(), request.history().size(), limitation);
     }
 
-    private boolean controlledBudgetPartial(AgentRuntimeRequest request, AgentRuntimeResult result) {
-        if (result.runtimeStopSignal() != AgentRuntimeStopSignal.TOOL_CALL_BUDGET_EXHAUSTED
+    private boolean controlledRuntimePartial(AgentRuntimeRequest request, AgentRuntimeResult result) {
+        if (result.runtimeStopSignal() == AgentRuntimeStopSignal.NONE
                 || !result.success() || !StringUtils.hasText(result.assistantContent())) {
             return false;
         }
         return request.projectContext() == null
                 || !requiresProjectFileEvidence(request.userMessage())
                 || hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId());
+    }
+
+    private AgentStopReason runtimeStopReason(AgentRuntimeStopSignal signal) {
+        return switch (signal) {
+            case TOOL_CALL_BUDGET_EXHAUSTED -> AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED;
+            case MAX_STEPS_BUDGET_EXHAUSTED -> AgentStopReason.MAX_STEPS_BUDGET_EXHAUSTED;
+            case MODEL_OUTPUT_TRUNCATED -> AgentStopReason.MODEL_OUTPUT_TRUNCATED;
+            case NONE -> AgentStopReason.PLAN_PARTIAL;
+        };
     }
 
     private boolean controlledEvidencePartial(AgentRuntimeRequest request, AgentRuntimeResult result) {

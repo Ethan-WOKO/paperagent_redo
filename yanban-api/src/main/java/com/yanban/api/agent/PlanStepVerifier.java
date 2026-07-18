@@ -12,7 +12,12 @@ import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatRequest;
 import com.yanban.core.model.ChatResponse;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -34,6 +39,11 @@ public class PlanStepVerifier {
     }
 
     public VerificationResult verify(VerificationRequest request) {
+        VerificationResult deterministicFailure = deterministicFailure(request);
+        if (deterministicFailure != null) {
+            logDecision(request, deterministicFailure);
+            return deterministicFailure;
+        }
         if (!StringUtils.hasText(request.successCriteria())) {
             return VerificationResult.passed("No explicit success criteria were provided.");
         }
@@ -74,6 +84,53 @@ public class PlanStepVerifier {
             log.warn("Plan step verification failed stepKey={}", request.step().getStepKey(), ex);
             return VerificationResult.inconclusive("Verifier error: " + abbreviate(ex.getMessage(), 300));
         }
+    }
+
+    private VerificationResult deterministicFailure(VerificationRequest request) {
+        if (request == null || request.step() == null || request.plan() == null) {
+            return VerificationResult.failed("The step verification request is incomplete.");
+        }
+        String candidate = request.candidateResult();
+        if (!StringUtils.hasText(candidate)) {
+            return VerificationResult.failed("The candidate result is empty.");
+        }
+        String trimmed = candidate.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (trimmed.endsWith("...") || trimmed.endsWith("…")
+                || lower.contains("[truncated]") || lower.contains("output truncated")) {
+            return VerificationResult.failed("The candidate result has a deterministic truncation marker.");
+        }
+
+        String goal = blankToDefault(request.plan().getGoal(), "").toLowerCase(Locale.ROOT);
+        String stepSemantics = String.join(" ",
+                blankToDefault(request.step().getTitle(), ""),
+                blankToDefault(request.step().getDescription(), ""),
+                blankToDefault(request.step().getType(), "")).toLowerCase(Locale.ROOT);
+        boolean dependencySynthesis = !readStringList(request.step().getDependenciesJson()).isEmpty()
+                && containsAny(stepSemantics, "synth", "final", "conclusion", "cross", "综合", "结论", "交叉", "核对");
+        if (!dependencySynthesis) return null;
+
+        List<String> missing = new ArrayList<>();
+        if (containsAny(goal, "一致点", "consistent points", "consistencies")
+                && !containsAny(lower, "一致", "consistent", "alignment")) missing.add("一致点");
+        if (containsAny(goal, "差异点", "difference", "discrepanc")
+                && !containsAny(lower, "差异", "difference", "discrepanc")) missing.add("差异点");
+        if (containsAny(goal, "证据位置", "evidence location", "evidence positions")
+                && !containsAny(lower, "证据", "evidence", "位置", "location", "path", "line")) missing.add("证据位置");
+        if (containsAny(goal, "待确认", "to confirm", "open question")
+                && !containsAny(lower, "待确认", "待核实", "confirm", "unresolved", "limitation", "open question")) {
+            missing.add("待确认事项");
+        }
+        return missing.isEmpty() ? null : VerificationResult.failed(
+                "The final synthesis is missing required section(s): " + String.join(", ", missing) + ".");
+    }
+
+    private boolean containsAny(String value, String... candidates) {
+        if (!StringUtils.hasText(value)) return false;
+        for (String candidate : candidates) {
+            if (StringUtils.hasText(candidate) && value.contains(candidate.toLowerCase(Locale.ROOT))) return true;
+        }
+        return false;
     }
 
     private String buildVerifierSystemPrompt() {
@@ -152,8 +209,14 @@ public class PlanStepVerifier {
             if (StringUtils.hasText(dependency.getResult())) {
                 hasDependencyResult = true;
                 sb.append("## ").append(dependency.getStepKey()).append(" ")
-                        .append(blankToDefault(dependency.getTitle(), "")).append("\n")
-                        .append(abbreviate(dependency.getResult(), 1200))
+                        .append(blankToDefault(dependency.getTitle(), ""))
+                        .append(" [").append(dependency.getStatus()).append("]\n");
+                if (AgentPlanStepStatus.DEGRADED.name().equals(dependency.getStatus())
+                        && StringUtils.hasText(dependency.getErrorMessage())) {
+                    sb.append("Dependency limitation: ")
+                            .append(abbreviate(dependency.getErrorMessage(), 800)).append("\n");
+                }
+                sb.append(abbreviate(dependency.getResult(), 1200))
                         .append("\n\n");
             }
         }
@@ -257,16 +320,42 @@ public class PlanStepVerifier {
         if (request == null || request.step() == null || request.allSteps() == null) {
             return List.of();
         }
-        List<String> dependencyKeys = readStringList(request.step().getDependenciesJson());
-        if (dependencyKeys.isEmpty()) {
-            return List.of();
+        Map<String, AgentPlanStep> byKey = request.allSteps().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(item -> StringUtils.hasText(item.getStepKey()))
+                .collect(java.util.stream.Collectors.toMap(
+                        AgentPlanStep::getStepKey, item -> item, (left, right) -> left,
+                        LinkedHashMap::new));
+        LinkedHashSet<String> pending = new LinkedHashSet<>(
+                readStringList(request.step().getDependenciesJson()));
+        LinkedHashSet<String> visited = new LinkedHashSet<>();
+        List<AgentPlanStep> resolved = new ArrayList<>();
+        while (!pending.isEmpty()) {
+            String key = pending.iterator().next();
+            pending.remove(key);
+            if (!visited.add(key) || java.util.Objects.equals(request.step().getStepKey(), key)) {
+                continue;
+            }
+            AgentPlanStep dependency = byKey.get(key);
+            if (dependency == null || !isUsableDependency(dependency)) {
+                continue;
+            }
+            if (StringUtils.hasText(dependency.getResult())) {
+                resolved.add(dependency);
+            }
+            readStringList(dependency.getDependenciesJson()).stream()
+                    .filter(ancestor -> !visited.contains(ancestor))
+                    .forEach(pending::add);
         }
-        return request.allSteps().stream()
-                .filter(item -> AgentPlanStepStatus.COMPLETED.name().equals(item.getStatus())
-                        || AgentPlanStepStatus.DEGRADED.name().equals(item.getStatus()))
-                .filter(item -> dependencyKeys.contains(item.getStepKey()))
-                .filter(item -> StringUtils.hasText(item.getResult()))
+        return resolved.stream()
+                .sorted(Comparator.comparing(AgentPlanStep::getSortOrder,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
+    }
+
+    private boolean isUsableDependency(AgentPlanStep step) {
+        return AgentPlanStepStatus.COMPLETED.name().equals(step.getStatus())
+                || AgentPlanStepStatus.DEGRADED.name().equals(step.getStatus());
     }
 
     private List<String> readStringList(String json) {

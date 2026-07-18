@@ -31,7 +31,8 @@ public record AgentRuntimeRequest(
         Long planId,
         ProjectRuntimeContext projectContext,
         EvidenceLedger inheritedTrustedEvidence,
-        AgentOrchestrationRequirements orchestrationRequirements
+        AgentOrchestrationRequirements orchestrationRequirements,
+        Boolean persistPlanConversationSummary
 ) {
     public AgentRuntimeRequest {
         if (userMessage == null || userMessage.isBlank()) {
@@ -49,6 +50,21 @@ public record AgentRuntimeRequest(
         inheritedTrustedEvidence = inheritedTrustedEvidence == null ? EvidenceLedger.empty() : inheritedTrustedEvidence;
         orchestrationRequirements = orchestrationRequirements == null
                 ? AgentOrchestrationRequirements.empty() : orchestrationRequirements;
+    }
+
+    /** Source-compatible bridge for callers using the pre-presentation-policy canonical shape. */
+    public AgentRuntimeRequest(
+            AgentStrategy strategy, Long sessionId, List<ChatMessage> history, Long userId, String userMessage,
+            String provider, String model, Double temperature, Integer maxTokens, int maxSteps, boolean ragDisabled,
+            String skillId, String apiKey, String apiUrl, String skillPrompt, AgentRuntimeMode runtimeMode,
+            AgentToolCallingMode toolCallingMode, ResolvedToolPolicy toolPolicy, Integer maxToolCalls,
+            Integer maxDuplicateToolCalls, String traceId, Consumer<String> tokenConsumer,
+            Consumer<String> processConsumer, Long planId, ProjectRuntimeContext projectContext,
+            EvidenceLedger inheritedTrustedEvidence, AgentOrchestrationRequirements orchestrationRequirements) {
+        this(strategy, sessionId, history, userId, userMessage, provider, model, temperature, maxTokens, maxSteps,
+                ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode, toolCallingMode, toolPolicy,
+                maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer, planId, projectContext,
+                inheritedTrustedEvidence, orchestrationRequirements, null);
     }
 
     /** Source-compatible bridge for callers using the pre-AUTO canonical shape. */
@@ -110,7 +126,8 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(selectedStrategy, sessionId, history, userId, userMessage, provider, model,
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
-                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements);
+                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
+                persistPlanConversationSummary);
     }
 
     /** Attach server-owned plan identity after a Plan API request has been authorized. */
@@ -118,7 +135,8 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
-                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements);
+                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
+                persistPlanConversationSummary);
     }
 
     /** Only an authenticated Project API adapter may attach this context. */
@@ -129,7 +147,8 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
-                planId, context, inheritedTrustedEvidence, orchestrationRequirements);
+                planId, context, inheritedTrustedEvidence, orchestrationRequirements,
+                persistPlanConversationSummary);
     }
 
     /** Attach only server-persisted observations inherited from completed Plan dependencies. */
@@ -140,7 +159,8 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
-                planId, projectContext, evidence == null ? EvidenceLedger.empty() : evidence, orchestrationRequirements);
+                planId, projectContext, evidence == null ? EvidenceLedger.empty() : evidence, orchestrationRequirements,
+                persistPlanConversationSummary);
     }
 
     /**
@@ -156,7 +176,8 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(strategy, sessionId, augmentedHistory, userId, userMessage, provider, model,
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
-                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements);
+                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
+                persistPlanConversationSummary);
     }
 
     /** Bounded reflection may only reduce runtime and tool budgets. */
@@ -170,7 +191,8 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
                 temperature, maxTokens, reducedMaxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, reducedPolicy, reducedMaxToolCalls, reducedPolicy.maxDuplicateToolCalls(), traceId,
-                tokenConsumer, processConsumer, planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements);
+                tokenConsumer, processConsumer, planId, projectContext, inheritedTrustedEvidence,
+                orchestrationRequirements, persistPlanConversationSummary);
     }
 
     /** Coordinator-only attachment; this metadata cannot alter any authority-bearing field. */
@@ -179,6 +201,19 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, projectContext, inheritedTrustedEvidence,
-                requirements == null ? AgentOrchestrationRequirements.empty() : requirements);
+                requirements == null ? AgentOrchestrationRequirements.empty() : requirements,
+                persistPlanConversationSummary);
+    }
+
+    /** Server-owned presentation policy for nested Plan execution. It does not change runtime authority. */
+    public AgentRuntimeRequest withPlanConversationSummaryPersistence(boolean persist) {
+        return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
+                temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
+                toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
+                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements, persist);
+    }
+
+    public boolean shouldPersistPlanConversationSummary(boolean defaultValue) {
+        return persistPlanConversationSummary == null ? defaultValue : persistPlanConversationSummary;
     }
 }

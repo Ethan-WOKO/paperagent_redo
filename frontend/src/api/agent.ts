@@ -195,6 +195,8 @@ export interface AgentPlanResponse {
   startedAt: string | null;
   finishedAt: string | null;
   steps: AgentPlanStepResponse[];
+  executionOutcome: string;
+  finalAnswer: string | null;
 }
 
 export interface AgentPlanEventResponse {

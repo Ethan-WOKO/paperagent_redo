@@ -761,6 +761,16 @@ class AgentControllerIntegrationTest {
                 .andExpect(jsonPath("$.assistantContent").value(org.hamcrest.Matchers.containsString("Evidence/completeness judgment")))
                 .andExpect(jsonPath("$.assistantContent").value(org.hamcrest.Matchers.containsString("Limitations")))
                 .andExpect(jsonPath("$.messages.length()").value(2));
+
+        mockMvc.perform(get("/api/v1/agent/sessions/{id}/messages", sessionId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].role").value("user"))
+                .andExpect(jsonPath("$[0].content").value("/plan reflect audit the runtime gaps"))
+                .andExpect(jsonPath("$[1].role").value("assistant"))
+                .andExpect(jsonPath("$[1].content").value(
+                        org.hamcrest.Matchers.containsString("Reflection summary for plan")));
     }
 
     @Test

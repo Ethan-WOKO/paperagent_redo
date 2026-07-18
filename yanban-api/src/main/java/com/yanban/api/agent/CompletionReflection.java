@@ -31,6 +31,7 @@ public class CompletionReflection {
                 && verification.reflectionAttempts() == 0
                 && request != null
                 && result != null
+                && !ProjectMaterialScope.hasDeterministicMissingTarget(result)
                 && result.runtimeStopSignal() == AgentRuntimeStopSignal.NONE
                 && (request.strategy() == AgentStrategy.DIRECT || request.strategy() == AgentStrategy.SINGLE_STEP_REACT)
                 && result.steps() < request.maxSteps()

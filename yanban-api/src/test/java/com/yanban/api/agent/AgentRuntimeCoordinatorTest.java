@@ -88,7 +88,7 @@ class AgentRuntimeCoordinatorTest {
         assertThat(result.runtimeResult().outcome()).isEqualTo("SUCCESS");
         assertThat(result.runProjection().state().outcome()).isEqualTo(AgentTaskOutcome.SUCCEEDED);
         assertThat(result.runProjection().canonicalAnswer())
-                .contains("status COMPLETED", "Verified paper/code/experiment synthesis");
+                .contains("execution lifecycle status: COMPLETED", "Verified paper/code/experiment synthesis");
         assertThat(result.runProjection().identity().source()).isEqualTo("AGENT_PLAN");
         verify(plans).createPlanWithinAdapter(org.mockito.ArgumentMatchers.any());
         verify(plans).executePlanResultWithinAdapter(7L, 19L, "auto-terminal", false);
@@ -177,6 +177,29 @@ class AgentRuntimeCoordinatorTest {
         assertThat(react.runProjection().identity().source()).isEqualTo("RUNTIME_TRACE");
         assertThat(legacy.runProjection().identity().source()).isEqualTo("RUNTIME_TRACE");
         assertThat(direct.runProjection().identity().runId()).isEqualTo("RUNTIME_TRACE:trace");
+    }
+
+    @Test
+    void exactLegacyReflectionMayRetainAuthenticatedProjectContext() {
+        AgentRuntimeService runtime = mock(AgentRuntimeService.class);
+        when(runtime.run(org.mockito.ArgumentMatchers.any())).thenReturn(new AgentRuntimeResult(
+                true, "reflected", List.of(ChatMessage.assistant("reflected")), 1,
+                null, List.of(), List.of(), null, null, null));
+        AgentRuntimeCoordinator coordinator = coordinator(runtime);
+        AgentRuntimeRequest request = request("/plan reflect inspect Project code evidence", List.of("project_read_file"))
+                .withProjectContext(new ProjectRuntimeContext(1L, 42L))
+                .withPlanConversationSummaryPersistence(false);
+
+        AgentCoordinationResult result = coordinator.coordinate(
+                AgentCoordinationRequest.legacyPlanReflect(request));
+
+        assertThat(result.runtimeResult().stopReason()).isEqualTo(AgentStopReason.COMPLETED);
+        assertThat(result.decision().selectedStrategy()).isEqualTo(AgentStrategy.PLAN_EXECUTE_WITH_REFLECTION);
+        org.mockito.ArgumentCaptor<AgentRuntimeRequest> captured =
+                org.mockito.ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(runtime).run(captured.capture());
+        assertThat(captured.getValue().projectContext()).isEqualTo(new ProjectRuntimeContext(1L, 42L));
+        assertThat(captured.getValue().shouldPersistPlanConversationSummary(true)).isFalse();
     }
 
     @Test

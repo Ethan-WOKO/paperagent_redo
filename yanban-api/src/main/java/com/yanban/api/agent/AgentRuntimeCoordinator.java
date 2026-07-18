@@ -38,8 +38,11 @@ public class AgentRuntimeCoordinator {
     public AgentCoordinationResult coordinate(AgentCoordinationRequest request) {
         AgentRuntimeRequest resolved = request.runtimeRequest();
         boolean explicitPlanRequest = request.explicitPlanRequest();
-        if ((request.capability() == AgentRequestCapability.PROJECT_READ
-                || request.capability() == AgentRequestCapability.TRUSTED_PROJECT_PLAN_READ)
+        boolean projectBoundCapability = request.capability() == AgentRequestCapability.PROJECT_READ
+                || request.capability() == AgentRequestCapability.TRUSTED_PROJECT_PLAN_READ
+                || (request.capability() == AgentRequestCapability.LEGACY_PLAN_REFLECT
+                && resolved.projectContext() != null);
+        if (projectBoundCapability
                 && (resolved.projectContext() == null
                 || !resolved.userId().equals(resolved.projectContext().userId()))) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
@@ -48,7 +51,9 @@ public class AgentRuntimeCoordinator {
                     decision, AgentStopReason.POLICY_REJECTED, "Project execution requires authenticated project context."));
         }
         if (request.capability() != AgentRequestCapability.PROJECT_READ
-                && request.capability() != AgentRequestCapability.TRUSTED_PROJECT_PLAN_READ && resolved.projectContext() != null) {
+                && request.capability() != AgentRequestCapability.TRUSTED_PROJECT_PLAN_READ
+                && request.capability() != AgentRequestCapability.LEGACY_PLAN_REFLECT
+                && resolved.projectContext() != null) {
             AgentCoordinationDecision decision = new AgentCoordinationDecision(
                     AgentStrategy.DIRECT, false, false, null, "project_context_capability_mismatch");
             return coordination(resolved, decision, failed(
@@ -153,6 +158,7 @@ public class AgentRuntimeCoordinator {
         return switch (result.runtimeStopSignal()) {
             case TOOL_CALL_BUDGET_EXHAUSTED -> AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED;
             case MAX_STEPS_BUDGET_EXHAUSTED -> AgentStopReason.MAX_STEPS_BUDGET_EXHAUSTED;
+            case MODEL_OUTPUT_TRUNCATED -> AgentStopReason.MODEL_OUTPUT_TRUNCATED;
             case NONE -> result.success() ? AgentStopReason.COMPLETED : AgentStopReason.RUNTIME_FAILED;
         };
     }

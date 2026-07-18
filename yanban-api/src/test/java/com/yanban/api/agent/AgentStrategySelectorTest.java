@@ -124,6 +124,21 @@ class AgentStrategySelectorTest {
     }
 
     @Test
+    void chineseHashOrByteEqualityRequestSelectsNarrowDeterministicCheck() {
+        String task = "\u8bf7\u6bd4\u8f83\u8bba\u6587 paper/main.tex \u4e0e\u4ee3\u7801 src/Main.java \u7684"
+                + "\u5b8c\u6574\u5185\u5bb9\u54c8\u5e0c\u6216\u5b57\u8282\u662f\u5426\u5b8c\u5168\u4e00\u81f4\uff0c"
+                + "\u5e76\u7ed9\u51fa\u7ed3\u6784\u5316\u6821\u9a8c\u7ed3\u8bba\u3002";
+        AgentRuntimeRequest request = projectRequest(AgentStrategy.AUTO, task, RESEARCH_TOOLS, 8, 12);
+
+        AgentStrategySelection decision = selector.decide(AgentCoordinationRequest.projectRead(request));
+
+        assertThat(decision.selectedStrategy()).isEqualTo(AgentStrategy.PLAN_EXECUTE);
+        assertThat(decision.orchestration().signals()).contains(AgentStrategySignal.VERIFICATION_REQUIRED);
+        assertThat(decision.orchestration().consistencyChecks())
+                .containsExactly(DomainConsistencyCheck.EVIDENCE_FILE_HASH_EQUALITY);
+    }
+
+    @Test
     void insufficientPlanBudgetDegradesToReactWithoutChangingTools() {
         AgentRuntimeRequest request = projectRequest(AgentStrategy.AUTO,
                 "Compare the LaTeX paper with code and verify experiment results.", RESEARCH_TOOLS, 1, 1);
@@ -208,6 +223,26 @@ class AgentStrategySelectorTest {
             assertThat(decision.orchestration().selectionOrigin())
                     .isEqualTo(AgentStrategySelectionOrigin.SERVER_AUTO);
         });
+    }
+
+    @Test
+    void genericChineseCodeEvidenceCitationDoesNotInventBibtexMaterialOrPromoteAutoToPlan() {
+        AgentRuntimeRequest request = projectRequest(AgentStrategy.AUTO,
+                "\u8bf7\u8bfb\u53d6\u5e76\u6982\u62ec\u4ee3\u7801\u6587\u4ef6 good_code/s2/main.py \u4e2d main()\uff0c\u5e76\u5f15\u7528\u5177\u4f53\u4ee3\u7801\u884c\u3002",
+                RESEARCH_TOOLS, 8, 12);
+
+        AgentStrategySelection decision = selector.decide(AgentCoordinationRequest.projectRead(request));
+
+        assertThat(decision.selectedStrategy()).isEqualTo(AgentStrategy.SINGLE_STEP_REACT);
+        assertThat(decision.orchestration().materialRequirements())
+                .extracting(ResearchMaterialRequirement::material)
+                .containsExactly(ResearchMaterialKind.CODE);
+        assertThat(decision.orchestration().signals()).doesNotContain(
+                AgentStrategySignal.MATERIAL_BIBTEX,
+                AgentStrategySignal.CROSS_MATERIAL_TASK,
+                AgentStrategySignal.PLAN_BUDGET_AVAILABLE);
+        assertThat(decision.orchestration().reasonCodes())
+                .contains(AgentStrategyReasonCode.AUTO_TOOL_TASK_REACT);
     }
 
     @Test

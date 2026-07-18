@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -37,6 +38,8 @@ public class LangChain4jToolCallingStrategy {
     private static final Set<String> ASYNC_NON_TERMINAL_STATES = Set.of("RUNNING", "WAITING");
     private static final Set<String> ASYNC_TERMINAL_STATES = Set.of(
             "COMPLETED", "DONE", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "STOPPED");
+    private static final Pattern DANGLING_CODE_CONDITION = Pattern.compile(
+            "(?i)^\\s*(?:if|elif|while|for)\\b.{0,240}\\b(?:is|not|and|or|in)\\s*$");
     private static final String TOOL_ROUTING_SYSTEM_PROMPT = """
             You may decide whether to answer directly or call tools.
             Prefer a tool from the current tool specifications over guessing when evidence is needed.
@@ -84,11 +87,30 @@ public class LangChain4jToolCallingStrategy {
             Use only the conversation and tool results already available to produce the best final answer.
             If evidence is incomplete, say that briefly and explain what can be concluded from the retrieved results.
             """;
+    private static final String RESERVED_FINAL_ANSWER_PROMPT = """
+            This is the reserved final-synthesis round. Do not call any more tools.
+            Use only the conversation and tool results already available to produce one complete final answer.
+            Preserve every requested conclusion section and state any evidence limitation explicitly.
+            """;
     private static final String NO_PROGRESS_FINAL_ANSWER_PROMPT = """
             Every tool request in the latest assistant step duplicated an earlier invocation, so no new
             tool execution was performed. Do not call any more tools. Use the tool results already present
             in the conversation to produce the best final answer. If the evidence is incomplete, state the
             limitation briefly instead of repeating a tool call.
+            """;
+    private static final String MISSING_TARGET_FINAL_ANSWER_PROMPT = """
+            An explicitly requested Project file was reported NOT_FOUND by project_read_file.
+            Do not call more tools and do not search for, read, or use alternative files as substitutes.
+            Report the exact missing path and state that findings for that material and any comparison that
+            requires it cannot be determined. Do not infer implementation details, consistency, differences,
+            line locations, or missing modules from filenames, class names, the manifest, or unrelated files.
+            Preserve only observations already obtained for other explicitly requested materials.
+            """;
+    private static final String COMPACT_REWRITE_AFTER_TRUNCATION_PROMPT = """
+            The previous answer was cut off by the model output limit. Do not call tools.
+            Rewrite the answer once as a compact but complete final response using only the evidence already present.
+            Preserve every required conclusion section, concrete evidence location, difference, and limitation.
+            Remove repetition and background detail before omitting any requested section. End with a complete sentence.
             """;
     private final LangChain4jChatModelAdapter chatModel;
     private final LangChain4jToolProvider toolProvider;
@@ -123,6 +145,7 @@ public class LangChain4jToolCallingStrategy {
         Set<String> verifiedObservations = new LinkedHashSet<>();
         int projectEvidenceEpoch = 0;
         Set<String> allowedTools = new LinkedHashSet<>(request.toolPolicy().allowedTools());
+        Set<String> explicitProjectFiles = ProjectMaterialScope.explicitRelativePaths(request.userMessage());
         ToolProviderResult toolProviderResult = toolProvider.provideTools(request);
         List<ToolSpecification> toolSpecifications = new ArrayList<>(toolProviderResult.tools().keySet());
         TokenUsage totalUsage = null;
@@ -142,6 +165,14 @@ public class LangChain4jToolCallingStrategy {
         emitProcess(request, "正在分析问题，并判断是否需要调用工具。");
 
         for (int step = 0; step < request.maxSteps(); step++) {
+            if (request.projectContext() != null && toolCalls > 0 && step == request.maxSteps() - 1) {
+                String reason = "Reserved final synthesis round after " + toolCalls + " tool call(s)";
+                fallbacks.add(reason);
+                log.info("LangChain4j using reserved synthesis round sessionId={} maxSteps={} toolCalls={}",
+                        request.sessionId(), request.maxSteps(), toolCalls);
+                return finalAnswerWithoutMoreTools(
+                        messages, toolTrace, fallbacks, step + 1, totalUsage, request, reason);
+            }
             ChatRequest chatRequest = ChatRequest.builder()
                     .messages(messages)
                     .parameters(ChatRequestParameters.builder()
@@ -167,6 +198,10 @@ public class LangChain4jToolCallingStrategy {
             List<ToolExecutionRequest> requests = aiMessage.toolExecutionRequests();
             if (requests == null || requests.isEmpty()) {
                 String content = safeAssistantContent(aiMessage.text());
+                if (indicatesTruncation(response.finishReason(), content)) {
+                    return compactRewriteAfterTruncation(messages, toolTrace, fallbacks, step + 1,
+                            totalUsage, request, content, "ordinary final response");
+                }
                 log.info("LangChain4j completed without tool call step={} assistantPreview={}",
                         step + 1,
                         abbreviate(content));
@@ -269,6 +304,17 @@ public class LangChain4jToolCallingStrategy {
                         toolRequest.name(),
                         toolResult.content()
                 ));
+                String missingTarget = missingExplicitProjectFile(
+                        explicitProjectFiles, toolRequest, toolResult);
+                if (missingTarget != null) {
+                    String reason = ProjectMaterialScope.MISSING_TARGET_PREFIX + " " + missingTarget;
+                    fallbacks.add(reason);
+                    addSkippedToolResults(messages, toolTrace, requests, i + 1, step + 1, reason);
+                    log.info("LangChain4j stopping after explicit Project target was not found sessionId={} path={}",
+                            request.sessionId(), missingTarget);
+                    return finalAnswerWithoutMoreTools(
+                            messages, toolTrace, fallbacks, step + 1, totalUsage, request, reason);
+                }
             }
             if (newToolCallsThisStep == 0 && reusedToolCallsThisStep > 0) {
                 String reason = "No new tool progress: all " + reusedToolCallsThisStep
@@ -294,8 +340,16 @@ public class LangChain4jToolCallingStrategy {
                                                            TokenUsage usage,
                                                            AgentRuntimeRequest request,
                                                            String reason) {
-        emitProcess(request, "Tool-call budget reached. Generating the final answer from existing results.");
-        messages.add(SystemMessage.from(TOOL_BUDGET_FINAL_ANSWER_PROMPT));
+        boolean reservedSynthesis = reason != null && reason.startsWith("Reserved final synthesis round");
+        boolean missingTarget = reason != null && reason.startsWith(ProjectMaterialScope.MISSING_TARGET_PREFIX);
+        emitProcess(request, missingTarget
+                ? "The explicitly requested Project file was not found. Generating a bounded result without substitutes."
+                : reservedSynthesis
+                ? "Using the reserved final round to synthesize the answer from existing results."
+                : "Tool-call budget reached. Generating the final answer from existing results.");
+        messages.add(SystemMessage.from(missingTarget
+                ? MISSING_TARGET_FINAL_ANSWER_PROMPT
+                : reservedSynthesis ? RESERVED_FINAL_ANSWER_PROMPT : TOOL_BUDGET_FINAL_ANSWER_PROMPT));
         ChatRequest finalRequest = ChatRequest.builder()
                 .messages(messages)
                 .parameters(ChatRequestParameters.builder()
@@ -324,12 +378,40 @@ public class LangChain4jToolCallingStrategy {
                     "LangChain4j returned an empty final response after " + reason);
         }
         messages.add(aiMessage);
+        if (indicatesTruncation(response.finishReason(), content)) {
+            return compactRewriteAfterTruncation(messages, toolTrace, fallbacks, steps,
+                    totalUsage, request, content, "controlled-stop final synthesis");
+        }
         if (!isStreaming(request)) {
             emitToken(request, content);
         }
         log.info("LangChain4j final synthesis completed sessionId={} steps={} contentLength={} reason={}",
                 request.sessionId(), steps, content.length(), reason);
         return success(messages, toolTrace, fallbacks, steps, totalUsage, content);
+    }
+
+    private String missingExplicitProjectFile(Set<String> explicitProjectFiles,
+                                              ToolExecutionRequest request,
+                                              ToolExecutionOutcome outcome) {
+        if (explicitProjectFiles == null || explicitProjectFiles.isEmpty()
+                || request == null || outcome == null || outcome.success()
+                || !"project_read_file".equals(request.name())) {
+            return null;
+        }
+        String error = defaultString(outcome.errorCode()) + " "
+                + defaultString(outcome.errorMessage()) + " " + defaultString(outcome.content());
+        String normalizedError = error.toLowerCase(Locale.ROOT);
+        boolean notFound = normalizedError.contains("not_found")
+                || normalizedError.contains("not found")
+                || normalizedError.contains("404");
+        if (!notFound) return null;
+        try {
+            String path = objectMapper.readTree(defaultString(request.arguments(), "{}"))
+                    .path("relativePath").asText("");
+            return ProjectMaterialScope.contains(explicitProjectFiles, path) ? path : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private AgentRuntimeResult synthesisTransportPartial(
@@ -385,10 +467,99 @@ public class LangChain4jToolCallingStrategy {
                     "LangChain4j returned an empty final response after " + reason);
         }
         messages.add(aiMessage);
+        if (indicatesTruncation(response.finishReason(), content)) {
+            return compactRewriteAfterTruncation(messages, toolTrace, fallbacks, steps,
+                    totalUsage, request, content, "no-progress final synthesis");
+        }
         if (!isStreaming(request)) {
             emitToken(request, content);
         }
         return success(messages, toolTrace, fallbacks, steps, totalUsage, content);
+    }
+
+    private AgentRuntimeResult compactRewriteAfterTruncation(
+            List<dev.langchain4j.data.message.ChatMessage> messages,
+            List<String> toolTrace,
+            List<String> fallbacks,
+            int steps,
+            TokenUsage usage,
+            AgentRuntimeRequest request,
+            String firstContent,
+            String context) {
+        fallbacks.add("Model output truncated during " + context + "; attempting one compact rewrite");
+        messages.add(SystemMessage.from(COMPACT_REWRITE_AFTER_TRUNCATION_PROMPT));
+        ChatRequest rewriteRequest = ChatRequest.builder()
+                .messages(messages)
+                .parameters(ChatRequestParameters.builder()
+                        .modelName(request.model())
+                        .temperature(0.0)
+                        .maxOutputTokens(request.maxTokens())
+                        .build())
+                .build();
+        dev.langchain4j.model.chat.response.ChatResponse rewritten;
+        try {
+            rewritten = callModel(rewriteRequest, request);
+        } catch (RuntimeException ex) {
+            fallbacks.add("Compact rewrite failed: "
+                    + abbreviate(defaultString(ex.getMessage(), ex.getClass().getSimpleName())));
+            return truncatedResult(messages, toolTrace, fallbacks, steps, usage, request, firstContent);
+        }
+        TokenUsage totalUsage = TokenUsage.sum(usage, rewritten == null ? null : rewritten.tokenUsage());
+        AiMessage rewrittenMessage = rewritten == null ? null : rewritten.aiMessage();
+        String rewrittenContent = rewrittenMessage == null ? null : safeAssistantContent(rewrittenMessage.text());
+        if (StringUtils.hasText(rewrittenContent)) messages.add(rewrittenMessage);
+        if (!StringUtils.hasText(rewrittenContent)
+                || indicatesTruncation(rewritten == null ? null : rewritten.finishReason(), rewrittenContent)) {
+            fallbacks.add("Compact rewrite remained truncated or empty");
+            return truncatedResult(messages, toolTrace, fallbacks, steps + 1, totalUsage, request,
+                    StringUtils.hasText(rewrittenContent) ? rewrittenContent : firstContent);
+        }
+        if (!isStreaming(request)) emitToken(request, rewrittenContent);
+        log.info("LangChain4j compact rewrite completed sessionId={} originalLength={} rewrittenLength={}",
+                request.sessionId(), firstContent == null ? 0 : firstContent.length(), rewrittenContent.length());
+        return success(messages, toolTrace, fallbacks, steps + 1, totalUsage, rewrittenContent);
+    }
+
+    private AgentRuntimeResult truncatedResult(
+            List<dev.langchain4j.data.message.ChatMessage> messages,
+            List<String> toolTrace,
+            List<String> fallbacks,
+            int steps,
+            TokenUsage usage,
+            AgentRuntimeRequest request,
+            String content) {
+        String preserved = StringUtils.hasText(content)
+                ? content : "The model output was truncated before a complete final synthesis could be produced.";
+        if (!isStreaming(request)) emitToken(request, preserved);
+        return success(messages, toolTrace, fallbacks, steps, usage, preserved)
+                .withRuntimeStopSignal(AgentRuntimeStopSignal.MODEL_OUTPUT_TRUNCATED);
+    }
+
+    private boolean indicatesTruncation(Object finishReason, String content) {
+        if (finishReason != null) {
+            String normalized = String.valueOf(finishReason).trim().toUpperCase(Locale.ROOT);
+            if (normalized.equals("LENGTH") || normalized.contains("MAX_TOKEN")) return true;
+        }
+        return contentLooksStructurallyTruncated(content);
+    }
+
+    private boolean contentLooksStructurallyTruncated(String content) {
+        if (!StringUtils.hasText(content)) return false;
+        String trimmed = content.stripTrailing();
+        if (occurrences(trimmed, "```") % 2 != 0 || occurrences(trimmed, "$$") % 2 != 0) {
+            return true;
+        }
+        int lastBreak = Math.max(trimmed.lastIndexOf('\n'), trimmed.lastIndexOf('\r'));
+        String lastLine = trimmed.substring(lastBreak + 1);
+        return DANGLING_CODE_CONDITION.matcher(lastLine).matches();
+    }
+
+    private int occurrences(String content, String marker) {
+        int count = 0;
+        for (int index = 0; (index = content.indexOf(marker, index)) >= 0; index += marker.length()) {
+            count++;
+        }
+        return count;
     }
 
     String safeAssistantContent(String content) {

@@ -24,6 +24,7 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
+import dev.langchain4j.model.output.FinishReason;
 import dev.langchain4j.model.output.TokenUsage;
 import java.util.ArrayList;
 import java.util.List;
@@ -79,6 +80,68 @@ class LangChain4jToolCallingStrategyTest {
         assertThat(result.toolTrace()).hasSize(1);
         assertThat(result.toolTrace().get(0)).contains("tool=search_web");
         assertThat(result.totalTokens()).isEqualTo(28);
+    }
+
+    @Test
+    void truncatedFinalAnswerGetsOneToolsDisabledCompactRewrite() {
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(ChatResponse.builder().aiMessage(AiMessage.from("Incomplete final answer"))
+                        .finishReason(FinishReason.LENGTH).build())
+                .thenReturn(ChatResponse.builder().aiMessage(AiMessage.from("Compact complete final answer."))
+                        .finishReason(FinishReason.STOP).build());
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(
+                chatModel, toolProvider(new ToolRegistry()), objectMapper)
+                .run(request(List.of(), 0, 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.assistantContent()).isEqualTo("Compact complete final answer.");
+        assertThat(result.runtimeStopSignal()).isEqualTo(AgentRuntimeStopSignal.NONE);
+        verify(chatModel, org.mockito.Mockito.times(2)).chat(any(ChatRequest.class), any(AgentRuntimeRequest.class));
+    }
+
+    @Test
+    void structurallyTruncatedFinalAnswerIsRewrittenEvenWhenProviderReportsStop() {
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(ChatResponse.builder()
+                        .aiMessage(AiMessage.from("Evidence-backed stages:\nif snr_db is"))
+                        .finishReason(FinishReason.STOP)
+                        .build())
+                .thenReturn(ChatResponse.builder()
+                        .aiMessage(AiMessage.from("Compact evidence-backed stage summary completed."))
+                        .finishReason(FinishReason.STOP)
+                        .build());
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(
+                chatModel, toolProvider(new ToolRegistry()), objectMapper)
+                .run(request(List.of(), 0, 1));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.assistantContent()).isEqualTo("Compact evidence-backed stage summary completed.");
+        assertThat(result.runtimeStopSignal()).isEqualTo(AgentRuntimeStopSignal.NONE);
+        assertThat(result.fallbacks()).anyMatch(value -> value.contains("Model output truncated"));
+        verify(chatModel, org.mockito.Mockito.times(2)).chat(any(ChatRequest.class), any(AgentRuntimeRequest.class));
+    }
+
+    @Test
+    void projectRuntimeUsesItsLastRoundForSynthesisWithoutClaimingBudgetExhaustion() {
+        ToolRegistry registry = new ToolRegistry().register(new StubToolExecutor("search_web", objectMapper));
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(toolCall("call-1", "search_web", "{\"query\":\"radar\"}"))
+                .thenReturn(toolCall("call-2", "search_web", "{\"query\":\"waveform\"}"))
+                .thenReturn(answer("Complete synthesis from reserved round."));
+        AgentRuntimeRequest request = request(List.of("search_web"), 3, 1)
+                .withProjectContext(new ProjectRuntimeContext(8L, 42L));
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
+                .run(request);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.assistantContent()).isEqualTo("Complete synthesis from reserved round.");
+        assertThat(result.runtimeStopSignal()).isEqualTo(AgentRuntimeStopSignal.NONE);
     }
 
     @Test
@@ -148,6 +211,42 @@ class LangChain4jToolCallingStrategyTest {
                         .contains("derive it from the matching typed items")
                         .contains("equals the entries you enumerate")
                         .contains("omit the numeric total"));
+    }
+
+    @Test
+    void explicitMissingProjectFileStopsBeforeAlternativeSearchAndUsesBoundedSynthesis() {
+        ToolRegistry registry = new ToolRegistry()
+                .register(new MissingProjectReadStubToolExecutor(objectMapper))
+                .register(new StubToolExecutor("project_search", objectMapper));
+        LangChain4jChatModelAdapter chatModel = mock(LangChain4jChatModelAdapter.class);
+        String missingPath = "good_code/s2/__worker10_11_missing_boundary_test__.py";
+        when(chatModel.chat(any(ChatRequest.class), any(AgentRuntimeRequest.class)))
+                .thenReturn(toolCall("missing-read", "project_read_file",
+                        "{\"relativePath\":\"" + missingPath + "\"}"))
+                .thenReturn(answer("The requested code file is missing, so code findings and comparison are unavailable."));
+        AgentRuntimeRequest projectRequest = request(
+                "Read " + missingPath + " and compare it with the paper.",
+                List.of("project_read_file", "project_search"), 12, 1)
+                .withProjectContext(new ProjectRuntimeContext(8L, 42L));
+
+        AgentRuntimeResult result = new LangChain4jToolCallingStrategy(chatModel, toolProvider(registry), objectMapper)
+                .run(projectRequest);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.toolTrace()).singleElement()
+                .satisfies(trace -> assertThat(trace)
+                        .contains("tool=project_read_file", "success=false", missingPath));
+        assertThat(result.fallbacks()).contains(ProjectMaterialScope.MISSING_TARGET_PREFIX + " " + missingPath);
+        assertThat(result.assistantContent()).contains("missing").doesNotContain("alternative implementation");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModel, org.mockito.Mockito.times(2)).chat(requests.capture(), any(AgentRuntimeRequest.class));
+        assertThat(requests.getAllValues().get(1).parameters().toolSpecifications()).isEmpty();
+        assertThat(requests.getAllValues().get(1).messages().stream()
+                .filter(dev.langchain4j.data.message.SystemMessage.class::isInstance)
+                .map(dev.langchain4j.data.message.SystemMessage.class::cast)
+                .map(dev.langchain4j.data.message.SystemMessage::text)
+                .toList()).anySatisfy(prompt -> assertThat(prompt)
+                .contains("do not search for, read, or use alternative files"));
     }
 
     @Test
@@ -718,6 +817,15 @@ class LangChain4jToolCallingStrategyTest {
         return request(allowedTools, maxToolCalls, maxDuplicateToolCalls, null);
     }
 
+    private AgentRuntimeRequest request(String userMessage, List<String> allowedTools,
+                                        Integer maxToolCalls, Integer maxDuplicateToolCalls) {
+        return new AgentRuntimeRequest(
+                AgentStrategy.DIRECT, 4L, List.of(), 8L, userMessage, "deepseek", "deepseek-v4-flash",
+                null, null, 3, false, null, null, null, null,
+                AgentRuntimeMode.LANGCHAIN4J, AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                allowedTools, maxToolCalls, maxDuplicateToolCalls, "trace-tool", null, null);
+    }
+
     private AgentRuntimeRequest request(List<String> allowedTools,
                                         Integer maxToolCalls,
                                         Integer maxDuplicateToolCalls,
@@ -846,6 +954,29 @@ class LangChain4jToolCallingStrategyTest {
                         : definition.name().startsWith("unknown_") ? "MYSTERY" : "RUNNING");
             }
             return ToolResult.success(call.id(), call.name(), output);
+        }
+    }
+
+    private static final class MissingProjectReadStubToolExecutor implements ToolExecutor {
+
+        private final ToolDefinition definition;
+
+        private MissingProjectReadStubToolExecutor(ObjectMapper objectMapper) {
+            ObjectNode parameters = objectMapper.createObjectNode();
+            parameters.put("type", "object");
+            parameters.putObject("properties").putObject("relativePath").put("type", "string");
+            parameters.putArray("required").add("relativePath");
+            this.definition = new ToolDefinition("project_read_file", "read Project file", parameters);
+        }
+
+        @Override public ToolDefinition definition() { return definition; }
+
+        @Override public ToolDescriptor descriptor() { return visibleSyncDescriptor(definition.name()); }
+
+        @Override
+        public ToolResult execute(ToolCall call) {
+            return ToolResult.failure(call.id(), call.name(), com.yanban.core.tool.ToolErrorCode.NOT_FOUND,
+                    "Project file not found");
         }
     }
 

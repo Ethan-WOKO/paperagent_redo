@@ -179,10 +179,19 @@ public class AgentStrategySelector {
                 "实验", "结果", "指标", "配置", "日志", "数据")) {
             materials.add(ResearchMaterialKind.EXPERIMENT_CONFIG);
         }
-        if (containsAny(normalized, "bibtex", "bib", "citation", "citations", "bibliography", "reference", "references", "引用", "参考文献", "文献")) {
+        if (containsAny(normalized, "bibtex", "bib", "citation", "citations", "bibliography", "reference", "references", "参考文献", "文献")) {
             materials.add(ResearchMaterialKind.BIBTEX);
         }
-        boolean verification = containsAny(normalized, "verify", "validate", "audit", "check consistency", "reproduce",
+        boolean fileHashEquality = containsAny(normalized,
+                "same content hash", "same file hash", "identical file hash", "content hash equality",
+                "byte identical", "byte level identical",
+                "\u6587\u4ef6\u5185\u5bb9\u54c8\u5e0c", "\u5b8c\u6574\u5185\u5bb9\u54c8\u5e0c",
+                "\u6587\u4ef6\u54c8\u5e0c", "\u5b57\u8282\u662f\u5426\u5b8c\u5168\u4e00\u81f4",
+                "\u5b57\u8282\u5b8c\u5168\u4e00\u81f4", "\u5b57\u8282\u4e00\u81f4\u6027",
+                "\u9010\u5b57\u8282\u4e00\u81f4", "\u9010\u5b57\u8282\u76f8\u540c",
+                "\u5b57\u8282\u7ea7\u4e00\u81f4");
+        boolean verification = fileHashEquality || containsAny(normalized,
+                "verify", "validate", "audit", "check consistency", "reproduce",
                 "cross-check", "核验", "核对", "验证", "审计", "一致性", "复现", "对照");
         boolean multiStage = containsAny(normalized, "compare", "synthesize", "then", "multi-stage", "across", "correlate",
                 "比较", "对比", "结合", "综合", "然后", "多阶段", "跨材料", "关联", "先", "再");
@@ -191,9 +200,7 @@ public class AgentStrategySelector {
         boolean simpleQuestion = containsAny(normalized, "what is", "why", "how does", "explain", "是什么", "为什么", "解释")
                 && !toolUseRequested && materials.isEmpty();
         boolean crossMaterial = materials.size() >= 2;
-        List<DomainConsistencyCheck> consistencyChecks = crossMaterial
-                && containsAny(normalized, "same content hash", "same file hash", "identical file hash",
-                "content hash equality", "byte identical", "byte level identical")
+        List<DomainConsistencyCheck> consistencyChecks = crossMaterial && fileHashEquality
                 ? List.of(DomainConsistencyCheck.EVIDENCE_FILE_HASH_EQUALITY) : List.of();
 
         List<ResearchMaterialRequirement> requirements = new ArrayList<>();
