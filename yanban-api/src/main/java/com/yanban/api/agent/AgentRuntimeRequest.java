@@ -1,5 +1,6 @@
 package com.yanban.api.agent;
 
+import com.yanban.api.agent.worker.ControlledWorkerDispatch;
 import com.yanban.core.model.ChatMessage;
 import java.util.List;
 import java.util.function.Consumer;
@@ -32,7 +33,8 @@ public record AgentRuntimeRequest(
         ProjectRuntimeContext projectContext,
         EvidenceLedger inheritedTrustedEvidence,
         AgentOrchestrationRequirements orchestrationRequirements,
-        Boolean persistPlanConversationSummary
+        Boolean persistPlanConversationSummary,
+        ControlledWorkerDispatch controlledWorkerDispatch
 ) {
     public AgentRuntimeRequest {
         if (userMessage == null || userMessage.isBlank()) {
@@ -50,6 +52,22 @@ public record AgentRuntimeRequest(
         inheritedTrustedEvidence = inheritedTrustedEvidence == null ? EvidenceLedger.empty() : inheritedTrustedEvidence;
         orchestrationRequirements = orchestrationRequirements == null
                 ? AgentOrchestrationRequirements.empty() : orchestrationRequirements;
+    }
+
+    /** Source-compatible bridge for the request shape before controlled Worker dispatch existed. */
+    public AgentRuntimeRequest(
+            AgentStrategy strategy, Long sessionId, List<ChatMessage> history, Long userId, String userMessage,
+            String provider, String model, Double temperature, Integer maxTokens, int maxSteps, boolean ragDisabled,
+            String skillId, String apiKey, String apiUrl, String skillPrompt, AgentRuntimeMode runtimeMode,
+            AgentToolCallingMode toolCallingMode, ResolvedToolPolicy toolPolicy, Integer maxToolCalls,
+            Integer maxDuplicateToolCalls, String traceId, Consumer<String> tokenConsumer,
+            Consumer<String> processConsumer, Long planId, ProjectRuntimeContext projectContext,
+            EvidenceLedger inheritedTrustedEvidence, AgentOrchestrationRequirements orchestrationRequirements,
+            Boolean persistPlanConversationSummary) {
+        this(strategy, sessionId, history, userId, userMessage, provider, model, temperature, maxTokens, maxSteps,
+                ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode, toolCallingMode, toolPolicy,
+                maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer, planId, projectContext,
+                inheritedTrustedEvidence, orchestrationRequirements, persistPlanConversationSummary, null);
     }
 
     /** Source-compatible bridge for callers using the pre-presentation-policy canonical shape. */
@@ -127,7 +145,7 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
-                persistPlanConversationSummary);
+                persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /** Attach server-owned plan identity after a Plan API request has been authorized. */
@@ -136,7 +154,7 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
-                persistPlanConversationSummary);
+                persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /** Only an authenticated Project API adapter may attach this context. */
@@ -148,7 +166,7 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, context, inheritedTrustedEvidence, orchestrationRequirements,
-                persistPlanConversationSummary);
+                persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /** Attach only server-persisted observations inherited from completed Plan dependencies. */
@@ -160,7 +178,7 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, projectContext, evidence == null ? EvidenceLedger.empty() : evidence, orchestrationRequirements,
-                persistPlanConversationSummary);
+                persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /**
@@ -177,7 +195,7 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
-                persistPlanConversationSummary);
+                persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /** Bounded reflection may only reduce runtime and tool budgets. */
@@ -192,7 +210,7 @@ public record AgentRuntimeRequest(
                 temperature, maxTokens, reducedMaxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, reducedPolicy, reducedMaxToolCalls, reducedPolicy.maxDuplicateToolCalls(), traceId,
                 tokenConsumer, processConsumer, planId, projectContext, inheritedTrustedEvidence,
-                orchestrationRequirements, persistPlanConversationSummary);
+                orchestrationRequirements, persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /** Coordinator-only attachment; this metadata cannot alter any authority-bearing field. */
@@ -202,7 +220,7 @@ public record AgentRuntimeRequest(
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
                 planId, projectContext, inheritedTrustedEvidence,
                 requirements == null ? AgentOrchestrationRequirements.empty() : requirements,
-                persistPlanConversationSummary);
+                persistPlanConversationSummary, controlledWorkerDispatch);
     }
 
     /** Server-owned presentation policy for nested Plan execution. It does not change runtime authority. */
@@ -210,7 +228,19 @@ public record AgentRuntimeRequest(
         return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
                 temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
                 toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer, processConsumer,
-                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements, persist);
+                planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements, persist,
+                controlledWorkerDispatch);
+    }
+
+    /** Coordinator-only attachment created from the current server manifest and resolved parent policy. */
+    public AgentRuntimeRequest withControlledWorkerDispatch(ControlledWorkerDispatch dispatch) {
+        if (dispatch == null) return this;
+        dispatch.validateAgainst(this);
+        return new AgentRuntimeRequest(strategy, sessionId, history, userId, userMessage, provider, model,
+                temperature, maxTokens, maxSteps, ragDisabled, skillId, apiKey, apiUrl, skillPrompt, runtimeMode,
+                toolCallingMode, toolPolicy, maxToolCalls, maxDuplicateToolCalls, traceId, tokenConsumer,
+                processConsumer, planId, projectContext, inheritedTrustedEvidence, orchestrationRequirements,
+                persistPlanConversationSummary, dispatch);
     }
 
     public boolean shouldPersistPlanConversationSummary(boolean defaultValue) {

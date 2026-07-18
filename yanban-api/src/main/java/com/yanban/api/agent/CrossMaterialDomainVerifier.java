@@ -67,7 +67,7 @@ public class CrossMaterialDomainVerifier {
                     .distinct()
                     .toList();
             List<String> materialEvidence = evidenceFor(requirement.material(), ledger,
-                    request.projectContext().projectId());
+                    request.projectContext().projectId(), request.controlledWorkerDispatch() != null);
             DomainVerification.MaterialStatus materialStatus;
             if (!requirement.covered() || available.isEmpty()) {
                 materialStatus = DomainVerification.MaterialStatus.TOOL_UNAVAILABLE;
@@ -195,15 +195,21 @@ public class CrossMaterialDomainVerifier {
                 && consistencyRules.accepts(requirements, fact, coverage, ledger, projectId)
                 && fact.materials().containsAll(requestedMaterials)
                 && ledger.containsAllReferences(fact.evidenceRefs())
-                && requestedMaterials.stream().allMatch(material -> evidenceFor(material, ledger, projectId).stream()
+                && requestedMaterials.stream().allMatch(material -> evidenceFor(
+                        material, ledger, projectId, false).stream()
                 .anyMatch(fact.evidenceRefs()::contains));
     }
 
-    private List<String> evidenceFor(ResearchMaterialKind material, EvidenceLedger ledger, Long projectId) {
+    private List<String> evidenceFor(ResearchMaterialKind material, EvidenceLedger ledger, Long projectId,
+                                     boolean allowControlledWorkerEvidence) {
         return ledger.evidence().stream()
                 .filter(ref -> ref.sourceType() == EvidenceSourceType.PROJECT)
-                .filter(ProjectEvidenceValidator::isTrusted)
-                .filter(ref -> ref.id().startsWith("trusted-tool:" + projectId + ":")
+                .filter(ref -> ProjectEvidenceValidator.isTrusted(ref)
+                        || (allowControlledWorkerEvidence
+                        && ProjectEvidenceValidator.isControlledWorkerEvidence(ref, projectId)))
+                .filter(ref -> (allowControlledWorkerEvidence
+                        && ProjectEvidenceValidator.isControlledWorkerEvidence(ref, projectId))
+                        || ref.id().startsWith("trusted-tool:" + projectId + ":")
                         || ref.id().startsWith("trusted-plan:" + projectId + ":"))
                 .filter(ref -> ref.versionStatus() == EvidenceVersionStatus.VERIFIED)
                 .filter(ref -> matchesMaterial(material, ref.file()))

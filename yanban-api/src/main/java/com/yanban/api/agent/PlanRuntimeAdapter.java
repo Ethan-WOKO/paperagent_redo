@@ -39,7 +39,12 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
                 AgentPlanResponse created = planAgentService.createPlanWithinAdapter(request);
                 createdPlanId = created.id();
                 if (isServerAutoProjectPlan(request)) {
-                    return execute(request, createdPlanId, false);
+                    AgentRuntimeRequest persistedParent = request.withPlanId(createdPlanId);
+                    if (request.controlledWorkerDispatch() != null) {
+                        persistedParent = persistedParent.withControlledWorkerDispatch(
+                                request.controlledWorkerDispatch().bindToParentPlan(createdPlanId));
+                    }
+                    return execute(persistedParent, createdPlanId, false);
                 }
                 String content = "Plan " + created.id() + " created.";
                 return new AgentRuntimeResult(true, content, transcriptWithAssistant(request, content), 0,
@@ -62,8 +67,11 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
 
     private AgentRuntimeResult execute(AgentRuntimeRequest request, Long planId,
                                        boolean persistConversationSummary) {
-        PlanAgentService.PlanExecutionResult execution = planAgentService.executePlanResultWithinAdapter(
-                request.userId(), planId, request.traceId(), persistConversationSummary);
+        PlanAgentService.PlanExecutionResult execution = request.controlledWorkerDispatch() == null
+                ? planAgentService.executePlanResultWithinAdapter(
+                        request.userId(), planId, request.traceId(), persistConversationSummary)
+                : planAgentService.executePlanResultWithinAdapter(
+                        request, planId, request.traceId(), persistConversationSummary);
         AgentPlanResponse plan = execution.plan();
         PlanTerminal terminal = classify(plan, execution.stopSignal());
         String content = buildExecutionContent(plan, terminal);

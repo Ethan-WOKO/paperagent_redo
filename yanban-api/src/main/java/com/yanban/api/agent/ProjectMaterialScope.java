@@ -7,7 +7,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Server-owned extraction and comparison of explicitly named Project file materials. */
-final class ProjectMaterialScope {
+public final class ProjectMaterialScope {
 
     static final String MISSING_TARGET_PREFIX = "TARGET_PROJECT_FILE_MISSING:";
 
@@ -19,7 +19,7 @@ final class ProjectMaterialScope {
     private ProjectMaterialScope() {
     }
 
-    static Set<String> explicitRelativePaths(String... values) {
+    public static Set<String> explicitRelativePaths(String... values) {
         LinkedHashSet<String> paths = new LinkedHashSet<>();
         if (values == null) return Set.of();
         for (String value : values) {
@@ -44,7 +44,7 @@ final class ProjectMaterialScope {
                 .anyMatch(value -> value.startsWith(MISSING_TARGET_PREFIX));
     }
 
-    static String normalize(String path) {
+    public static String normalize(String path) {
         if (path == null) return "";
         return path.trim().replace('\\', '/').toLowerCase(Locale.ROOT);
     }

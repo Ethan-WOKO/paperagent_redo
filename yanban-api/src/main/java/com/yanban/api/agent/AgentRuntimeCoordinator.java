@@ -1,5 +1,6 @@
 package com.yanban.api.agent;
 
+import com.yanban.api.agent.worker.ControlledWorkerDispatchPlanner;
 import com.yanban.core.agent.AgentRunIdentity;
 import java.util.List;
 import java.util.UUID;
@@ -20,19 +21,28 @@ public class AgentRuntimeCoordinator {
     private final AgentRuntimeService runtimeService;
     private final AgentStrategySelector strategySelector;
     private final AgentTaskWorkspaceService workspaceService;
+    private final ControlledWorkerDispatchPlanner controlledWorkerDispatchPlanner;
 
     public AgentRuntimeCoordinator(AgentRuntimeService runtimeService,
                                    AgentStrategySelector strategySelector) {
-        this(runtimeService, strategySelector, null);
+        this(runtimeService, strategySelector, null, null);
+    }
+
+    public AgentRuntimeCoordinator(AgentRuntimeService runtimeService,
+                                   AgentStrategySelector strategySelector,
+                                   AgentTaskWorkspaceService workspaceService) {
+        this(runtimeService, strategySelector, workspaceService, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public AgentRuntimeCoordinator(AgentRuntimeService runtimeService,
                                    AgentStrategySelector strategySelector,
-                                   AgentTaskWorkspaceService workspaceService) {
+                                   AgentTaskWorkspaceService workspaceService,
+                                   ControlledWorkerDispatchPlanner controlledWorkerDispatchPlanner) {
         this.runtimeService = runtimeService;
         this.strategySelector = strategySelector;
         this.workspaceService = workspaceService;
+        this.controlledWorkerDispatchPlanner = controlledWorkerDispatchPlanner;
     }
 
     public AgentCoordinationResult coordinate(AgentCoordinationRequest request) {
@@ -120,6 +130,10 @@ public class AgentRuntimeCoordinator {
             AgentRuntimeRequest executable = resolved.withStrategy(selected)
                     .withPlanId(request.planId())
                     .withOrchestrationRequirements(selection.orchestration());
+            if (controlledWorkerDispatchPlanner != null) {
+                executable = controlledWorkerDispatchPlanner.plan(executable, request.capability())
+                        .map(executable::withControlledWorkerDispatch).orElse(executable);
+            }
             AgentRuntimeResult result = runtimeService.run(executable);
             AgentStopReason stopReason = result.stopReason() == null ? stopReason(result) : result.stopReason();
             boolean degraded = decision.degraded() || result.degraded();

@@ -8,6 +8,7 @@ import com.yanban.core.tool.ToolExecutionContext;
 import com.yanban.core.tool.ToolDescriptor;
 import com.yanban.core.tool.ToolRegistry;
 import com.yanban.core.tool.ToolResult;
+import com.yanban.api.agent.worker.ControlledWorkerExecutionScope;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.agent.tool.ToolSpecifications;
@@ -137,8 +138,12 @@ public class LangChain4jToolProvider implements ToolProvider {
                                                                         String toolName,
                                                                         Set<String> allowedToolNames) {
         return (toolRequest, memoryId) -> {
+            JsonNode arguments = null;
+            boolean invocationAccepted = false;
             try {
-                JsonNode arguments = objectMapper.readTree(defaultString(toolRequest.arguments(), "{}"));
+                arguments = objectMapper.readTree(defaultString(toolRequest.arguments(), "{}"));
+                ControlledWorkerExecutionScope.validateInvocation(toolName, arguments);
+                invocationAccepted = true;
                 Long userId = runtimeRequest == null ? null : runtimeRequest.userId();
                 ToolExecutionContext.setCurrentUserId(userId);
                 if (runtimeRequest.projectContext() != null) {
@@ -146,8 +151,12 @@ public class LangChain4jToolProvider implements ToolProvider {
                 }
                 ToolExecutionContext.setResolvedAllowedTools(allowedToolNames);
                 ToolResult result = toolRegistry.execute(new ToolCall(toolRequest.id(), toolName, arguments), allowedToolNames);
+                ControlledWorkerExecutionScope.recordResult(toolName, arguments, result);
                 return serialize(result);
             } catch (Exception ex) {
+                if (invocationAccepted && ex instanceof RuntimeException runtimeException) {
+                    ControlledWorkerExecutionScope.recordFailure(toolName, arguments, runtimeException);
+                }
                 return failureContent(defaultString(ex.getMessage(), ex.getClass().getSimpleName()));
             } finally {
                 ToolExecutionContext.clear();
@@ -159,17 +168,29 @@ public class LangChain4jToolProvider implements ToolProvider {
                                                                                  ToolBinding binding,
                                                                                  Set<String> allowedToolNames) {
         return (toolRequest, memoryId) -> {
+            JsonNode arguments = null;
+            boolean invocationAccepted = false;
             try {
                 if (!isModelExposable(binding.specification().name(), allowedToolNames)) {
                     return failureContent("tool is not allowed by the resolved runtime policy");
                 }
+                arguments = objectMapper.readTree(defaultString(toolRequest.arguments(), "{}"));
+                ControlledWorkerExecutionScope.validateInvocation(binding.specification().name(), arguments);
+                invocationAccepted = true;
                 ToolExecutionContext.setCurrentUserId(runtimeRequest.userId());
                 if (runtimeRequest.projectContext() != null) {
                     ToolExecutionContext.setCurrentProjectId(runtimeRequest.projectContext().projectId());
                 }
                 ToolExecutionContext.setResolvedAllowedTools(allowedToolNames);
-                return binding.executor().execute(toolRequest, memoryId);
+                String serialized = binding.executor().execute(toolRequest, memoryId);
+                ControlledWorkerExecutionScope.recordSerializedResult(
+                        binding.specification().name(), arguments, serialized, objectMapper);
+                return serialized;
             } catch (Exception ex) {
+                if (invocationAccepted && ex instanceof RuntimeException runtimeException) {
+                    ControlledWorkerExecutionScope.recordFailure(
+                            binding.specification().name(), arguments, runtimeException);
+                }
                 return failureContent(defaultString(ex.getMessage(), ex.getClass().getSimpleName()));
             } finally {
                 ToolExecutionContext.clear();

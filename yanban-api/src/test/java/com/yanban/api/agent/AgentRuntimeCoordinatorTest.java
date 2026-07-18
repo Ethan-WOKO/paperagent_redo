@@ -5,11 +5,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.yanban.api.agent.worker.ControlledWorkerDispatch;
+import com.yanban.api.agent.worker.ControlledWorkerDispatchPlanner;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.agent.AgentTaskOutcome;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.core.research.ResearchToolContracts;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class AgentRuntimeCoordinatorTest {
@@ -55,6 +58,47 @@ class AgentRuntimeCoordinatorTest {
         assertThat(executed.apiUrl()).isEqualTo(original.apiUrl());
         assertThat(executed.orchestrationRequirements())
                 .isEqualTo(result.decision().strategySelection().orchestration());
+    }
+
+    @Test
+    void productionCoordinatorAttachesServerPlannedControlledWorkerDispatchBeforeRuntimeResolution() {
+        AgentRuntimeService runtime = mock(AgentRuntimeService.class);
+        when(runtime.run(org.mockito.ArgumentMatchers.any())).thenReturn(new AgentRuntimeResult(
+                true, "controlled parent answer", List.of(ChatMessage.assistant("controlled parent answer")),
+                1, null, List.of(), List.of(), null, null, null));
+        ControlledWorkerDispatchPlanner planner = mock(ControlledWorkerDispatchPlanner.class);
+        ControlledWorkerDispatch dispatch = mock(ControlledWorkerDispatch.class);
+        when(planner.plan(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(AgentRequestCapability.PROJECT_READ)))
+                .thenReturn(Optional.of(dispatch));
+        AgentRuntimeCoordinator coordinator = new AgentRuntimeCoordinator(runtime, new AgentStrategySelector(),
+                new AgentTaskWorkspaceService(new ObjectMapper()), planner);
+        List<String> allowed = List.of(ResearchToolContracts.PROJECT_LATEX_OUTLINE,
+                ResearchToolContracts.PROJECT_CODE_SYMBOLS);
+        AgentRuntimeRequest request = new AgentRuntimeRequest(AgentStrategy.AUTO, 3L, List.of(), 7L,
+                "Compare the LaTeX paper with code.", "test", "model", null, 3000, 9, true,
+                null, "secret", "local-model", null, AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING,
+                new ResolvedToolPolicy(allowed, 6, 1, "project_skill_intersection"),
+                6, 1, "controlled-production-trace", null, null)
+                .withProjectContext(new ProjectRuntimeContext(7L, 42L));
+
+        AgentCoordinationResult result = coordinator.coordinate(AgentCoordinationRequest.projectRead(request));
+
+        assertThat(result.decision().selectedStrategy()).isEqualTo(AgentStrategy.PLAN_EXECUTE);
+        org.mockito.ArgumentCaptor<AgentRuntimeRequest> planned =
+                org.mockito.ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(planner).plan(planned.capture(),
+                org.mockito.ArgumentMatchers.eq(AgentRequestCapability.PROJECT_READ));
+        assertThat(planned.getValue().controlledWorkerDispatch()).isNull();
+        assertThat(planned.getValue().strategy()).isEqualTo(AgentStrategy.PLAN_EXECUTE);
+        org.mockito.ArgumentCaptor<AgentRuntimeRequest> executed =
+                org.mockito.ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(runtime).run(executed.capture());
+        assertThat(executed.getValue().controlledWorkerDispatch()).isSameAs(dispatch);
+        assertThat(executed.getValue().toolPolicy()).isEqualTo(request.toolPolicy());
+        assertThat(executed.getValue().userId()).isEqualTo(7L);
+        assertThat(executed.getValue().projectContext()).isEqualTo(new ProjectRuntimeContext(7L, 42L));
     }
 
     @Test

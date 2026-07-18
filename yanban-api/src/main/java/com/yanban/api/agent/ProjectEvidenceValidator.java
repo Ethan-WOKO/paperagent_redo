@@ -15,10 +15,18 @@ public class ProjectEvidenceValidator {
     }
 
     public EvidenceLedger current(Long userId, ProjectRuntimeContext context, EvidenceLedger evidence) {
+        return current(userId, context, evidence, false);
+    }
+
+    EvidenceLedger current(Long userId, ProjectRuntimeContext context, EvidenceLedger evidence,
+                           boolean allowControlledWorkerEvidence) {
         if (context == null || evidence == null || !context.userId().equals(userId)) return EvidenceLedger.empty();
         ProjectManifestResponse manifest = projects.manifest(userId, context.projectId());
         List<EvidenceRef> current = evidence.evidence().stream().map(ref -> {
-            if (!isTrusted(ref) || !belongsToProject(ref, context.projectId())) return null;
+            boolean trusted = isTrusted(ref) && belongsToProject(ref, context.projectId());
+            boolean controlled = allowControlledWorkerEvidence
+                    && isControlledWorkerEvidence(ref, context.projectId());
+            if (!trusted && !controlled) return null;
             boolean verified = ref.versionStatus() == EvidenceVersionStatus.VERIFIED
                     && manifest.version().equals(ref.projectVersion())
                     && manifest.files().stream().anyMatch(file -> file.path().equals(ref.file())
@@ -44,6 +52,12 @@ public class ProjectEvidenceValidator {
     static boolean isTrusted(EvidenceRef ref) {
         return ref != null && ref.id() != null && (ref.id().startsWith("trusted-tool:")
                 || ref.id().startsWith("trusted-plan:"));
+    }
+
+    static boolean isControlledWorkerEvidence(EvidenceRef ref, Long projectId) {
+        return ref != null && ref.sourceType() == EvidenceSourceType.PROJECT
+                && ref.id() != null && projectId != null
+                && ref.id().startsWith("controlled-worker:" + projectId + ":");
     }
 
     private static boolean belongsToProject(EvidenceRef ref, Long projectId) {

@@ -2,6 +2,7 @@ package com.yanban.api.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.yanban.api.agent.worker.ControlledWorkerExecutionScope;
 import com.yanban.core.model.ChatChunk;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.tool.ToolDescriptor;
@@ -153,6 +154,7 @@ public class LangChain4jToolCallingStrategy {
         int effectiveToolLimit = request.toolPolicy().maxToolCalls();
         int successfulCallsSinceExtension = 0;
         boolean adaptiveProjectBudget = request.projectContext() != null
+                && !ControlledWorkerExecutionScope.isActive()
                 && request.toolPolicy().maxToolCalls() >= 12;
         log.info("LangChain4j tool run start sessionId={} userId={} model={} allowedTools={} maxSteps={} maxToolCalls={} maxDuplicateToolCalls={}",
                 request.sessionId(),

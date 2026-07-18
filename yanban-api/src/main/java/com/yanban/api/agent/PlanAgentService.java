@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yanban.api.settings.SysUserSettings;
+import com.yanban.api.agent.worker.ControlledPlanDispatchEnvelope;
+import com.yanban.api.agent.worker.ControlledReadOnlyWorkerRuntimeAdapter;
+import com.yanban.api.agent.worker.ControlledWorkerDispatch;
 import com.yanban.api.project.ProjectFileEntry;
 import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
@@ -76,6 +79,7 @@ public class PlanAgentService {
     private final AgentToolPolicyEngine toolPolicyEngine;
     private final ObjectMapper objectMapper;
     private final ProjectService projectService;
+    private final ControlledReadOnlyWorkerRuntimeAdapter controlledWorkerExecutor;
     private final ExecutorService planExecutor = Executors.newFixedThreadPool(PLAN_EXECUTOR_THREADS);
 
     @Autowired
@@ -89,9 +93,10 @@ public class PlanAgentService {
                             PlanStepVerifier stepVerifier,
                             UserSettingsService userSettingsService,
                             SkillsService skillsService,
-                            AgentToolPolicyEngine toolPolicyEngine,
-                            ObjectMapper objectMapper,
-                            ProjectService projectService) {
+                             AgentToolPolicyEngine toolPolicyEngine,
+                             ObjectMapper objectMapper,
+                             ProjectService projectService,
+                             ControlledReadOnlyWorkerRuntimeAdapter controlledWorkerExecutor) {
         this.plans = plans;
         this.steps = steps;
         this.events = events;
@@ -105,6 +110,25 @@ public class PlanAgentService {
         this.toolPolicyEngine = toolPolicyEngine;
         this.objectMapper = objectMapper;
         this.projectService = projectService;
+        this.controlledWorkerExecutor = controlledWorkerExecutor;
+    }
+
+    /** Source-compatible constructor for focused tests that do not execute a controlled Worker Plan. */
+    public PlanAgentService(AgentPlanRepository plans,
+                            AgentPlanStepRepository steps,
+                            AgentPlanEventRepository events,
+                            AgentService agentService,
+                            AgentRuntimeService agentRuntimeService,
+                            AgentRuntimeCoordinator runtimeCoordinator,
+                            PlanningAgentPlanner planner,
+                            PlanStepVerifier stepVerifier,
+                            UserSettingsService userSettingsService,
+                            SkillsService skillsService,
+                            AgentToolPolicyEngine toolPolicyEngine,
+                            ObjectMapper objectMapper,
+                            ProjectService projectService) {
+        this(plans, steps, events, agentService, agentRuntimeService, runtimeCoordinator, planner, stepVerifier,
+                userSettingsService, skillsService, toolPolicyEngine, objectMapper, projectService, null);
     }
 
     /** Source-compatible constructor for existing direct construction without Project capability. */
@@ -114,7 +138,7 @@ public class PlanAgentService {
                             PlanStepVerifier stepVerifier, UserSettingsService userSettingsService, SkillsService skillsService,
                             AgentToolPolicyEngine toolPolicyEngine, ObjectMapper objectMapper) {
         this(plans, steps, events, agentService, agentRuntimeService, runtimeCoordinator, planner, stepVerifier,
-                userSettingsService, skillsService, toolPolicyEngine, objectMapper, null);
+                userSettingsService, skillsService, toolPolicyEngine, objectMapper, null, null);
     }
 
     /** Compatibility constructor retained for focused scheduler tests and non-Spring callers. */
@@ -130,7 +154,7 @@ public class PlanAgentService {
                             AgentToolPolicyEngine toolPolicyEngine,
                             ObjectMapper objectMapper) {
         this(plans, steps, events, agentService, agentRuntimeService, null, planner, stepVerifier,
-                userSettingsService, skillsService, toolPolicyEngine, objectMapper, null);
+                userSettingsService, skillsService, toolPolicyEngine, objectMapper, null, null);
     }
 
     @PreDestroy
@@ -212,9 +236,12 @@ public class PlanAgentService {
 
     /** Called only by {@link PlanRuntimeAdapter} after trusted Coordinator selection. */
     AgentPlanResponse createPlanWithinAdapter(AgentRuntimeRequest request) {
+        if (request.controlledWorkerDispatch() != null) {
+            request.controlledWorkerDispatch().validateAgainst(request);
+        }
         return createPlanInternal(request.userId(), request.sessionId(), new CreateAgentPlanRequest(
                 request.userMessage(), request.ragDisabled(), request.skillId(), false), request.projectContext(),
-                request.orchestrationRequirements(), request.toolPolicy());
+                request.orchestrationRequirements(), request.toolPolicy(), request.controlledWorkerDispatch());
     }
 
     private AgentPlanResponse createPlanInternal(Long userId, Long sessionId, CreateAgentPlanRequest request) {
@@ -236,6 +263,15 @@ public class PlanAgentService {
                                                  ProjectRuntimeContext projectContext,
                                                  AgentOrchestrationRequirements orchestrationRequirements,
                                                  ResolvedToolPolicy runtimePolicyCeiling) {
+        return createPlanInternal(userId, sessionId, request, projectContext, orchestrationRequirements,
+                runtimePolicyCeiling, null);
+    }
+
+    private AgentPlanResponse createPlanInternal(Long userId, Long sessionId, CreateAgentPlanRequest request,
+                                                 ProjectRuntimeContext projectContext,
+                                                 AgentOrchestrationRequirements orchestrationRequirements,
+                                                 ResolvedToolPolicy runtimePolicyCeiling,
+                                                 ControlledWorkerDispatch controlledDispatch) {
         if (projectContext != null) projectContext = revalidateProject(userId, projectContext.projectId());
         AgentSession session = agentService.getOwnedSession(userId, sessionId);
         boolean ragDisabled = request.ragDisabled() != null
@@ -246,17 +282,23 @@ public class PlanAgentService {
                 ? resolvePlanToolPolicy(request.content(), ragDisabled, skill)
                 : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
         planToolPolicy = constrainToRuntimePolicy(planToolPolicy, runtimePolicyCeiling);
-        UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
-                userId, session.getModelProviderSnapshot(), session.getModelSnapshot());
         PlanningAgentPlanner.PlanSpec spec;
-        if (orchestrationRequirements == null || orchestrationRequirements.materialRequirements().isEmpty()) {
-            spec = planner.createPlan(request.content(), endpoint.providerKey(), endpoint.modelName(),
-                    endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(),
-                    planToolPolicy.allowedTools());
+        JsonNode controlledEnvelope = null;
+        if (controlledDispatch != null) {
+            controlledEnvelope = ControlledPlanDispatchEnvelope.capture(objectMapper, controlledDispatch);
+            spec = controlledPlanSpec(controlledDispatch, controlledEnvelope);
         } else {
-            spec = planner.createPlan(request.content(), endpoint.providerKey(), endpoint.modelName(),
-                    endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(),
-                    planToolPolicy.allowedTools(), orchestrationRequirements);
+            UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
+                    userId, session.getModelProviderSnapshot(), session.getModelSnapshot());
+            if (orchestrationRequirements == null || orchestrationRequirements.materialRequirements().isEmpty()) {
+                spec = planner.createPlan(request.content(), endpoint.providerKey(), endpoint.modelName(),
+                        endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(),
+                        planToolPolicy.allowedTools());
+            } else {
+                spec = planner.createPlan(request.content(), endpoint.providerKey(), endpoint.modelName(),
+                        endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(),
+                        planToolPolicy.allowedTools(), orchestrationRequirements);
+            }
         }
         if (spec == null || spec.failureCode() != null) {
             PlannerFailureCode code = spec == null ? PlannerFailureCode.INVALID_PLAN : spec.failureCode();
@@ -273,7 +315,10 @@ public class PlanAgentService {
                 spec.summary(),
                 ragDisabled,
                 skill == null ? null : skill.id(),
-                ProjectPlanEnvelope.wrap(objectMapper, spec.rawJson(), projectContext)
+                controlledEnvelope == null
+                        ? ProjectPlanEnvelope.wrap(objectMapper, spec.rawJson(), projectContext)
+                        : ProjectPlanEnvelope.wrapControlled(
+                                objectMapper, spec.rawJson(), projectContext, controlledEnvelope)
         );
         plan = plans.saveAndFlush(plan);
 
@@ -303,6 +348,32 @@ public class PlanAgentService {
         ));
 
         return toResponse(plan, savedSteps);
+    }
+
+    private PlanningAgentPlanner.PlanSpec controlledPlanSpec(ControlledWorkerDispatch dispatch,
+                                                              JsonNode controlledEnvelope) {
+        LinkedHashSet<String> allowedTools = new LinkedHashSet<>();
+        List<String> scopedPaths = new ArrayList<>();
+        dispatch.tasks().forEach(task -> {
+            allowedTools.addAll(task.attestation().packet().allowedReadTools());
+            task.attestation().packet().materialScope().forEach(path -> scopedPaths.add(path.value()));
+        });
+        scopedPaths.sort(String::compareTo);
+        ObjectNode raw = objectMapper.createObjectNode();
+        raw.put("schema", "controlled_read_only_worker_plan_v1");
+        raw.put("projectVersion", dispatch.projectVersion().value());
+        raw.put("workerCount", dispatch.tasks().size());
+        raw.set("relativePaths", objectMapper.valueToTree(scopedPaths));
+        String description = "Execute the server-bounded read-only paper and implementation Workers for exactly "
+                + "these current Project relative paths:\n- " + String.join("\n- ", scopedPaths);
+        String digestMarker = ControlledPlanDispatchEnvelope.digestMarker(objectMapper, controlledEnvelope);
+        PlanningAgentPlanner.StepSpec step = new PlanningAgentPlanner.StepSpec(
+                ControlledPlanDispatchEnvelope.STEP_KEY, "Controlled cross-material read-only analysis", description,
+                "ANALYSIS", List.of(), List.copyOf(allowedTools),
+                "Persist current versioned Evidence and one canonical parent synthesis; semantic differences remain "
+                        + "PARTIAL. " + digestMarker);
+        return new PlanningAgentPlanner.PlanSpec("Controlled read-only cross-material analysis",
+                List.of(step), raw.toString());
     }
 
     private ResolvedToolPolicy constrainToRuntimePolicy(ResolvedToolPolicy resolved,
@@ -347,10 +418,9 @@ public class PlanAgentService {
         if (AgentPlanStatus.PAUSED.name().equals(plan.getStatus())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Plan is paused and cannot be executed.");
         }
-        // Fail closed before changing async state; legacy plans restore null, Project plans revalidate ownership.
-        restoreProjectContext(plan, userId);
-
         String traceId = newPlanTraceId(planId);
+        // Fail closed before changing async state, and fully reissue controlled authority from persistence.
+        validatePlanExecutionBoundary(plan, userId, traceId);
         recordEvent(plan.getId(), null, "plan_queued", Map.of("traceId", traceId, "mode", "async"));
         plan.markRunning();
         plans.saveAndFlush(plan);
@@ -367,8 +437,8 @@ public class PlanAgentService {
                 && !AgentPlanStatus.CANCELLED.name().equals(plan.getStatus())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Only FAILED or CANCELLED plans can be retried.");
         }
-        // Do not reset steps/status if the persisted server-owned Project envelope is invalid or unauthorized.
-        restoreProjectContext(plan, userId);
+        // Do not reset steps/status if the persisted envelope, Project, or current authority cannot be recovered.
+        validatePlanExecutionBoundary(plan, userId, newPlanTraceId(planId));
 
         List<AgentPlanStep> planSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
         long retryable = 0;
@@ -452,19 +522,37 @@ public class PlanAgentService {
     }
 
     PlanExecutionResult executePlanResultWithinAdapter(Long userId, Long planId, String traceId,
-                                                        boolean persistConversationSummary) {
+                                                       boolean persistConversationSummary) {
         return executePlanInternal(userId, planId, traceId, persistConversationSummary);
+    }
+
+    PlanExecutionResult executePlanResultWithinAdapter(AgentRuntimeRequest parentRequest, Long planId,
+                                                       String traceId, boolean persistConversationSummary) {
+        if (parentRequest == null || parentRequest.planId() == null || !parentRequest.planId().equals(planId)) {
+            throw new IllegalArgumentException("controlled Plan execution requires its persisted parent identity");
+        }
+        AgentPlan plan = getOwnedPlan(parentRequest.userId(), planId);
+        AgentRuntimeRequest recovered = restoreControlledExecutionRequest(
+                plan, parentRequest.userId(), traceId, persistConversationSummary);
+        if (recovered == null) {
+            throw new IllegalArgumentException("persisted Plan does not contain a controlled Worker envelope");
+        }
+        return executePlanInternal(parentRequest.userId(), planId, traceId,
+                persistConversationSummary, recovered);
     }
 
     private AgentPlanResponse executePlanThroughCoordinator(Long userId, Long planId, String traceId,
                                                              boolean persistConversationSummary) {
-        if (runtimeCoordinator == null) {
-            return executePlanInternal(userId, planId, traceId, persistConversationSummary).plan();
-        }
         AgentPlan plan = getOwnedPlan(userId, planId);
         if (AgentPlanStatus.PAUSED.name().equals(plan.getStatus())) {
             recordEvent(planId, null, "plan_execution_paused", Map.of("traceId", traceId, "outcome", "PAUSED"));
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Plan is paused and cannot be executed.");
+        }
+        AgentRuntimeRequest recoveredControlled = restoreControlledExecutionRequest(
+                plan, userId, traceId, persistConversationSummary);
+        if (runtimeCoordinator == null) {
+            return executePlanInternal(userId, planId, traceId, persistConversationSummary,
+                    recoveredControlled).plan();
         }
         AgentSession session = agentService.getOwnedSession(userId, plan.getSessionId());
         ResolvedSkill skill = resolveSkill(userId, plan.getSkillId());
@@ -481,6 +569,7 @@ public class PlanAgentService {
                 AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, policy, null, null, traceId, null, null);
         request = request.withPlanConversationSummaryPersistence(persistConversationSummary);
         if (projectContext != null) request = request.withProjectContext(projectContext);
+        if (recoveredControlled != null) request = recoveredControlled;
         AgentCoordinationResult result = runtimeCoordinator.coordinate(
                 projectContext == null ? AgentCoordinationRequest.trustedPlanApi(request, planId)
                         : AgentCoordinationRequest.trustedProjectPlan(request, planId));
@@ -495,6 +584,12 @@ public class PlanAgentService {
     }
 
     private PlanExecutionResult executePlanInternal(Long userId, Long planId, String traceId, boolean persistConversationSummary) {
+        return executePlanInternal(userId, planId, traceId, persistConversationSummary, null);
+    }
+
+    private PlanExecutionResult executePlanInternal(Long userId, Long planId, String traceId,
+                                                    boolean persistConversationSummary,
+                                                    AgentRuntimeRequest controlledParentRequest) {
         String previousTraceId = MDC.get("traceId");
         MDC.put("traceId", traceId);
         try {
@@ -541,7 +636,8 @@ public class PlanAgentService {
 
                 AgentPlanStep failedStep = firstFailedStep(allSteps);
                 if (failedStep != null) {
-                    if (recoverFailedStep(plan, session, allSteps, failedStep, skill, projectContext)) {
+                    if (controlledParentRequest == null
+                            && recoverFailedStep(plan, session, allSteps, failedStep, skill, projectContext)) {
                         allSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
                         continue;
                     }
@@ -572,7 +668,7 @@ public class PlanAgentService {
                         .limit(MAX_PARALLEL_STEPS)
                         .toList();
                 executeStepBatch(plan, session, allSteps, batch, skill, projectContext, projectManifestSummary,
-                        sharedExecutionState, deadlineAt, traceId);
+                        sharedExecutionState, deadlineAt, traceId, controlledParentRequest);
                 allSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
             }
 
@@ -671,9 +767,10 @@ public class PlanAgentService {
                              ResolvedSkill skill,
                              ProjectRuntimeContext projectContext,
                              String projectManifestSummary,
-                             Map<String, String> sharedExecutionState,
-                             LocalDateTime deadlineAt,
-                             String traceId) {
+                              Map<String, String> sharedExecutionState,
+                              LocalDateTime deadlineAt,
+                              String traceId,
+                              AgentRuntimeRequest controlledParentRequest) {
         recordEvent(plan.getId(), step.getId(), "step_started", Map.of(
                 "stepKey", step.getStepKey(),
                 "title", blankToDefault(step.getTitle(), ""),
@@ -693,6 +790,27 @@ public class PlanAgentService {
                         "error", step.getErrorMessage(),
                         "traceId", traceId
                 ));
+                return;
+            }
+            JsonNode persistedControlled = ProjectPlanEnvelope.restoreControlled(
+                    objectMapper, plan.getRawPlanJson(), plan.getUserId());
+            if (persistedControlled == null && hasControlledEnvelopeMarker(step)) {
+                String error = "Controlled Worker envelope is missing from its persisted Plan.";
+                step.markFailed(error);
+                recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
+                        "stepKey", step.getStepKey(), "error", error, "traceId", traceId));
+                return;
+            }
+            if (persistedControlled != null && !isControlledPlanStep(plan, step, controlledParentRequest)) {
+                String error = "Controlled Worker dispatch is unavailable or does not match its persisted Plan.";
+                step.markFailed(error);
+                recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
+                        "stepKey", step.getStepKey(), "error", error, "traceId", traceId));
+                return;
+            }
+            if (persistedControlled != null) {
+                executeControlledPlanStep(plan, allSteps, step, projectContext, traceId,
+                        attempt + 1, controlledParentRequest);
                 return;
             }
             step.markRunning();
@@ -960,6 +1078,95 @@ public class PlanAgentService {
         }
     }
 
+    private boolean isControlledPlanStep(AgentPlan plan, AgentPlanStep step,
+                                         AgentRuntimeRequest controlledParentRequest) {
+        if (plan == null || step == null || controlledParentRequest == null
+                || controlledParentRequest.controlledWorkerDispatch() == null
+                || !ControlledPlanDispatchEnvelope.STEP_KEY.equals(step.getStepKey())) {
+            return false;
+        }
+        JsonNode envelope = ProjectPlanEnvelope.restoreControlled(objectMapper, plan.getRawPlanJson(), plan.getUserId());
+        if (envelope == null) return false;
+        validateControlledPlanBinding(plan, envelope, controlledParentRequest.controlledWorkerDispatch());
+        return true;
+    }
+
+    private boolean hasControlledEnvelopeMarker(AgentPlanStep step) {
+        return step != null && StringUtils.hasText(step.getSuccessCriteria())
+                && step.getSuccessCriteria().contains(ControlledPlanDispatchEnvelope.DIGEST_PREFIX);
+    }
+
+    private void executeControlledPlanStep(AgentPlan plan,
+                                           List<AgentPlanStep> allSteps,
+                                           AgentPlanStep step,
+                                           ProjectRuntimeContext projectContext,
+                                           String traceId,
+                                           int attempt,
+                                           AgentRuntimeRequest parentRequest) {
+        if (parentRequest == null || parentRequest.controlledWorkerDispatch() == null
+                || controlledWorkerExecutor == null || projectContext == null) {
+            String error = "Controlled Worker dispatch is unavailable for this persisted Plan.";
+            step.markFailed(error);
+            recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
+                    "stepKey", step.getStepKey(), "error", error, "traceId", traceId));
+            return;
+        }
+        step.markRunning();
+        steps.saveAndFlush(step);
+        ProjectRuntimeContext currentContext = revalidateProject(plan.getUserId(), projectContext.projectId());
+        EvidenceLedger inherited = new ProjectEvidenceValidator(projectService).current(
+                plan.getUserId(), currentContext, dependencyEvidence(plan.getId(), allSteps, step));
+        AgentRuntimeRequest executionRequest = parentRequest.withPlanId(plan.getId())
+                .withProjectContext(currentContext)
+                .withInheritedTrustedEvidence(inherited);
+        AgentRuntimeResult result;
+        try {
+            result = controlledWorkerExecutor.executeWithinPlan(executionRequest);
+        } catch (Exception exception) {
+            String error = "Controlled Worker execution failed: "
+                    + abbreviate(blankToDefault(exception.getMessage(), exception.getClass().getSimpleName()), 1200);
+            result = new AgentRuntimeResult(false, null, List.of(), 0, error,
+                    List.of(), List.of(error), null, null, null);
+        }
+        recordToolObservations(plan, step, result, currentContext, traceId, attempt);
+
+        Set<String> assignedPaths = parentRequest.controlledWorkerDispatch().tasks().stream()
+                .flatMap(task -> task.attestation().packet().materialScope().stream())
+                .map(path -> ProjectMaterialScope.normalize(path.value()))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        EvidenceLedger currentControlled = new ProjectEvidenceValidator(projectService).current(
+                plan.getUserId(), currentContext, result.trustedEvidenceLedger(), true);
+        List<EvidenceRef> persistedEvidence = currentControlled.evidence().stream()
+                .filter(ref -> ProjectEvidenceValidator.isControlledWorkerEvidence(ref, currentContext.projectId()))
+                .filter(ref -> ProjectMaterialScope.contains(assignedPaths, ref.file()))
+                .map(ref -> persistedStepEvidence(ref, currentContext, plan, step, attempt))
+                .toList();
+        List<String> evidenceIds = persistedEvidence.stream().map(EvidenceRef::id).toList();
+        String content = StringUtils.hasText(result.assistantContent())
+                ? result.assistantContent() : "Controlled read-only Worker execution produced no synthesis.";
+        if (!evidenceIds.isEmpty()) {
+            content += "\n[projectEvidenceRefs=" + String.join(",", evidenceIds) + "]";
+            recordEvent(plan.getId(), step.getId(), "step_project_evidence", Map.of(
+                    "stepKey", step.getStepKey(), "projectId", currentContext.projectId(),
+                    "evidenceRefs", evidenceIds, "evidence", persistedEvidence, "traceId", traceId));
+        }
+        if (!result.success()) {
+            String error = blankToDefault(result.errorMessage(), "Controlled Worker execution failed.");
+            step.markFailed(error, StringUtils.hasText(result.assistantContent()) ? content : null);
+            recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
+                    "stepKey", step.getStepKey(), "error", abbreviate(error, 1200), "traceId", traceId));
+            return;
+        }
+        String limitation = result.fallbacks().stream().reduce((first, second) -> second)
+                .orElse("Cross-material semantics remain unresolved without a deterministic trusted rule.");
+        step.markDegraded(content, "CONTROLLED_WORKER_PARTIAL: " + abbreviate(limitation, 1200));
+        recordEvent(plan.getId(), step.getId(), "step_degraded_after_controlled_stop", Map.of(
+                "stepKey", step.getStepKey(), "steps", result.steps(),
+                "result", abbreviate(content, 1200), "reason", abbreviate(limitation, 1200),
+                "stopSignal", result.runtimeStopSignal().name(), "controlledWorker", true,
+                "traceId", traceId));
+    }
+
     private void executeStepBatch(AgentPlan plan,
                                   AgentSession session,
                                   List<AgentPlanStep> allSteps,
@@ -969,13 +1176,14 @@ public class PlanAgentService {
                                   String projectManifestSummary,
                                   Map<String, String> sharedExecutionState,
                                   LocalDateTime deadlineAt,
-                                  String traceId) {
+                                  String traceId,
+                                  AgentRuntimeRequest controlledParentRequest) {
         if (batch.isEmpty()) {
             return;
         }
         if (batch.size() == 1) {
             executeStepSafely(plan, session, allSteps, batch.get(0), skill, projectContext,
-                    projectManifestSummary, sharedExecutionState, deadlineAt, traceId);
+                    projectManifestSummary, sharedExecutionState, deadlineAt, traceId, controlledParentRequest);
             return;
         }
 
@@ -991,7 +1199,8 @@ public class PlanAgentService {
             for (AgentPlanStep step : batch) {
                 futures.add(executor.submit(withMdc(parentMdc,
                         () -> executeStepSafely(plan, session, allSteps, step, skill, projectContext,
-                                projectManifestSummary, sharedExecutionState, deadlineAt, traceId))));
+                                projectManifestSummary, sharedExecutionState, deadlineAt, traceId,
+                                controlledParentRequest))));
             }
             for (Future<?> future : futures) {
                 try {
@@ -1043,10 +1252,11 @@ public class PlanAgentService {
                                    String projectManifestSummary,
                                    Map<String, String> sharedExecutionState,
                                    LocalDateTime deadlineAt,
-                                   String traceId) {
+                                   String traceId,
+                                   AgentRuntimeRequest controlledParentRequest) {
         try {
             executeStep(plan, session, allSteps, step, skill, projectContext, projectManifestSummary,
-                    sharedExecutionState, deadlineAt, traceId);
+                    sharedExecutionState, deadlineAt, traceId, controlledParentRequest);
             steps.saveAndFlush(step);
         } catch (Exception ex) {
             String error = "Step worker failed unexpectedly: "
@@ -2247,6 +2457,73 @@ public class PlanAgentService {
 
     private ResolvedSkill resolveSkill(Long userId, String skillId) {
         return !StringUtils.hasText(skillId) ? null : skillsService.resolveEnabledSkill(userId, skillId.trim());
+    }
+
+    private void validatePlanExecutionBoundary(AgentPlan plan, Long userId, String traceId) {
+        restoreProjectContext(plan, userId);
+        JsonNode controlled = ProjectPlanEnvelope.restoreControlled(objectMapper, plan.getRawPlanJson(), userId);
+        boolean persistedControlledMarker = steps.findByPlanIdOrderBySortOrderAsc(plan.getId()).stream()
+                .anyMatch(this::hasControlledEnvelopeMarker);
+        if (controlled == null && persistedControlledMarker) {
+            throw new IllegalStateException("Controlled Worker envelope is missing from its persisted Plan.");
+        }
+        if (controlled != null && restoreControlledExecutionRequest(plan, userId, traceId, true) == null) {
+            throw new IllegalStateException("controlled Plan authority could not be recovered");
+        }
+    }
+
+    private AgentRuntimeRequest restoreControlledExecutionRequest(AgentPlan plan, Long userId, String traceId,
+                                                                   boolean persistConversationSummary) {
+        JsonNode controlled = ProjectPlanEnvelope.restoreControlled(objectMapper, plan.getRawPlanJson(), userId);
+        if (controlled == null) return null;
+        ProjectRuntimeContext context = restoreProjectContext(plan, userId);
+        if (context == null) {
+            throw new IllegalStateException("controlled Plan is missing its Project context");
+        }
+        AgentSession session = agentService.getOwnedSession(userId, plan.getSessionId());
+        ResolvedSkill skill = resolveSkill(userId, plan.getSkillId());
+        UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
+                userId, session.getModelProviderSnapshot(), session.getModelSnapshot());
+        ResolvedToolPolicy currentPolicy = toolPolicyEngine
+                .decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+        AgentRuntimeRequest base = new AgentRuntimeRequest(
+                null, session.getId(), List.of(), userId, plan.getGoal(), endpoint.providerKey(), endpoint.modelName(),
+                null, null, 1, Boolean.TRUE.equals(plan.getRagDisabled()), skill == null ? null : skill.id(),
+                endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(),
+                AgentRuntimeMode.LANGCHAIN4J, AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, currentPolicy,
+                currentPolicy.maxToolCalls(), currentPolicy.maxDuplicateToolCalls(), traceId, null, null,
+                plan.getId(), context, EvidenceLedger.empty(), AgentOrchestrationRequirements.empty(),
+                persistConversationSummary, null);
+        ProjectManifestResponse manifest = projectService.manifest(userId, context.projectId());
+        ControlledPlanDispatchEnvelope.Recovery recovery = ControlledPlanDispatchEnvelope.recover(
+                objectMapper, controlled, base, manifest);
+        AgentRuntimeRequest recovered = recovery.attach(base);
+        validateControlledPlanBinding(plan, controlled, recovered.controlledWorkerDispatch());
+        return recovered;
+    }
+
+    private void validateControlledPlanBinding(AgentPlan plan, JsonNode controlled,
+                                               ControlledWorkerDispatch dispatch) {
+        List<AgentPlanStep> persistedSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
+        if (persistedSteps.size() != 1) {
+            throw new IllegalStateException("controlled Plan must contain exactly one persisted step");
+        }
+        AgentPlanStep step = persistedSteps.get(0);
+        String marker = ControlledPlanDispatchEnvelope.digestMarker(objectMapper, controlled);
+        if (!plan.getId().equals(step.getPlanId())
+                || !ControlledPlanDispatchEnvelope.STEP_KEY.equals(step.getStepKey())
+                || !StringUtils.hasText(step.getSuccessCriteria())
+                || !step.getSuccessCriteria().endsWith(marker)
+                || !readStringList(step.getDependenciesJson()).isEmpty()) {
+            throw new IllegalStateException("controlled Plan step is not bound to its persisted envelope");
+        }
+        List<String> expectedTools = dispatch.tasks().stream()
+                .flatMap(task -> task.attestation().packet().allowedReadTools().stream())
+                .distinct().sorted().toList();
+        List<String> persistedTools = readStringList(step.getAllowedToolsJson()).stream().distinct().sorted().toList();
+        if (!persistedTools.equals(expectedTools)) {
+            throw new IllegalStateException("controlled Plan step tools do not match its persisted envelope");
+        }
     }
 
     private ProjectRuntimeContext restoreProjectContext(AgentPlan plan, Long userId) {

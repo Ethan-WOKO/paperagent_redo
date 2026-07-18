@@ -95,7 +95,8 @@ public class CompletionVerifier {
                             && reflectionAttempts == 0 && domainAllowsRepair(domain), reflectionAttempts, domain);
         }
         if (request.projectContext() != null && requiresProjectFileEvidence(request.userMessage())
-                && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId())) {
+                && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId(),
+                request.controlledWorkerDispatch() != null)) {
             reasons.add("no current authorized Project file evidence for projectId=" + request.projectContext().projectId());
             return decision(CompletionStatus.INSUFFICIENT_EVIDENCE, reasons, ledger,
                     !deterministicMissingTarget
@@ -182,7 +183,8 @@ public class CompletionVerifier {
                 && hasConsistencyDecision
                 && domain.consistencyStatus() == DomainVerification.ConsistencyStatus.UNRESOLVED
                 && request.projectContext() != null
-                && hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId());
+                && hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId(),
+                request.controlledWorkerDispatch() != null);
         boolean governedConsistency = verification.status() == CompletionStatus.VERIFIED && hasConsistencyDecision;
         if (!usefulPartial && !governedUnresolvedPlanPartial && !governedConsistency) return result;
 
@@ -229,7 +231,8 @@ public class CompletionVerifier {
         }
         return request.projectContext() == null
                 || !requiresProjectFileEvidence(request.userMessage())
-                || hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId());
+                || hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId(),
+                request.controlledWorkerDispatch() != null);
     }
 
     private AgentStopReason runtimeStopReason(AgentRuntimeStopSignal signal) {
@@ -246,7 +249,8 @@ public class CompletionVerifier {
             return false;
         }
         return !requiresProjectFileEvidence(request.userMessage())
-                || hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId());
+                || hasCurrentProjectFileEvidence(result.evidenceLedger(), request.projectContext().projectId(),
+                request.controlledWorkerDispatch() != null);
     }
 
     private AgentRuntimeResult controlledPartial(AgentRuntimeResult result,
@@ -326,7 +330,8 @@ public class CompletionVerifier {
         if (request.projectContext() == null) return merge(result.evidenceLedger(), EvidenceLedger.empty());
         EvidenceLedger trusted = merge(collectCurrentProjectEvidence(request, result),
                 merge(request.inheritedTrustedEvidence(), result.trustedEvidenceLedger()));
-        return projectEvidenceValidator.current(request.userId(), request.projectContext(), trusted);
+        return projectEvidenceValidator.current(request.userId(), request.projectContext(), trusted,
+                request.controlledWorkerDispatch() != null);
     }
 
     private EvidenceLedger collectCurrentProjectEvidence(AgentRuntimeRequest request, AgentRuntimeResult result) {
@@ -394,9 +399,13 @@ public class CompletionVerifier {
         }
     }
 
-    private boolean hasCurrentProjectFileEvidence(EvidenceLedger ledger, Long projectId) {
+    private boolean hasCurrentProjectFileEvidence(EvidenceLedger ledger, Long projectId,
+                                                  boolean allowControlledWorkerEvidence) {
         return ledger.evidence().stream().anyMatch(ref -> ref.sourceType() == EvidenceSourceType.PROJECT
-                && !"manifest".equals(ref.file()) && StringUtils.hasText(ref.version()) && ProjectEvidenceValidator.isTrusted(ref));
+                && !"manifest".equals(ref.file()) && StringUtils.hasText(ref.version())
+                && (ProjectEvidenceValidator.isTrusted(ref)
+                || allowControlledWorkerEvidence
+                && ProjectEvidenceValidator.isControlledWorkerEvidence(ref, projectId)));
     }
 
     /**
