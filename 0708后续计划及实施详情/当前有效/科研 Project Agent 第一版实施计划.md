@@ -3,13 +3,13 @@
 > 文档状态：当前执行权威计划
 > 创建日期：2026-07-12
 > 最近同步：2026-07-18
-> 已审查工程基线：`e9998f4`（Worker 10/11、Worker 12A 与 Worker 12B 受控只读 Worker 生产接入）
+> 已审查工程基线：`78a6d0b`（Worker 12 受控双 Worker 真实模型与本地 UI 验收收口）
 > Worker 1 验收基线：`e1f733d`（离线发布门与本地验收矩阵）
 > Worker 2 契约工程基线：`8e274ab`（科研工具与结构化索引纯契约）
 > Worker 3 只读工具工程基线：`1fc1e0f`（五个受治理科研工具与 Evidence 闭环）
-> 当前工程基线：`e9998f4`（一个受控、只读、双 Worker 跨材料执行场景已接入生产 Runtime）
+> 当前工程基线：`78a6d0b`（受控双 Worker 只读场景已完成工程与本地真实验收）
 > Worker 启动基线：以串行任务包中冻结的完整 `HEAD` 为准
-> 当前发布状态：`WORKER_10_11_LOCAL_ACCEPTED / WORKER_12A_CONTRACT_ENGINEERING_ACCEPTED / WORKER_12B_ENGINEERING_ACCEPTED_LOCAL_UI_PENDING`
+> 当前发布状态：`WORKER_10_11_LOCAL_ACCEPTED / WORKER_12_LOCAL_UI_ACCEPTED / WORKER_13_READY_TO_START`
 > 设计依据：《通用 Agent Runtime 设计》《Agent 对比分析与后续改造建议》
 
 > 当前进度：Worker 1 至 Worker 7 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环。Worker 6 基线 `956ce42` 以服务端 manifest 的 portable relative path、文件大小和 SHA-256 内容哈希确定性派生 ProjectVersion，并将 Project Evidence、Plan 持久化 Evidence、Candidate 与 Artifact 绑定到同一版本；旧 Evidence 缺少完整版本、范围或 parser provenance 时保持 fail-closed，不能伪造 VERIFIED。Worker 7A 至 7D 完成长短期记忆治理、受信只读接入、用户确认/拒绝/纠正/删除和双语治理界面。Worker 8A 基线 `d4970cd` 冻结受信 ProjectVersion 沙箱快照、不可变 UTF-8 全文替换 Candidate、base/result hash、EvidenceRefs、审查 diff、预算和 `NOT_APPLIED` 验证契约。Worker 8B 基线 `83c6b56` 将该契约接入服务端受信工作副本：只读取 Candidate 与 Evidence 涉及的文本文件，读取前后对完整 manifest 二次校验，任意未请求文件并发变化也返回 409；Candidate 只能由显式结构化 intent 和当前受信 Evidence ledger 生成，公共 artifact API 不能伪造保留类型，持久化后每次读取都重新物化、证明和验证，始终保持 `NOT_APPLIED`。Worker 8C 基线 `8ff3339` 新增受治理的 `project_propose_candidate` 生产入口，并通过当前轮真实工具结果和服务端 artifact 再认证投影 Candidate；Project 页从真实 API 展示多文件变更、ProjectVersion、指纹、验证状态、review diff 与 Evidence provenance，始终保持 `NOT_APPLIED`。主对话独立验证 Worker 8C 定向后端 66/66、完整 reactor 889 项零失败且 9 项既有条件跳过、前端 3/3、生产构建及 `git diff --check` 通过。Worker 8 不包含真实 Project 写入、命令、外部网络、migration 或自动应用；真实模型生成、多文件展示、409 STALE 和 422 INVALID 仍由用户进行本地 UI 验收。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、多版本历史与导出或安全应用已经完成。
@@ -25,6 +25,8 @@
 > Worker 12A 合同工程进度（2026-07-18）：`7362fde` 定义了受控只读 Worker 的任务包、材料分配、预算、受信服务器 authority/attestation、结果/receipt、Evidence 引用、覆盖率和跨材料差异报告契约；`4a66952` 已将其与 Worker 10/11 验收基线合并。父 Agent 仍是唯一 canonical answer 与写入决策者，Worker 只允许 `READ_ONLY`、当前 ProjectVersion、受信相对路径和原策略 `allowedTools` 的交集，Candidate 继续保持 `NOT_APPLIED`。12A 没有生产 executor、调度接线、Controller、前端、migration、命令、外部网络或自由多 Agent。组合基线完整 reactor 722 项零失败、零错误、8 项条件跳过，前端生产构建和 `git diff --check` 通过。12A 契约现已由 Worker 12B 在一个严格受限场景中接入生产 Runtime。
 
 > Worker 12B 工程进度（2026-07-18）：`e9998f4` 已接入一个由服务器 AUTO 策略触发的论文/LaTeX 与代码/配置双 Worker 只读跨材料场景。它复用既有持久化 Plan 生命周期、run identity、事件、Evidence 与 canonical answer，不创建第二套生命周期；显式相对路径优先，并与当前 manifest、ProjectVersion、原始 `allowedTools` 和任务预算求交。Worker 结果作为 `UNTRUSTED_WORKER_DATA` 交给父 Agent，不能通过提示文本提升权限或伪造 applied/VERIFIED；只有父 Agent 生成 canonical answer，Candidate 继续为 `NOT_APPLIED`。受控 dispatch 使用现有 `AgentPlan.rawPlanJson` 持久化非敏感 envelope，使 execute/retry/restart/async 路径在重新校验用户、Project、版本、哈希、工具和预算后恢复；缺失、篡改、STALE 或工具撤销均 fail-closed。主对话两轮 P1 复审修正了 Plan 持久化绕过、Worker 摘要信任边界和仅内存 dispatch 恢复问题；独立完整 reactor 共 1046 项，零失败、零错误、9 项条件跳过，前端生产构建与 `git diff --check` 通过。该状态是工程验收，不表示用户真实模型或本地 UI 验收完成，也不表示已开放通用自由多 Agent、写入、命令、网络、沙箱或 Pro 权限。
+
+> Worker 12 本地验收收口（2026-07-18）：用户已确认 Worker 12 验收完成，收口提交为 `78a6d0b`。真实 Project 会话 107、Plan 60 以 `COMPLETED / PARTIAL` 完成；AUTO 只调度 `paper_injection.tex` 的 `project_latex_outline` 与 `implementation.py` 的 `project_code_symbols`，未访问明确禁止的第三个文件。父合成保持 `allowedTools=[]`、`maxToolCalls=0`、`maxSteps=1`，语义一致性维持 `UNRESOLVED/PARTIAL`，Candidate 为 0，ProjectVersion 未改变，6 条 Evidence 均为 CURRENT；刷新后会话、Plan、Evidence 与 canonical answer 从后端恢复。验收修复还补齐服务器 token 预算、受控 Plan 精确工具持久化、父 Agent canonical answer 文案、Project 会话 URL 恢复和 Project 文件名 Markdown 误链接。主对话独立复跑后端定向 21/21、前端 15/15、完整 reactor 1048 项零失败零错误且 9 项条件跳过、前端生产构建与 `git diff --check`，均通过。该结论仅表示 Worker 12 的受控只读场景完成本地验收，不等于自由多 Agent、完整科研 Project 或 Pro 模式验收完成。
 
 ## 1. 目标与边界
 
@@ -364,7 +366,7 @@ stopConditions
 current baseline:
 
 ```text
-1d488f0
+78a6d0b
 ```
 
 任何前序 Worker 的变更必须先完成主对话复审并提交，才能成为下一 Worker 的基线。
@@ -524,7 +526,7 @@ Worker 开发
 
 ### Worker 12B：受控双 Worker 只读生产接入
 
-状态：`ENGINEERING_ACCEPTED / LOCAL_UI_PENDING`
+状态：`LOCAL_UI_ACCEPTED`
 
 - 仅对服务器受信 AUTO 策略识别出的论文/LaTeX 与代码/配置跨材料请求启用，固定最多两个 Worker；普通 Direct/ReAct/Plan、显式策略和已有 planId 路径保持原语义。
 - 调度器使用当前 ProjectVersion、manifest、文件哈希/大小、portable relative path、父任务只读工具策略与预算生成两个精确任务。论文 Worker 只允许 `project_latex_outline`；代码/配置 Worker 只允许 `project_code_symbols` 和按材料需要的 `project_experiment_summary`。
@@ -534,7 +536,24 @@ Worker 开发
 - Worker 自然语言摘要始终作为 `UNTRUSTED_WORKER_DATA` 注入父 Agent 用户数据区；固定系统策略只信任服务器重新验证的 ProjectVersion、路径、哈希、范围、parser 与 execution receipt。Worker 文本不能改变工具策略、声称已应用 Candidate 或把一般科研语义提升为 VERIFIED。
 - 父 Agent 是唯一 canonical answer 写入者。Evidence 必须重新通过当前版本、文件哈希、范围、parser 与 provenance 校验；一般论文/代码语义差异继续保持 `UNRESOLVED/PARTIAL`，Candidate 继续保持 `NOT_APPLIED`。
 - 主对话独立验证：`mvn -o -pl yanban-api -am test` 完整 reactor 共 1046 项，零失败、零错误、9 项条件跳过，其中 core 104、knowledge 34、paper 147、mcp 3、skills 1、api 757；前端 `npm run build` 和 `git diff --check` 通过。实现提交为 `e9998f4`。
-- 尚待用户使用真实 Project、真实模型和本地 UI 验收受控双 Worker 的触发、Plan 展示、Evidence/PARTIAL、预算终止、错误提示与历史恢复。验收前不得宣称通用多 Agent 已完成。
+- 2026-07-18 用户本地真实验收通过：AUTO 触发、双 Worker 精确路径和工具、父 Agent canonical answer、Evidence/PARTIAL、预算终止、错误边界与刷新恢复均已覆盖；收口提交为 `78a6d0b`。该结论不扩展到通用多 Agent。
+
+### Worker 13：L2 持久化 Task Run、checkpoint 与重启恢复
+
+状态：`READY_TO_START`
+
+启动代码基线：`78a6d0b`；实际 Worker 冻结基线以包含本任务包的完整 `HEAD` 为准。
+
+- 目标：将受治理的 Project Plan/受控 Worker 长任务从当前 L0/L1 边界提升为可重启恢复的 L2 托管，覆盖持久化 claim lease、heartbeat、checkpoint、幂等恢复、超时/卡死回收和确定性终态；前端断开或服务重启不能制造重复执行、重复 canonical answer 或权限扩张。
+- 第一阶段仅接入现有 Project Plan 与 Worker 12 受控只读 Plan。普通同步 Chat/ReAct、Paper/Literature 业务任务和 Candidate 应用不在本 Worker 内迁移为新执行器；不得创建第二套 Plan、run、Evidence 或 canonical answer 生命周期。
+- checkpoint 只保存服务端可重建、可审计的结构化状态：trusted user/project/session/plan identity、ProjectVersion、步骤与依赖、预算消耗、工具执行 receipt、版本化 Evidence 引用、失败/取消信息和剩余工作。不得保存 API key、模型内部对象、思维链、绝对路径、未净化文件内容或可伪造的 VERIFIED 状态。
+- 恢复时必须重新校验用户与 Project 所有权、当前 ProjectVersion、文件 hash、Plan/envelope 完整性、当前 tool policy、剩余预算和取消状态；STALE、工具撤销、版本不符、lease 冲突、checkpoint 篡改或无法确定副作用时一律 fail-closed。
+- lease/heartbeat 必须使用数据库时间和原子 compare-and-set/悲观锁语义；同一 run 同时最多一个 owner。过期 lease 可被受信实例重新认领，未过期 lease、终态 run 和已取消 run 不得被抢占或重复执行。
+- 恢复只能从明确 checkpoint 边界继续。已登记且幂等的只读工具结果可以复用；未知完成状态不得猜测成功，必须标记需要安全重试或明确失败。canonical answer 只能写入一次，事件、Evidence 与步骤结果需可幂等重放。
+- 允许文件所有权：`yanban-core` 的 Agent Task/Run 持久化模型与仓储、`yanban-api` 的 Agent lifecycle/Plan/受控 Worker L2 适配、必要的 Flyway V35 与 H2 镜像、对应测试和本计划文档。禁止修改 frontend、Project revision/Candidate 应用、Paper/Literature 生产业务、工具权限、外部网络、MCP、命令执行和 Pro 模式。
+- migration 若确有必要，只允许新增向后兼容的 lease/checkpoint/recovery 字段与索引；不得删除、重命名或重写已有任务、Plan、事件和 Project 数据。必须同时提供 MySQL/H2 迁移验证、旧行默认语义和回滚/兼容说明。
+- 必测矩阵：单实例 claim/renew/release、并发 claim 恰有一个成功、lease 过期重认领、服务重启恢复、checkpoint 篡改/缺失/STALE/跨用户/跨 Project fail-closed、取消与恢复竞争、预算不扩张、工具撤销、已完成步骤不重复、canonical answer exactly-once、事件/Evidence 幂等、Worker 12 retry/restart/async 回归及完整 reactor。
+- 停止条件：需要开放写文件、命令、网络、密钥、真实模型依赖或跨模块大规模迁移；无法证明已有工具调用是否产生副作用；需要改变 Worker 10-12 的策略/工具/Evidence/Candidate 安全契约；或发现当前工作区存在另一开发 Worker。
 
 ## 16. 审查与停止条件
 
