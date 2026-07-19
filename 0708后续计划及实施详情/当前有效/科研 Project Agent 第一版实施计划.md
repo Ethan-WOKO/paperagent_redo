@@ -540,7 +540,7 @@ Worker 开发
 
 ### Worker 13：L2 持久化 Task Run、checkpoint 与重启恢复
 
-状态：`ENGINEERING_ACCEPTED / LOCAL_ACCEPTANCE_PENDING`
+状态：`LOCAL_ACCEPTED / WORKER_14_READY`
 
 启动代码基线：`78a6d0b`；本次实际 Worker 冻结 baseline/HEAD 为 `5e1fad64907fe24fe9acfa79bbde4035af43e906`。
 
@@ -564,6 +564,7 @@ Worker 开发
 - 2026-07-19 P1 收口在每次 L2 step/batch dispatch 前，按持久化受信 `step_tool_observation` receipt 重新计算原始总工具预算并收紧当前策略；预算耗尽时在 runtime/受控 Worker 前 fail-closed，L2 batch 串行分配该全局预算。耗尽尝试的 durable retry 在 retry boundary 以确定性冲突拒绝，不重置尝试次数或进入 240 秒空转。
 - 恢复 claim 后重新校验 session、Project、skill/tool policy、受控 envelope、模型端点、manifest 与 checkpoint；永久身份/权限失效通过当前 fence 终止为 `FAILED/RECOVERY_REJECTED`，数据库/HTTP 5xx 等瞬时基础设施错误仍释放为 `INTERRUPTED` 等待过期 lease 重排。Run/Workspace 的 L2 能力仅来自服务端持久化 `L2_DURABLE` 元数据，历史 AGENT_PLAN 行投影为 `L1_PERSISTED` 且不可 checkpoint/restart，不再依据 `projectId` 推断。
 - 验证结果：P1 与 Worker 12/Plan 回归聚焦套件 106/106；`mvn -o -pl yanban-api -am test` 最终完整 reactor 1079 项、零失败、零错误、9 项条件跳过（core 111、knowledge 34、paper 147、mcp 3、skills 1、api 783）。生产 MySQL V35 未连接真实数据库执行，H2 从 V1 到 V35 的镜像迁移已通过；最终 `git diff --check` 通过。
+- 2026-07-19 用户可见本地重启验收通过：在专用只读 Project `#36`、session `#111` 上由 UI 创建 `planId=61`，停机前为 `RUNNING/L2_DURABLE/CHECKPOINTED`、fence `1`、checkpoint version `2`；后端在有效 lease 内停止，lease 过期后新实例以不同 owner、fence `2` 重认领同一 plan，并完成为 `COMPLETED`。终态仅有 1 个 `plan_completed`、1 个 `step_project_evidence`、1 个 canonical answer hash，事件幂等键无重复，Candidate 保持 `NOT_APPLIED`；checkpoint 哈希匹配且敏感/绝对路径/思维链/伪造 VERIFIED 模式未命中。Worker 13 定向负向矩阵 25/25、完整离线 reactor 1079 项零失败零错误（9 项条件跳过：knowledge 1、api 8）通过；本地启动实际验证了生产 MySQL V35 从 34 到 35 的向后兼容新增迁移。状态更新为 `LOCAL_ACCEPTED / WORKER_14_READY`，但未启动 Worker 14。
 
 ## 16. 审查与停止条件
 
