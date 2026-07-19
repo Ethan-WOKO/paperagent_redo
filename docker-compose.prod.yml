@@ -16,6 +16,8 @@ services:
       - --default-time-zone=+08:00
     volumes:
       - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:${YANBAN_SANDBOX_MYSQL_HOST_PORT:-13306}:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
@@ -128,6 +130,9 @@ services:
       YANBAN_ES_ENDPOINT: http://elasticsearch:9200
       YANBAN_MINIO_ENDPOINT: http://minio:9000
       YANBAN_MINIO_SECURE: "false"
+      YANBAN_SANDBOX_BROKER_URL: ${YANBAN_SANDBOX_BROKER_URL:-https://host.docker.internal:8443}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       mysql:
         condition: service_healthy

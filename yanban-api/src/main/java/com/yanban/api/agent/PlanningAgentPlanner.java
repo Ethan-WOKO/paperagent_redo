@@ -202,7 +202,7 @@ public class PlanningAgentPlanner {
                 Your job is to decompose a user task into an executable DAG plan. Do not execute the task.
                 Return one JSON object only. Do not include Markdown fences, explanations, or extra text.
 
-                Allowed step types: FILE_READ, FILE_WRITE, COMMAND, ANALYSIS, VERIFICATION, RAG, MCP, PAPER, TOOL.
+                Allowed step types: FILE_READ, FILE_WRITE, COMMAND, ANALYSIS, VERIFICATION, RAG, MCP, PAPER, TOOL, SANDBOX_EXECUTE.
 
                 Output JSON schema:
                 {
@@ -236,6 +236,10 @@ public class PlanningAgentPlanner {
                 11. Search and audit success criteria must require reporting the governed result, including an explicit
                     zero-match outcome; never require the data to contain a positive match that may not exist. Require
                     file paths and line numbers for actual matches only, never for a zero-match outcome.
+                12. Use SANDBOX_EXECUTE only when sandbox_execute appears in the resolved allowlist and the task explicitly
+                    requires a code build or test. Include exact Project-relative input paths in the description. The server,
+                    not this plan, selects the command profile and resources. Such a Plan always requires a later explicit
+                    execution confirmation and can never auto-execute.
 
                 Tools exposed to this plan:
                 """)

@@ -15,6 +15,7 @@
     <name>yanban-api</name>
 
     <dependencies>
+        <dependency><groupId>com.yanban</groupId><artifactId>yanban-sandbox-contract</artifactId><version>${project.version}</version></dependency>
         <dependency>
             <groupId>com.yanban</groupId>
             <artifactId>yanban-core</artifactId>

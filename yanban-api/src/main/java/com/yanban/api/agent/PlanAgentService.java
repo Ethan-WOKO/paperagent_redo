@@ -11,6 +11,8 @@ import com.yanban.api.agent.worker.ControlledWorkerDispatch;
 import com.yanban.api.project.ProjectFileEntry;
 import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
+import com.yanban.api.agent.sandbox.SandboxExecutionOutboxService;
+import com.yanban.api.agent.sandbox.SandboxExecutionProperties;
 import com.yanban.api.settings.UserSettingsService;
 import com.yanban.api.skills.ResolvedSkill;
 import com.yanban.api.skills.SkillsService;
@@ -45,10 +47,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -95,8 +100,17 @@ public class PlanAgentService {
     private final ControlledReadOnlyWorkerRuntimeAdapter controlledWorkerExecutor;
     private final AgentPlanRunLeaseService runLeases;
     private final AgentPlanCheckpointService checkpoints;
-    private final ExecutorService planExecutor = Executors.newFixedThreadPool(PLAN_EXECUTOR_THREADS);
-    private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+    @Autowired(required = false)
+    private SandboxExecutionOutboxService sandboxOutbox;
+    @Autowired(required = false)
+    private SandboxExecutionProperties sandboxProperties;
+    @Autowired(required = false)
+    private com.yanban.api.agent.sandbox.SandboxCapabilityPolicyResolver sandboxCapabilityPolicy;
+    private final ExecutorService planExecutor = Executors.newFixedThreadPool(
+            PLAN_EXECUTOR_THREADS, daemonThreadFactory("yanban-plan-executor-"));
+    private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(
+            daemonThreadFactory("yanban-plan-heartbeat-"));
+    private final AtomicBoolean shuttingDown = new AtomicBoolean();
     private final InheritableThreadLocal<AgentPlanExecutionLease> executionLease = new InheritableThreadLocal<>();
     private final String executionOwner = "plan-service-" + UUID.randomUUID();
 
@@ -201,8 +215,9 @@ public class PlanAgentService {
 
     @PreDestroy
     void shutdownPlanExecutor() {
-        planExecutor.shutdownNow();
-        heartbeatExecutor.shutdownNow();
+        shuttingDown.set(true);
+        shutdownExecutor(heartbeatExecutor);
+        shutdownExecutor(planExecutor);
     }
 
     @Transactional
@@ -232,7 +247,7 @@ public class PlanAgentService {
                     blankToDefault(coordination.runtimeResult().errorMessage(), "Planner did not create an executable plan."));
         }
         AgentPlanResponse created = getPlan(userId, createdPlanId);
-        return Boolean.TRUE.equals(request.autoExecute()) ? executePlanAsync(userId, createdPlanId) : created;
+        return Boolean.TRUE.equals(request.autoExecute()) && !containsSandboxStep(createdPlanId) ? executePlanAsync(userId, createdPlanId) : created;
     }
 
     /** Only the authenticated Project facade calls this; no caller-supplied evidence is trusted. */
@@ -250,7 +265,7 @@ public class PlanAgentService {
         AgentRuntimeRequest runtimeRequest = new AgentRuntimeRequest(null, sessionId, List.of(), userId, request.content(),
                 endpoint.providerKey(), endpoint.modelName(), null, null, 1, ragDisabled, skill == null ? null : skill.id(),
                 endpoint.apiKey(), endpoint.apiUrl(), skill == null ? null : skill.prompt(), AgentRuntimeMode.LANGCHAIN4J,
-                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved(),
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, resolveCurrentProjectToolPolicy(skill),
                 null, null, traceId, null, null).withProjectContext(context);
         log.info("Project Plan runtime resolved traceId={} userId={} projectId={} sessionId={} provider={} model={} allowedTools={}",
                 traceId, userId, projectId, sessionId, endpoint.providerKey(), endpoint.modelName(),
@@ -274,7 +289,7 @@ public class PlanAgentService {
         AgentPlanResponse created = getPlan(userId, runtimeResult.planId());
         log.info("Project Plan created traceId={} userId={} projectId={} sessionId={} planId={} autoExecute={}",
                 traceId, userId, projectId, sessionId, created.id(), request.autoExecute());
-        return Boolean.TRUE.equals(request.autoExecute()) ? executePlanAsync(userId, created.id()) : created;
+        return Boolean.TRUE.equals(request.autoExecute()) && !containsSandboxStep(created.id()) ? executePlanAsync(userId, created.id()) : created;
     }
 
     /** Called only by {@link PlanRuntimeAdapter} after trusted Coordinator selection. */
@@ -323,8 +338,9 @@ public class PlanAgentService {
         ResolvedSkill skill = resolveSkill(userId, request.skillId());
         ResolvedToolPolicy planToolPolicy = projectContext == null
                 ? resolvePlanToolPolicy(request.content(), ragDisabled, skill)
-                : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+                : resolveCurrentProjectToolPolicy(skill);
         planToolPolicy = constrainToRuntimePolicy(planToolPolicy, runtimePolicyCeiling);
+        if (projectContext != null) planToolPolicy = resolveSandboxCapability(planToolPolicy, skill);
         PlanningAgentPlanner.PlanSpec spec;
         JsonNode controlledEnvelope = null;
         if (controlledDispatch != null) {
@@ -570,7 +586,16 @@ public class PlanAgentService {
     }
 
     void submitAsyncExecutionTask(Long userId, Long planId, String traceId) {
-        planExecutor.submit(() -> runPlanAsyncWorker(userId, planId, traceId));
+        if (shuttingDown.get()) {
+            return;
+        }
+        try {
+            planExecutor.submit(() -> runPlanAsyncWorker(userId, planId, traceId));
+        } catch (RejectedExecutionException ex) {
+            if (!shuttingDown.get()) {
+                throw ex;
+            }
+        }
     }
 
     public AgentPlanResponse executePlan(Long userId, Long planId) {
@@ -640,7 +665,7 @@ public class PlanAgentService {
         ProjectRuntimeContext projectContext = restoreProjectContext(plan, userId);
         ResolvedToolPolicy policy = projectContext == null
                 ? resolvePlanToolPolicy(plan.getGoal(), Boolean.TRUE.equals(plan.getRagDisabled()), skill)
-                : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+                : resolveCurrentProjectToolPolicy(skill);
         AgentRuntimeRequest request = new AgentRuntimeRequest(
                 null, session.getId(), List.of(), userId, plan.getGoal(), endpoint.providerKey(), endpoint.modelName(),
                 null, null, 1, Boolean.TRUE.equals(plan.getRagDisabled()), skill == null ? null : skill.id(),
@@ -720,7 +745,8 @@ public class PlanAgentService {
                 checkpointPolicy = projectContext == null ? null
                         : controlledParentRequest != null && controlledParentRequest.toolPolicy() != null
                         ? controlledParentRequest.toolPolicy()
-                        : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+                        : resolveCurrentProjectToolPolicy(skill);
+                if (projectContext != null) checkpointPolicy = resolveSandboxCapability(checkpointPolicy, skill);
                 checkpointCeiling = projectContext == null ? null : checkpointCeiling(plan, checkpointPolicy);
                 validatedManifest = projectContext == null ? null
                         : projectService.manifest(userId, projectContext.projectId());
@@ -838,6 +864,9 @@ public class PlanAgentService {
                     persistPlan(plan);
                     recordEvent(plan.getId(), null, "plan_completed", completionEvent);
                 }
+            } else if (awaitingSandbox(plan.getId(), allSteps)) {
+                recordEvent(plan.getId(), null, "plan_waiting_for_sandbox", Map.of("traceId", traceId));
+                persistPlan(plan);
             } else {
                 plan.markFailed("Plan cannot continue because dependencies or steps remain incomplete.");
                 Map<String, Object> verificationEvent = Map.of(
@@ -902,6 +931,7 @@ public class PlanAgentService {
                 plan.markCancelled("User cancelled plan.");
                 persistPlan(plan);
             }
+            if (sandboxEnabled() && sandboxOutbox != null) sandboxOutbox.requestCancellation(planId, userId);
             recordEvent(plan.getId(), null, "plan_cancelled", Map.of("reason", "User cancelled plan."));
         }
         return toResponse(plan, steps.findByPlanIdOrderBySortOrderAsc(plan.getId()));
@@ -1011,6 +1041,10 @@ public class PlanAgentService {
                     plan, step, resolveRuntimeToolPolicy(step, plan, skill, projectContext),
                     checkpointCeiling, traceId);
             if (runtimeToolPolicy == null) return;
+            if ("SANDBOX_EXECUTE".equals(step.getType())) {
+                executeSandboxPlanStep(plan, step, runtimeToolPolicy, checkpointCeiling, requiredMaterialPaths, traceId);
+                return;
+            }
             step.markRunning();
             persistStep(step);
             UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
@@ -1405,7 +1439,8 @@ public class PlanAgentService {
                 "parallelism", Math.min(batch.size(), MAX_PARALLEL_STEPS),
                 "traceId", traceId
         ));
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batch.size(), MAX_PARALLEL_STEPS));
+        ExecutorService executor = Executors.newFixedThreadPool(
+                Math.min(batch.size(), MAX_PARALLEL_STEPS), daemonThreadFactory("yanban-plan-step-"));
         Map<String, String> parentMdc = MDC.getCopyOfContextMap();
         try {
             List<Future<?>> futures = new ArrayList<>();
@@ -1428,12 +1463,32 @@ public class PlanAgentService {
                 }
             }
         } finally {
-            executor.shutdown();
+            shutdownExecutor(executor);
         }
         recordEvent(plan.getId(), null, "step_batch_completed", Map.of(
                 "stepKeys", batch.stream().map(AgentPlanStep::getStepKey).toList(),
                 "traceId", traceId
         ));
+    }
+
+    private static ThreadFactory daemonThreadFactory(String prefix) {
+        AtomicInteger sequence = new AtomicInteger();
+        return runnable -> {
+            Thread thread = new Thread(runnable, prefix + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private static void shutdownExecutor(ExecutorService executor) {
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("Plan executor did not terminate within the shutdown boundary");
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private Runnable withMdc(Map<String, String> parentMdc, Runnable delegate) {
@@ -2014,6 +2069,9 @@ public class PlanAgentService {
     private List<String> resolvePersistedStepAllowedTools(PlanningAgentPlanner.StepSpec step,
                                                           ResolvedToolPolicy inheritedPolicy,
                                                           boolean projectPlan) {
+        if (sandboxEnabled() && "SANDBOX_EXECUTE".equals(step.type())
+                && step.allowedTools()!=null && step.allowedTools().contains(SandboxPlanAuthorityResolver.TOOL_NAME))
+            return List.of(SandboxPlanAuthorityResolver.TOOL_NAME);
         return resolvePersistedStepAllowedTools(
                 step.allowedTools(), step.title(), step.description(), step.type(), step.successCriteria(),
                 step.dependencies(), inheritedPolicy, projectPlan);
@@ -2158,9 +2216,13 @@ public class PlanAgentService {
                                                          ProjectRuntimeContext projectContext) {
         ResolvedToolPolicy inheritedPolicy = projectContext == null ? resolvePlanToolPolicy(
                 plan.getGoal(), Boolean.TRUE.equals(plan.getRagDisabled()), skill)
-                : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+                : resolveCurrentProjectToolPolicy(skill);
         if (projectContext != null) {
             List<String> stepAllowed = readStringList(step.getAllowedToolsJson());
+            inheritedPolicy = resolveSandboxCapability(inheritedPolicy, skill);
+            if (sandboxCapabilityPolicy != null && sandboxCapabilityPolicy.currentlyAllows(inheritedPolicy)
+                    && "SANDBOX_EXECUTE".equals(step.getType()) && stepAllowed.contains(SandboxPlanAuthorityResolver.TOOL_NAME))
+                return new ResolvedToolPolicy(List.of(SandboxPlanAuthorityResolver.TOOL_NAME),1,1,"explicit_governed_sandbox_step");
             List<String> allowed = StringUtils.hasText(step.getAllowedToolsJson())
                     ? resolvePersistedAllowedTools(stepAllowed, inheritedPolicy)
                     : inheritedPolicy.allowedTools();
@@ -2178,6 +2240,16 @@ public class PlanAgentService {
         return inheritedPolicy;
     }
 
+    private boolean sandboxEnabled(){return sandboxProperties!=null&&sandboxProperties.isEnabled();}
+    private ResolvedToolPolicy resolveSandboxCapability(ResolvedToolPolicy policy,ResolvedSkill skill){return sandboxCapabilityPolicy==null?policy:sandboxCapabilityPolicy.resolve(policy,skill);}
+    private ResolvedToolPolicy resolveCurrentProjectToolPolicy(ResolvedSkill skill){
+        if(toolPolicyEngine==null)throw new IllegalStateException("current Project tool policy is unavailable");
+        AgentToolPolicyEngine.Decision decision=toolPolicyEngine.decideProject(skill==null?null:skill.allowedTools(),null);
+        if(decision==null||decision.resolved()==null)throw new IllegalStateException("current Project tool policy is unavailable");
+        return decision.resolved();
+    }
+    private boolean containsSandboxStep(Long planId){return steps.findByPlanIdOrderBySortOrderAsc(planId).stream().anyMatch(step->"SANDBOX_EXECUTE".equals(step.getType()));}
+
     /** A recovery plan may reuse, but never widen, the persisted Plan's original tool ceiling. */
     private ResolvedToolPolicy resolveRepairToolPolicy(AgentPlan plan,
                                                        List<AgentPlanStep> allSteps,
@@ -2185,7 +2257,7 @@ public class PlanAgentService {
                                                        ProjectRuntimeContext projectContext) {
         ResolvedToolPolicy currentPolicy = projectContext == null
                 ? resolvePlanToolPolicy(plan.getGoal(), Boolean.TRUE.equals(plan.getRagDisabled()), skill)
-                : toolPolicyEngine.decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+                : resolveCurrentProjectToolPolicy(skill);
         if (allSteps == null || allSteps.stream()
                 .anyMatch(step -> step == null || !StringUtils.hasText(step.getAllowedToolsJson()))) {
             return new ResolvedToolPolicy(List.of(), currentPolicy.maxToolCalls(),
@@ -2704,8 +2776,7 @@ public class PlanAgentService {
         ResolvedSkill skill = resolveSkill(userId, plan.getSkillId());
         UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
                 userId, session.getModelProviderSnapshot(), session.getModelSnapshot());
-        ResolvedToolPolicy currentPolicy = toolPolicyEngine
-                .decideProject(skill == null ? null : skill.allowedTools(), null).resolved();
+        ResolvedToolPolicy currentPolicy = resolveCurrentProjectToolPolicy(skill);
         AgentRuntimeRequest base = new AgentRuntimeRequest(
                 AgentStrategy.PLAN_EXECUTE, session.getId(), List.of(), userId, plan.getGoal(),
                 endpoint.providerKey(), endpoint.modelName(),
@@ -3111,6 +3182,8 @@ public class PlanAgentService {
         for (AgentPlanStep step : steps.findByPlanIdOrderBySortOrderAsc(plan.getId())) {
             if (!AgentPlanStepStatus.RUNNING.name().equals(step.getStatus())
                     && !AgentPlanStepStatus.REPAIRING.name().equals(step.getStatus())) continue;
+            if (sandboxOutbox != null && "SANDBOX_EXECUTE".equals(step.getType())
+                    && sandboxOutbox.isAwaiting(plan.getId(), step.getId())) continue;
             if (Math.max(0, step.getAttemptCount()) < MAX_STEP_ATTEMPTS) {
                 step.prepareForRecoveryRetry();
                 persistStep(step);
@@ -3125,6 +3198,33 @@ public class PlanAgentService {
                         "traceId", traceId));
             }
         }
+    }
+
+    private void executeSandboxPlanStep(AgentPlan plan, AgentPlanStep step, ResolvedToolPolicy policy,
+                                        AgentPlanCheckpointService.BudgetCeiling ceiling,
+                                        Set<String> relativePaths, String traceId) {
+        if (sandboxOutbox == null || currentExecutionLease() == null
+                || !policy.allowedTools().contains(SandboxPlanAuthorityResolver.TOOL_NAME)
+                || relativePaths == null || relativePaths.isEmpty()) {
+            step.markFailed("SANDBOX_UNAVAILABLE: governed sandbox dispatch is not available.");
+            persistStep(step);
+            return;
+        }
+        step.markRunning();
+        persistStep(step);
+        String key = "plan-" + plan.getId() + "-step-" + step.getId();
+        SandboxExecutionOutboxService.Claim claim = sandboxOutbox.claim(currentExecutionLease(), step.getId(), policy,
+                ceiling, key, relativePaths, List.of("mvn", "-o", "test"));
+        recordEvent(plan.getId(), step.getId(), "sandbox_execution_dispatched", Map.of(
+                "executionId", claim.executionId(), "requestDigest", claim.requestDigest(),
+                "candidateApplicationStatus", "NOT_APPLIED", "traceId", traceId));
+    }
+
+    private boolean awaitingSandbox(Long planId, List<AgentPlanStep> planSteps) {
+        if (sandboxOutbox == null) return false;
+        for (AgentPlanStep step : planSteps) if ("SANDBOX_EXECUTE".equals(step.getType())
+                && sandboxOutbox.isAwaiting(planId, step.getId())) return true;
+        return false;
     }
 
     private LeaseHeartbeat startHeartbeat(AgentPlanExecutionLease lease, LocalDateTime startedAt) {
@@ -3154,12 +3254,27 @@ public class PlanAgentService {
     @EventListener(ApplicationReadyEvent.class)
     @Scheduled(fixedDelayString = "${yanban.agent.plan-recovery.scan-ms:15000}")
     void recoverExpiredDurablePlans() {
+        recoverExpiredDurablePlans((userId, planId, traceId) -> scheduleAsyncExecution(userId, planId, traceId));
+    }
+
+    /** Synchronous entry for deterministic recovery verification; it runs the same scan and execution implementation. */
+    void recoverExpiredDurablePlansSynchronously() {
+        recoverExpiredDurablePlans((userId, planId, traceId) ->
+                executePlanInternal(userId, planId, traceId, false));
+    }
+
+    private void recoverExpiredDurablePlans(RecoveryDispatch dispatch) {
         if (runLeases == null) return;
         for (AgentPlanRunLeaseService.RecoverableRun run : runLeases.expiredRuns()) {
             String traceId = "plan-" + run.planId() + "-restart-" + UUID.randomUUID().toString().substring(0, 8);
             recordEvent(run.planId(), null, "plan_restart_recovery_queued", Map.of("traceId", traceId));
-            scheduleAsyncExecution(run.userId(), run.planId(), traceId);
+            dispatch.execute(run.userId(), run.planId(), traceId);
         }
+    }
+
+    @FunctionalInterface
+    private interface RecoveryDispatch {
+        void execute(Long userId, Long planId, String traceId);
     }
 
     private record LeaseHeartbeat(AtomicBoolean active, ScheduledFuture<?> future) { }

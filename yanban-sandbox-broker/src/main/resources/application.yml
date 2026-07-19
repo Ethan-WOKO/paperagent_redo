@@ -1,0 +1,35 @@
+server:
+  port: ${YANBAN_SANDBOX_BROKER_PORT:8091}
+  address: ${YANBAN_SANDBOX_BROKER_ADDRESS:127.0.0.1}
+  max-http-request-header-size: 16KB
+spring:
+  application:
+    name: yanban-sandbox-broker
+  datasource:
+    url: ${YANBAN_SANDBOX_DB_URL:jdbc:mysql://mysql:3306/yanban_sandbox?useSSL=false&serverTimezone=UTC}
+    username: ${YANBAN_SANDBOX_DB_USER:yanban_sandbox}
+    password: ${YANBAN_SANDBOX_DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: ${YANBAN_SANDBOX_BROKER_ENABLED:false}
+  servlet:
+    multipart:
+      enabled: false
+server.tomcat.max-http-form-post-size: 22MB
+yanban:
+  broker:
+    enabled: ${YANBAN_SANDBOX_BROKER_ENABLED:false}
+    sbx-executable: ${YANBAN_SBX_EXECUTABLE:}
+    workspace-root: ${YANBAN_SANDBOX_WORKSPACE_ROOT:}
+    bearer-token: ${YANBAN_SANDBOX_BROKER_TOKEN:}
+    expected-user: ${YANBAN_SANDBOX_BROKER_USER:yanban-sandbox}
+    remote-access: ${YANBAN_SANDBOX_BROKER_REMOTE:false}
+    tls-terminated: ${YANBAN_SANDBOX_BROKER_TLS_TERMINATED:false}
+    mode: ${YANBAN_SANDBOX_BROKER_MODE:PRODUCTION}
+    bind-address: ${YANBAN_SANDBOX_BROKER_ADDRESS:127.0.0.1}
+    provider-home: ${YANBAN_SBX_HOME:}
+    provider-config-home: ${YANBAN_SBX_CONFIG_HOME:}
+    provider-data-home: ${YANBAN_SBX_DATA_HOME:}
+    provider-state-home: ${YANBAN_SBX_STATE_HOME:}

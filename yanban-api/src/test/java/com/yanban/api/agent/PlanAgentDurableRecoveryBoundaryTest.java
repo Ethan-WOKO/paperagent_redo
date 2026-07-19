@@ -102,6 +102,23 @@ class PlanAgentDurableRecoveryBoundaryTest {
     }
 
     @Test
+    void nullCurrentProjectPolicyFailsClosedDuringRecoveryWithoutRuntimeDispatch() {
+        fixture = new Fixture();
+        fixture.step("sandbox", "[\"sandbox_execute\"]");
+        fixture.plan.markRunning();
+        when(fixture.policy.decideProject(org.mockito.ArgumentMatchers.nullable(java.util.Set.class),
+                org.mockito.ArgumentMatchers.nullable(java.util.Set.class))).thenReturn(null);
+
+        AgentPlanResponse response = fixture.service.executePlan(Fixture.USER_ID, Fixture.PLAN_ID);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.errorMessage()).contains("RECOVERY_REJECTED", "current Project tool policy is unavailable");
+        assertThat(fixture.eventTypes()).contains("plan_recovery_rejected");
+        verify(fixture.runtime, never()).run(any());
+        verify(fixture.controlled, never()).executeWithinPlan(any());
+    }
+
+    @Test
     void durableRetryRejectsExhaustedStepWithoutResetQueueOrAttemptRefund() {
         fixture = new Fixture();
         AgentPlanStep step = fixture.step("read", "[\"project_read_file\"]");

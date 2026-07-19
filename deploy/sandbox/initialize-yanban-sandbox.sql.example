@@ -1,0 +1,9 @@
+-- Run once as a MySQL administrator after replacing the password placeholder.
+-- Never pass administrator credentials to the API or sandbox Broker.
+CREATE DATABASE IF NOT EXISTS yanban_sandbox CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'yanban_sandbox_broker'@'%' IDENTIFIED BY '<DEPLOYMENT_GENERATED_PASSWORD>';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES
+  ON yanban_sandbox.* TO 'yanban_sandbox_broker'@'%';
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'yanban_sandbox_broker'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES
+  ON yanban_sandbox.* TO 'yanban_sandbox_broker'@'%';

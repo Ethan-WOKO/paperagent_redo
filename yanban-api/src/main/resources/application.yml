@@ -30,6 +30,18 @@ logging:
     console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] traceId=%X{traceId:-} %logger{36} : %msg%n"
 
 yanban:
+  sandbox:
+    enabled: ${YANBAN_SANDBOX_ENABLED:false}
+    required-at-startup: ${YANBAN_SANDBOX_REQUIRED_AT_STARTUP:false}
+    provider: ${YANBAN_SANDBOX_PROVIDER:docker-sbx}
+    broker-url: ${YANBAN_SANDBOX_BROKER_URL:http://127.0.0.1:8091}
+    broker-token: ${YANBAN_SANDBOX_BROKER_TOKEN:}
+    max-concurrent-runs: ${YANBAN_SANDBOX_MAX_CONCURRENT_RUNS:1}
+    cpus: ${YANBAN_SANDBOX_CPUS:2}
+    memory-limit: ${YANBAN_SANDBOX_MEMORY_LIMIT:4GB}
+    execution-timeout: ${YANBAN_SANDBOX_EXECUTION_TIMEOUT:15m}
+    max-output-size: ${YANBAN_SANDBOX_MAX_OUTPUT_SIZE:20MB}
+    network-enabled: ${YANBAN_SANDBOX_NETWORK_ENABLED:false}
   project:
     managed-storage-root: ${YANBAN_PROJECT_STORAGE_ROOT:data/project-storage}
     minio-object-prefix: ${YANBAN_PROJECT_MINIO_PREFIX:projects}

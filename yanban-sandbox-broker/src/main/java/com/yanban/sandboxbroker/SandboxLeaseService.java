@@ -1,0 +1,58 @@
+package com.yanban.sandboxbroker;
+
+import java.time.*;
+import java.util.Optional;
+import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+@Service
+class SandboxLeaseService {
+    private final SandboxExecutionRepository executions;
+    private final JdbcTemplate jdbc;
+    SandboxLeaseService(SandboxExecutionRepository executions,JdbcTemplate jdbc){this.executions=executions;this.jdbc=jdbc;}
+
+    @Transactional
+    Optional<Lease> claim(String owner,Duration duration){
+        jdbc.queryForObject("select slot_id from sandbox_concurrency_slot where slot_id=1 for update",Integer.class);
+        Integer active=jdbc.queryForObject("select count(*) from sandbox_executions where status not in ('ACCEPTED','SUCCEEDED','FAILED','CANCELLED','TIMED_OUT','CLEANUP_FAILED') and lease_expires_at>current_timestamp",Integer.class);
+        if(active!=null&&active>0)return Optional.empty();
+        var found=executions.lockClaimable(PageRequest.of(0,1));
+        if(found.isEmpty())return Optional.empty();
+        SandboxExecutionEntity entity=found.get(0);
+        LocalDateTime now=databaseNow(entity.executionId());
+        String previous=entity.status();
+        String token=UUID.randomUUID().toString().replace("-","");
+        entity.claim(owner,token,now,now.plus(duration));
+        executions.saveAndFlush(entity);
+        boolean recovery=!"ACCEPTED".equals(previous);
+        return Optional.of(new Lease(entity.executionId(),owner,token,entity.workerFence(),previous,recovery));
+    }
+
+    @Transactional
+    SandboxExecutionEntity owned(Lease lease){
+        SandboxExecutionEntity entity=executions.lockByExecutionId(lease.executionId()).orElseThrow();
+        if(!entity.leaseMatches(lease.owner(),lease.token(),lease.fence(),databaseNow(lease.executionId())))
+            throw new IllegalStateException("sandbox worker lease lost");
+        return entity;
+    }
+
+    @Transactional
+    void transition(Lease lease,String status,String checkpoint){SandboxExecutionEntity e=owned(lease);e.transition(status,checkpoint,databaseNow(lease.executionId()));executions.saveAndFlush(e);}
+    @Transactional
+    void stageReceipt(Lease lease,String digest,String receipt){SandboxExecutionEntity e=owned(lease);e.stageReceipt(digest,receipt,databaseNow(lease.executionId()));executions.saveAndFlush(e);}
+    @Transactional
+    boolean cancellationRequested(Lease lease){return owned(lease).cancelRequested();}
+    @Transactional
+    void heartbeat(Lease lease,Duration duration){SandboxExecutionEntity e=owned(lease);LocalDateTime now=databaseNow(lease.executionId());e.heartbeat(now,now.plus(duration));executions.saveAndFlush(e);}
+    @Transactional
+    void terminal(Lease lease,String status,String digest,String receipt,String error){SandboxExecutionEntity e=owned(lease);e.terminal(status,digest,receipt,error,databaseNow(lease.executionId()));executions.saveAndFlush(e);}
+    @Transactional
+    boolean terminalSuccessIfNotCancelled(Lease lease,String digest,String receipt){SandboxExecutionEntity e=owned(lease);if(e.cancelRequested())return false;e.terminal("SUCCEEDED",digest,receipt,null,databaseNow(lease.executionId()));executions.saveAndFlush(e);return true;}
+    @Transactional(readOnly=true)
+    Instant now(Lease lease){owned(lease);return databaseNow(lease.executionId()).toInstant(ZoneOffset.UTC);}
+    private LocalDateTime databaseNow(String id){LocalDateTime now=executions.databaseNow(id);if(now==null)throw new IllegalStateException("broker database time unavailable");return now;}
+    record Lease(String executionId,String owner,String token,long fence,String previousStatus,boolean recovery){}
+}

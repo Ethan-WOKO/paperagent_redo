@@ -149,6 +149,23 @@ class AgentPlanCheckpointServiceTest {
     }
 
     @Test
+    void durableSandboxAuthoritySurvivesFirstCheckpointButCurrentRevocationStopsRecovery() {
+        AgentPlan plan = durablePlan();
+        steps.save(new AgentPlanStep(plan.getId(), "sandbox", 1, "sandbox", "governed check",
+                "SANDBOX_EXECUTE", "[]", "[\"sandbox_execute\"]", "verified receipt"));
+        ResolvedToolPolicy sandbox = new ResolvedToolPolicy(List.of(TOOL, "sandbox_execute"), 2, 1, "current");
+        AgentPlanExecutionLease first = claim(plan, "sandbox-owner");
+        AgentPlanCheckpointService.Validation initialized = checkpoints.initializeOrValidate(first, sandbox, ceiling());
+        assertThat(initialized.checkpointVersion()).isPositive();
+        leases.release(first, "WAITING_FOR_SANDBOX");
+
+        AgentPlanExecutionLease recovery = claim(plan, "sandbox-recovery");
+        ResolvedToolPolicy revoked = new ResolvedToolPolicy(List.of(TOOL), 2, 1, "sandbox_revoked");
+        assertThatThrownBy(() -> checkpoints.initializeOrValidate(recovery, revoked, ceiling()))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("revoked");
+    }
+
+    @Test
     void duplicateToolBudgetCannotExpandOnRecovery() {
         AgentPlan plan = durablePlan();
         planStep(plan);

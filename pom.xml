@@ -25,6 +25,8 @@
         <module>yanban-mcp</module>
         <module>yanban-skills</module>
         <module>yanban-api</module>
+        <module>yanban-sandbox-contract</module>
+        <module>yanban-sandbox-broker</module>
         <module>yanban-cli</module>
     </modules>
 
@@ -122,6 +124,8 @@
                 <configuration>
                     <groups>${groups}</groups>
                     <excludedGroups>${excludedGroups}</excludedGroups>
+                    <!-- Cached Spring test contexts close their pools sequentially at fork shutdown. -->
+                    <forkedProcessExitTimeoutInSeconds>120</forkedProcessExitTimeoutInSeconds>
                 </configuration>
             </plugin>
         </plugins>

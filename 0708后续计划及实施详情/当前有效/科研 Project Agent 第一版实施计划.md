@@ -566,6 +566,20 @@ Worker 开发
 - 验证结果：P1 与 Worker 12/Plan 回归聚焦套件 106/106；`mvn -o -pl yanban-api -am test` 最终完整 reactor 1079 项、零失败、零错误、9 项条件跳过（core 111、knowledge 34、paper 147、mcp 3、skills 1、api 783）。生产 MySQL V35 未连接真实数据库执行，H2 从 V1 到 V35 的镜像迁移已通过；最终 `git diff --check` 通过。
 - 2026-07-19 用户可见本地重启验收通过：在专用只读 Project `#36`、session `#111` 上由 UI 创建 `planId=61`，停机前为 `RUNNING/L2_DURABLE/CHECKPOINTED`、fence `1`、checkpoint version `2`；后端在有效 lease 内停止，lease 过期后新实例以不同 owner、fence `2` 重认领同一 plan，并完成为 `COMPLETED`。终态仅有 1 个 `plan_completed`、1 个 `step_project_evidence`、1 个 canonical answer hash，事件幂等键无重复，Candidate 保持 `NOT_APPLIED`；checkpoint 哈希匹配且敏感/绝对路径/思维链/伪造 VERIFIED 模式未命中。Worker 13 定向负向矩阵 25/25、完整离线 reactor 1079 项零失败零错误（9 项条件跳过：knowledge 1、api 8）通过；本地启动实际验证了生产 MySQL V35 从 34 到 35 的向后兼容新增迁移。状态更新为 `LOCAL_ACCEPTED / WORKER_14_READY`，但未启动 Worker 14。
 
+### Worker 14：Docker Sandboxes 受治理执行沙箱
+
+状态：`ENGINEERING_ACCEPTED_PENDING_REAL_E2E`
+
+- 真实执行沙箱必须由部署环境显式设置 `YANBAN_SANDBOX_ENABLED=true` 才能启用；默认关闭时不探测、不连接、不启动 Sandbox Provider，现有 Chat、ReAct、Plan、Worker、Candidate、Project revision、Paper/Literature 和基础设施服务保持原行为。
+- `enabled=true` 只授予进入受治理 Sandbox Provider 的资格，不授予宿主机命令、Docker socket、任意网络、密钥或 Project 真实写入。Provider 或 broker 不可用时，沙箱任务必须以明确 `SANDBOX_UNAVAILABLE` fail-closed，禁止回退到宿主机 Shell、普通容器或跳过验证后声称成功。
+- `required-at-startup=false` 时，沙箱不可用不得阻止 API 和其他服务启动；`required-at-startup=true` 仅供专用 Sandbox Worker 节点使用。API Compose 容器不得直接获得宿主机 `/dev/kvm`、Docker socket 或 `sbx` 管理权限，生产接入通过受限 Sandbox Broker/Worker 边界完成。
+- 第一版资源默认单并发、2 CPU、4 GiB 内存、15 分钟执行超时和 20 MiB 输出上限，网络默认关闭；部署可进一步收紧，不得通过客户端请求或模型文本扩大。
+- 已交付共享强类型 contract、独立低权限 Sandbox Broker/Worker、MySQL `yanban_sandbox` 持久状态机、API 事务性 outbox、异步 dispatch/poll/cancel、lease/fence/checkpoint、receipt/Event/Evidence/canonical exactly-once 投影，以及 Plan/Worker 13 重启恢复接线。API 容器不获得 Docker socket、`/dev/kvm`、`sbx` 或 Broker 数据库权限；生产 Broker 以 Linux 宿主机专用非 root systemd 服务运行，仅加入 `kvm` 组，并使用受信绝对路径的官方 `sbx`。
+- 每次执行使用服务端 ProjectVersion、当前 skill/tool policy、命令 profile和预算重新校验；工作副本限制为受信 Project 相对路径，命令为结构化 argv，环境默认空、网络显式 deny-all，资源硬上限为单并发、2 CPU、4 GiB、15 分钟和 20 MiB。取消、超时、异常和重启统一进入可恢复 cleanup；cleanup 未确认不得发布成功 Evidence。Candidate 始终 `NOT_APPLIED`。
+- receipt 与 canonical request digest 绑定 user/project/session/plan/step/fence/ProjectVersion/policy；同 key 异 digest 冲突。API receipt 审计与 fenced Plan 投影分离，确定性撤销/STALE fail-closed，瞬时投影失败仅重试 projection，不重新执行 Broker 任务。checkpoint 不保存密钥、原始环境、宿主绝对路径、无界输出或思维链。
+- 离线工程验证已覆盖默认关闭、配置、迁移、Provider 不可用、路径/symlink、命令/env/network、资源/输出、取消/cleanup、并发幂等、lease/fence/reclaim、receipt 恶意响应、authority 撤销、Project STALE、Worker 13 恢复与 canonical exactly-once；完整 Maven reactor 与 `git diff --check` 已通过。
+- 当前开发机未安装且未运行真实 `sbx`，没有执行真实 Provider E2E，也不代表产品最终验收完成。仍需按宿主机 Broker 架构完成独立的本地真实 E2E，验证实际 `sbx` JSON/策略/生命周期兼容后才能从 `PENDING_REAL_E2E` 升级为最终验收状态。
+
 ## 16. 审查与停止条件
 
 主对话发现以下任一情况必须停止自动推进：
