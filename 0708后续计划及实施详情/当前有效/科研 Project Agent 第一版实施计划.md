@@ -540,9 +540,11 @@ Worker 开发
 
 ### Worker 13：L2 持久化 Task Run、checkpoint 与重启恢复
 
-状态：`READY_TO_START`
+状态：`ENGINEERING_ACCEPTED / LOCAL_ACCEPTANCE_PENDING`
 
-启动代码基线：`78a6d0b`；实际 Worker 冻结基线以包含本任务包的完整 `HEAD` 为准。
+启动代码基线：`78a6d0b`；本次实际 Worker 冻结 baseline/HEAD 为 `5e1fad64907fe24fe9acfa79bbde4035af43e906`。
+
+工程集成 baseline：`2ac4e5d090534b6f8870e63b271f9b2e02495c1b`；主对话已完成独立静态审查、定向回归、Worker 12 retry/restart/async 回归、V35/H2 迁移验证和完整 reactor，尚未宣称用户本地重启/恢复验收完成。
 
 - 目标：将受治理的 Project Plan/受控 Worker 长任务从当前 L0/L1 边界提升为可重启恢复的 L2 托管，覆盖持久化 claim lease、heartbeat、checkpoint、幂等恢复、超时/卡死回收和确定性终态；前端断开或服务重启不能制造重复执行、重复 canonical answer 或权限扩张。
 - 第一阶段仅接入现有 Project Plan 与 Worker 12 受控只读 Plan。普通同步 Chat/ReAct、Paper/Literature 业务任务和 Candidate 应用不在本 Worker 内迁移为新执行器；不得创建第二套 Plan、run、Evidence 或 canonical answer 生命周期。
@@ -554,6 +556,14 @@ Worker 开发
 - migration 若确有必要，只允许新增向后兼容的 lease/checkpoint/recovery 字段与索引；不得删除、重命名或重写已有任务、Plan、事件和 Project 数据。必须同时提供 MySQL/H2 迁移验证、旧行默认语义和回滚/兼容说明。
 - 必测矩阵：单实例 claim/renew/release、并发 claim 恰有一个成功、lease 过期重认领、服务重启恢复、checkpoint 篡改/缺失/STALE/跨用户/跨 Project fail-closed、取消与恢复竞争、预算不扩张、工具撤销、已完成步骤不重复、canonical answer exactly-once、事件/Evidence 幂等、Worker 12 retry/restart/async 回归及完整 reactor。
 - 停止条件：需要开放写文件、命令、网络、密钥、真实模型依赖或跨模块大规模迁移；无法证明已有工具调用是否产生副作用；需要改变 Worker 10-12 的策略/工具/Evidence/Candidate 安全契约；或发现当前工作区存在另一开发 Worker。
+- 实际接入沿用现有 `AgentPlan`、`AgentPlanStep`、`AgentPlanEvent`、Project envelope、Evidence ledger 与 canonical answer；Project Plan 和 Worker 12 受控只读 Plan 创建时标记 `L2_DURABLE`，普通 Plan 保持 `L1_PERSISTED`，未创建第二套 run 或终态生命周期。
+- Flyway V35 仅向 `agent_plans` 增加 persistence、lease/fence/heartbeat、checkpoint/recovery 与 canonical answer 字段和可恢复 run 索引，向 `agent_plan_events` 增加幂等键及 `(plan_id, idempotency_key)` 唯一索引；旧行默认 L1，没有删除、重命名或重写既有数据，并提供 MySQL 脚本与 H2 测试镜像。
+- claim/renew/release、取消、checkpoint、步骤/事件写入和确定性终态均通过数据库时间、悲观行锁、owner token 与单调 fence 约束；启动和 15 秒扫描器仅调度无有效 lease 或 lease 已过期的 `RUNNING` L2 run，旧 owner 在 fence 变化后不能继续提交。
+- checkpoint 使用版本化、哈希覆盖的净化 JSON，绑定 trusted user/session/plan/project、当前 ProjectVersion、相对路径文件清单及 hash、Plan/envelope 摘要、allowedTools、原始预算上限与消耗、步骤结果 hash、工具/Evidence receipt；恢复重新校验这些边界，缺失、篡改、STALE、跨 identity、工具撤销、版本或预算不符均 fail-closed。
+- 已完成步骤和已登记只读 receipt 在恢复时复用；未知完成状态只在剩余尝试预算内安全重试，否则以 `UNKNOWN_COMPLETION` 直接失败，不进入 repair/degrade 或再次 dispatch。事件使用语义幂等键，Evidence 按受信 observation 复用，canonical answer 在持久化 Plan 上 exactly-once 发布。
+- 2026-07-19 P1 收口在每次 L2 step/batch dispatch 前，按持久化受信 `step_tool_observation` receipt 重新计算原始总工具预算并收紧当前策略；预算耗尽时在 runtime/受控 Worker 前 fail-closed，L2 batch 串行分配该全局预算。耗尽尝试的 durable retry 在 retry boundary 以确定性冲突拒绝，不重置尝试次数或进入 240 秒空转。
+- 恢复 claim 后重新校验 session、Project、skill/tool policy、受控 envelope、模型端点、manifest 与 checkpoint；永久身份/权限失效通过当前 fence 终止为 `FAILED/RECOVERY_REJECTED`，数据库/HTTP 5xx 等瞬时基础设施错误仍释放为 `INTERRUPTED` 等待过期 lease 重排。Run/Workspace 的 L2 能力仅来自服务端持久化 `L2_DURABLE` 元数据，历史 AGENT_PLAN 行投影为 `L1_PERSISTED` 且不可 checkpoint/restart，不再依据 `projectId` 推断。
+- 验证结果：P1 与 Worker 12/Plan 回归聚焦套件 106/106；`mvn -o -pl yanban-api -am test` 最终完整 reactor 1079 项、零失败、零错误、9 项条件跳过（core 111、knowledge 34、paper 147、mcp 3、skills 1、api 783）。生产 MySQL V35 未连接真实数据库执行，H2 从 V1 到 V35 的镜像迁移已通过；最终 `git diff --check` 通过。
 
 ## 16. 审查与停止条件
 
