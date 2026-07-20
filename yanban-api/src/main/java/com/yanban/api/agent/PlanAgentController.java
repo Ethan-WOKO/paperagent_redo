@@ -55,6 +55,13 @@ public class PlanAgentController {
         return planAgentService.executePlanAsync(currentUser.id(), planId);
     }
 
+    @PostMapping("/plans/{planId}/sandbox-confirm-and-queue")
+    public AgentPlanResponse confirmAndQueueSandboxPlan(@AuthenticationPrincipal JwtUser currentUser,
+                                                        @PathVariable Long planId,
+                                                        @Valid @RequestBody ConfirmSandboxExecutionRequest request) {
+        return planAgentService.confirmAndExecuteSandboxPlanAsync(currentUser.id(), planId, request);
+    }
+
     @PostMapping("/plans/{planId}/retry")
     public AgentPlanResponse retryPlan(@AuthenticationPrincipal JwtUser currentUser,
                                        @PathVariable Long planId) {

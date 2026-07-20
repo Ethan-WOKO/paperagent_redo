@@ -287,6 +287,30 @@ class AgentPlanCheckpointServiceTest {
         assertThat(checkpoints.remainingToolCalls(lease, ceiling())).isZero();
     }
 
+    @Test
+    void stableAuthorityPolicySurvivesRecoveryAfterMultipleBudgetConsumingCalls() {
+        AgentPlan plan = durablePlan();
+        AgentPlanStep step = planStep(plan);
+        AgentPlanExecutionLease first = claim(plan, "instance-a");
+        checkpoints.initializeOrValidate(first, policy(), ceiling());
+
+        events.saveAndFlush(new AgentPlanEvent(plan.getId(), step.getId(), "step_tool_observation",
+                "{\"budgetConsumed\":true}", "evt:tool:1"));
+        checkpoints.saveBoundary(first, policy(), ceiling());
+        leases.release(first, "WAITING_FOR_RECEIPT");
+
+        AgentPlanExecutionLease recovered = claim(plan, "instance-b");
+        AgentPlanCheckpointService.Validation validation = checkpoints.initializeOrValidate(
+                recovered, policy(), ceiling());
+        assertThat(validation.recovery()).isTrue();
+        assertThat(checkpoints.remainingToolCalls(recovered, validation.budgetCeiling())).isEqualTo(1);
+
+        events.saveAndFlush(new AgentPlanEvent(plan.getId(), step.getId(), "step_tool_observation",
+                "{\"budgetConsumed\":true}", "evt:tool:2"));
+        checkpoints.saveBoundary(recovered, policy(), validation.budgetCeiling());
+        assertThat(checkpoints.remainingToolCalls(recovered, validation.budgetCeiling())).isZero();
+    }
+
     private AgentPlan durablePlan() {
         String envelope = ProjectPlanEnvelope.wrap(json, "{}", new ProjectRuntimeContext(USER_ID, PROJECT_ID));
         AgentPlan plan = new AgentPlan(SESSION_ID, USER_ID, "goal", "summary", true, null, envelope);

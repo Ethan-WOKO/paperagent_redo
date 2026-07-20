@@ -206,7 +206,8 @@ public class PlanStepVerifier {
                 .append("Completed dependency results:\n");
         boolean hasDependencyResult = false;
         for (AgentPlanStep dependency : completedDependencyResults(request)) {
-            if (StringUtils.hasText(dependency.getResult())) {
+            String trustedResult = SandboxTrustedResultBoundary.trusted(dependency);
+            if (StringUtils.hasText(trustedResult)) {
                 hasDependencyResult = true;
                 sb.append("## ").append(dependency.getStepKey()).append(" ")
                         .append(blankToDefault(dependency.getTitle(), ""))
@@ -216,7 +217,7 @@ public class PlanStepVerifier {
                     sb.append("Dependency limitation: ")
                             .append(abbreviate(dependency.getErrorMessage(), 800)).append("\n");
                 }
-                sb.append(abbreviate(dependency.getResult(), 1200))
+                sb.append(abbreviate(trustedResult, 1200))
                         .append("\n\n");
             }
         }

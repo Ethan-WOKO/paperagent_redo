@@ -1755,6 +1755,32 @@ class PlanAgentServiceTest {
         verify(agentRuntimeService, org.mockito.Mockito.times(2)).run(any(AgentRuntimeRequest.class));
     }
 
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void toolFreeSandboxPresentationReusesReceiptAndBoundedAnalysisWithoutAgentRun() {
+        AgentPlanStep sandbox = newStep("sandbox", 1, List.of(), "[\"sandbox_execute\"]");
+        ReflectionTestUtils.setField(sandbox, "type", "SANDBOX_EXECUTE");
+        sandbox.markCompleted("Sandbox receipt " + "a".repeat(64)
+                + "; provider=docker-sbx; status=SUCCEEDED; exitCode=0; outputTrust=UNTRUSTED_DISPLAY_ONLY\n"
+                + "stdout:\nok\nstderr:\n");
+        AgentPlanStep presentation = newStep("presentation", 2, List.of("sandbox"), "[]");
+        AgentPlanEvent analysis = new AgentPlanEvent(PLAN_ID, sandbox.getId(), "sandbox_output_analysis",
+                "{\"summary\":\"The program printed ok.\"}");
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(analysis));
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Boolean completed = ReflectionTestUtils.invokeMethod(service,
+                "completeSandboxOutputPresentationStep", plan, List.of(sandbox, presentation), presentation, "trace");
+
+        assertThat(completed).isTrue();
+        assertThat(presentation.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
+        assertThat(presentation.getResult())
+                .contains("provider=docker-sbx", "status=SUCCEEDED", "stdout:\nok", "stderr:")
+                .contains(com.yanban.api.agent.sandbox.SandboxOutputAnalysisService.DISCLAIMER)
+                .contains("The program printed ok.");
+        verify(agentRuntimeService, org.mockito.Mockito.never()).run(any());
+    }
+
     private AgentRuntimeResult success(String content) {
         return new AgentRuntimeResult(
                 true,

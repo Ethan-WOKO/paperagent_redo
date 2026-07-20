@@ -22,6 +22,28 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 class SandboxPlanAuthorityResolverTest {
+    @Test void policyDigestIsStableAcrossCheckpointVersionsButBoundToAuthority() {
+        ResolvedToolPolicy policy = new ResolvedToolPolicy(List.of("sandbox_execute"), 12, 1, "project");
+        var ceiling = new AgentPlanCheckpointService.BudgetCeiling(240, 2, 1, 12);
+        var context = new ProjectRuntimeContext(1L, 2L);
+        var manifest = new ProjectManifestResponse(2L, "v".repeat(64), List.of());
+        var first = new AgentPlanCheckpointService.Validation(false, 1L, context, manifest, ceiling);
+        var recovered = new AgentPlanCheckpointService.Validation(true, 9L, context, manifest, ceiling);
+
+        assertThat(SandboxPlanAuthorityResolver.policyDigest(policy, first))
+                .isEqualTo(SandboxPlanAuthorityResolver.policyDigest(policy, recovered));
+        assertThat(SandboxPlanAuthorityResolver.policyDigest(
+                new ResolvedToolPolicy(List.of("project_read_file", "sandbox_execute"), 11, 1, "other_path"), recovered))
+                .isEqualTo(SandboxPlanAuthorityResolver.policyDigest(policy, recovered));
+        var reducedCeiling = new AgentPlanCheckpointService.BudgetCeiling(240, 2, 1, 11);
+        var changedBudget = new AgentPlanCheckpointService.Validation(true, 9L, context, manifest, reducedCeiling);
+        assertThat(SandboxPlanAuthorityResolver.policyDigest(policy, changedBudget))
+                .isNotEqualTo(SandboxPlanAuthorityResolver.policyDigest(policy, recovered));
+        assertThatThrownBy(() -> SandboxPlanAuthorityResolver.policyDigest(
+                new ResolvedToolPolicy(List.of("project_read_file"), 12, 1, "revoked"), recovered))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("revoked");
+    }
+
     @Test void rejectsCrossPlanStepAndRevokedToolWithoutConstructibleAuthority() {
         Fixture fixture=new Fixture();
         ReflectionTestUtils.setField(fixture.step,"planId",99L);

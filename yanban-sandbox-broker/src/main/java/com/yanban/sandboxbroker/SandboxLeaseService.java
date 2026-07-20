@@ -51,7 +51,7 @@ class SandboxLeaseService {
     void terminal(Lease lease,String status,String digest,String receipt,String error){SandboxExecutionEntity e=owned(lease);e.terminal(status,digest,receipt,error,databaseNow(lease.executionId()));executions.saveAndFlush(e);}
     @Transactional
     boolean terminalSuccessIfNotCancelled(Lease lease,String digest,String receipt){SandboxExecutionEntity e=owned(lease);if(e.cancelRequested())return false;e.terminal("SUCCEEDED",digest,receipt,null,databaseNow(lease.executionId()));executions.saveAndFlush(e);return true;}
-    @Transactional(readOnly=true)
+    @Transactional
     Instant now(Lease lease){owned(lease);return databaseNow(lease.executionId()).toInstant(ZoneOffset.UTC);}
     private LocalDateTime databaseNow(String id){LocalDateTime now=executions.databaseNow(id);if(now==null)throw new IllegalStateException("broker database time unavailable");return now;}
     record Lease(String executionId,String owner,String token,long fence,String previousStatus,boolean recovery){}

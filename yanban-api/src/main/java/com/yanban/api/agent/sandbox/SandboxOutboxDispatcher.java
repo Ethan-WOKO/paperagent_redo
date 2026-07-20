@@ -35,7 +35,7 @@ class SandboxOutboxDispatcher {
     @Scheduled(fixedDelayString="${yanban.sandbox.dispatch-delay-ms:1000}")
     void reconcile(){for(SandboxOutboxExecution candidate:outbox.findReconcileable()){Claim claim=claim(candidate.executionId());if(claim==null)continue;try{reconcile(claim);}catch(RuntimeException ignored){scheduleRetryAfterFailure(claim);}}}
 
-    private Claim claim(String id){return transactions.execute(s->{SandboxOutboxExecution value=outbox.lockByExecutionId(id).orElse(null);if(value==null)return null;LocalDateTime now=dbNow();if(value.claimExpiresAt()!=null&&value.claimExpiresAt().isAfter(now))return null;String token=java.util.UUID.randomUUID().toString();value.claim(owner,token,now);outbox.saveAndFlush(value);return new Claim(id,token,value.claimFence());});}
+    private Claim claim(String id){return transactions.execute(s->{SandboxOutboxExecution value=outbox.lockByExecutionId(id).orElse(null);if(value==null)return null;LocalDateTime now=dbNow();if(!value.reconcileable(now)||value.claimExpiresAt()!=null&&value.claimExpiresAt().isAfter(now))return null;String token=java.util.UUID.randomUUID().toString();value.claim(owner,token,now);outbox.saveAndFlush(value);return new Claim(id,token,value.claimFence());});}
     void reconcile(String executionId){Claim claim=claim(executionId);if(claim!=null)reconcile(claim);}
     private void reconcile(Claim claim){
         SandboxOutboxExecution value=outbox.findByExecutionId(claim.id()).orElseThrow();
@@ -93,7 +93,10 @@ class SandboxOutboxDispatcher {
                 ||receipt.stdout()==null||receipt.stderr()==null||receipt.outputTruncated()
                 ||(long)receipt.stdout().getBytes(StandardCharsets.UTF_8).length+receipt.stderr().getBytes(StandardCharsets.UTF_8).length>20L*1024*1024
                 ||(status==SandboxExecutionStatus.SUCCEEDED&&(receipt.exitCode()==null||receipt.exitCode()!=0||receipt.errorCode()!=null))
-                ||(status!=SandboxExecutionStatus.SUCCEEDED&&receipt.errorCode()==null))
+                ||(status==SandboxExecutionStatus.FAILED&&receipt.errorCode()==null
+                        &&(receipt.exitCode()==null||receipt.exitCode()==0))
+                ||(status!=SandboxExecutionStatus.SUCCEEDED&&status!=SandboxExecutionStatus.FAILED
+                        &&receipt.errorCode()==null))
             throw new SandboxExecutionException(SandboxFailureCode.RECEIPT_CONFLICT,"broker receipt failed server validation");
         long artifacts=0;if(receipt.artifacts().size()>256)throw new SandboxExecutionException(SandboxFailureCode.RECEIPT_CONFLICT,"too many artifacts");
         for(var artifact:receipt.artifacts().entrySet()){

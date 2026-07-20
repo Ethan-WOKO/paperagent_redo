@@ -110,7 +110,8 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
         if (!"SUCCESS".equals(terminal.outcome())) {
             content.append("\nPlan execution outcome: ").append(terminal.outcome()).append(".");
         }
-        String finalAnswer = withoutInternalPresentationMetadata(plan.finalAnswer());
+        String finalAnswer = withoutInternalPresentationMetadata(
+                SandboxTrustedResultBoundary.trustedPlanFinalAnswer(plan));
         if (StringUtils.hasText(finalAnswer)) {
             content.append("\n\n").append(finalAnswer);
         } else if (StringUtils.hasText(plan.errorMessage())) {

@@ -385,6 +385,52 @@
                           <MarkdownMessage :content="planConversationIntro(plan)" variant="project" />
                         </div>
 
+                        <NAlert
+                          v-if="requiresSandboxConfirmation(plan)"
+                          class="project-sandbox-confirmation"
+                          type="warning"
+                          title="Sandbox execution requires confirmation"
+                        >
+                          <p>
+                            This plan is paused before {{ sandboxConfirmationStepCount(plan) }} code-execution step(s).
+                            Confirm only if you intend to run the Project code.
+                          </p>
+                          <ul>
+                            <li>Network access is disabled by default.</li>
+                            <li>Only server-approved commands and Project-relative files are available.</li>
+                            <li>CPU, memory, duration, output, and concurrency limits are enforced.</li>
+                            <li>Execution may produce sandbox logs or artifacts, but it does not apply a Candidate to the Project.</li>
+                          </ul>
+                          <NButton
+                            type="warning"
+                            :loading="executingSandboxPlanId === plan.id"
+                            :disabled="executingSandboxPlanId !== null"
+                            @click.stop="confirmSandboxExecution(plan)"
+                          >
+                            Confirm and run in sandbox
+                          </NButton>
+                          <NButton
+                            class="project-sandbox-cancel"
+                            :loading="cancellingPlanId === plan.id"
+                            :disabled="cancellingPlanId !== null || executingSandboxPlanId !== null"
+                            @click.stop="cancelProjectPlan(plan)"
+                          >
+                            Reject and cancel plan
+                          </NButton>
+                        </NAlert>
+
+                        <NButton
+                          v-else-if="!planTerminal(plan.status)"
+                          size="small"
+                          type="error"
+                          secondary
+                          :loading="cancellingPlanId === plan.id"
+                          :disabled="cancellingPlanId !== null"
+                          @click.stop="cancelProjectPlan(plan)"
+                        >
+                          Cancel running plan
+                        </NButton>
+
                         <div
                           v-for="step in plan.steps"
                           :key="`${plan.id}-${step.id}`"
@@ -443,8 +489,8 @@
               </div>
             </div>
             <div class="project-plan-compose">
-              <NInput v-model:value="planInput" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="Create a read-only inspection plan..." />
-              <NButton type="primary" :loading="loading.plan" :disabled="!planInput.trim() || !activeProject" @click="createPlan">Create & run</NButton>
+              <NInput v-model:value="planInput" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="Create a governed Project plan..." />
+              <NButton type="primary" :loading="loading.plan" :disabled="!planInput.trim() || !activeProject" @click="createPlan">Create plan</NButton>
             </div>
           </template>
         </section>
@@ -552,7 +598,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { NAlert, NButton, NCheckbox, NDropdown, NEmpty, NForm, NFormItem, NInput, NModal, NSpace, NSpin, NTag } from 'naive-ui';
 import AppLayout from '@/components/AppLayout.vue';
 import MarkdownMessage from '@/components/MarkdownMessage.vue';
-import { deleteSession as deleteAgentSession, listMessages, listPlans, updateSession as updateAgentSession, type AgentMessageResponse, type AgentPlanResponse, type AgentSessionResponse } from '@/api/agent';
+import { cancelPlan, confirmAndQueueSandboxPlan, deleteSession as deleteAgentSession, listMessages, listPlans, updateSession as updateAgentSession, type AgentMessageResponse, type AgentPlanResponse, type AgentSessionResponse } from '@/api/agent';
 import { candidateReviewFailure, getCandidateChange, isCandidateArtifactV1, listArtifacts, type ArtifactResponse, type CandidateArtifactResponse, type CandidateChangeType, type CandidateEvidenceRef, type CandidateReviewState } from '@/api/artifact';
 import { applyProjectCandidate, createProjectPlan, createProjectSession, deleteProject, exportProjectRevision, filterProjectUploadFiles, getProjectManifest, listProjectEvidence, listProjectRevisions, listProjectSessions, listProjects, readProjectFile, rollbackProjectRevision, searchProject, sendProjectMessage, uploadProject, type ProjectEvidenceResponse, type ProjectFileResponse, type ProjectManifestResponse, type ProjectRevisionResponse, type ProjectSearchHit, type ProjectSummaryResponse } from '@/api/project';
 import { useAuthStore } from '@/stores/auth';
@@ -564,6 +610,7 @@ import {
   projectPlanLifecycle,
   withoutInternalProjectEvidenceRefs,
 } from '@/utils/projectCompletion';
+import { requiresSandboxConfirmation, sandboxConfirmationStepCount } from '@/utils/projectSandboxConfirmation';
 
 type ProjectChatRole = 'user' | 'assistant' | 'process';
 type ProjectInspectorTab = 'preview' | 'evidence' | 'changes' | 'versions';
@@ -623,6 +670,8 @@ const searchResults = ref<ProjectSearchHit[]>([]);
 const messages = ref<ProjectChatMessage[]>([]);
 const plans = ref<AgentPlanResponse[]>([]);
 const selectedPlan = ref<AgentPlanResponse | null>(null);
+const executingSandboxPlanId = ref<number | null>(null);
+const cancellingPlanId = ref<number | null>(null);
 const evidence = ref<ProjectEvidenceResponse[]>([]);
 const candidates = ref<CandidateReviewItem[]>([]);
 const selectedCandidate = ref<CandidateReviewItem | null>(null);
@@ -902,6 +951,7 @@ function planTagType(status: string): 'default' | 'success' | 'warning' | 'error
   const value = status.toUpperCase();
   if (value.includes('COMPLETED') || value.includes('VERIFIED')) return 'success';
   if (value.includes('FAILED')) return 'error';
+  if (value.includes('REVIEWING')) return 'warning';
   if (value.includes('PENDING') || value.includes('RUNNING')) return 'info';
   if (value.includes('PARTIAL') || value.includes('DEGRADED') || value.includes('SKIPPED')) return 'warning';
   return 'default';
@@ -980,6 +1030,7 @@ function planConversationIntro(plan: AgentPlanResponse) {
 
 function planProcessSummary(plan: AgentPlanResponse) {
   const elapsed = formatPlanElapsed(planElapsedMs(plan));
+  if (requiresSandboxConfirmation(plan)) return 'Awaiting sandbox confirmation';
   if (!planTerminal(plan.status)) {
     return elapsed ? `处理中 ${elapsed}` : '处理中';
   }
@@ -1038,9 +1089,10 @@ function planStepMessageContent(step: AgentPlanResponse['steps'][number]) {
   const status = step.status.toUpperCase();
   if (step.errorMessage) {
     lines.push(`Error: ${withoutInternalProjectEvidenceRefs(step.errorMessage)}`);
-  } else if (step.result) {
+  }
+  if (step.result) {
     lines.push(withoutInternalProjectEvidenceRefs(step.result));
-  } else if (status === 'RUNNING') {
+  } else if (!step.errorMessage && status === 'RUNNING') {
     lines.push('This step is running now.');
   } else if (status === 'PENDING') {
     lines.push('This step is queued.');
@@ -1052,6 +1104,9 @@ function planStepMessageContent(step: AgentPlanResponse['steps'][number]) {
 
 function planFinalMessageContent(plan: AgentPlanResponse) {
   const status = planDisplayStatus(plan);
+  if (requiresSandboxConfirmation(plan)) {
+    return 'Ready to run, but paused for your confirmation. Review the sandbox restrictions above, then confirm to queue execution.';
+  }
   if (!planTerminal(plan.status)) return `Still working. Current status: ${status}.`;
 
   const finalStepResult = projectPlanFinalAnswer(plan);
@@ -1826,6 +1881,55 @@ async function selectPlan(plan: AgentPlanResponse, epoch = projectEpoch) {
   }
 }
 
+async function confirmSandboxExecution(plan: AgentPlanResponse) {
+  if (!requiresSandboxConfirmation(plan) || executingSandboxPlanId.value !== null) return;
+  const sessionId = currentSessionId();
+  if (!sessionId || plan.sessionId !== sessionId) {
+    error.value = 'This plan does not belong to the active Project conversation.';
+    return;
+  }
+  const epoch = projectEpoch;
+  executingSandboxPlanId.value = plan.id;
+  error.value = '';
+  try {
+    const response = await confirmAndQueueSandboxPlan(plan.id, crypto.randomUUID());
+    if (epoch !== projectEpoch) return;
+    selectedPlan.value = response.data;
+    await loadPlans(sessionId, epoch);
+    const refreshed = plans.value.find((item) => item.id === plan.id);
+    if (refreshed) await selectPlan(refreshed, epoch);
+    void pollPlanUntilTerminal(sessionId, plan.id, epoch, 0);
+  } catch (cause) {
+    if (epoch === projectEpoch) error.value = apiError(cause);
+  } finally {
+    if (epoch === projectEpoch) executingSandboxPlanId.value = null;
+  }
+}
+
+async function cancelProjectPlan(plan: AgentPlanResponse) {
+  if (planTerminal(plan.status) || cancellingPlanId.value !== null) return;
+  const sessionId = currentSessionId();
+  if (!sessionId || plan.sessionId !== sessionId) {
+    error.value = 'This plan does not belong to the active Project conversation.';
+    return;
+  }
+  const epoch = projectEpoch;
+  cancellingPlanId.value = plan.id;
+  error.value = '';
+  try {
+    const response = await cancelPlan(plan.id);
+    if (epoch !== projectEpoch) return;
+    selectedPlan.value = response.data;
+    await loadPlans(sessionId, epoch);
+    const refreshed = plans.value.find((item) => item.id === plan.id);
+    if (refreshed) await selectPlan(refreshed, epoch);
+  } catch (cause) {
+    if (epoch === projectEpoch) error.value = apiError(cause);
+  } finally {
+    if (epoch === projectEpoch) cancellingPlanId.value = null;
+  }
+}
+
 async function loadCandidates(sessionId: number, epoch = projectEpoch) {
   loading.candidates = true;
   try {
@@ -1871,6 +1975,7 @@ async function pollPlanUntilTerminal(sessionId: number, planId: number, epoch: n
   const plan = plans.value.find((item) => item.id === planId);
   if (!plan) return;
   await selectPlan(plan);
+  if (requiresSandboxConfirmation(plan)) return;
   if (planTerminal(plan.status)) {
     await loadCandidates(sessionId, epoch);
     return;
@@ -2258,6 +2363,9 @@ onUnmounted(() => {
 .project-plan-process-card[open] .project-plan-process-card__chevron { transform: rotate(90deg); }
 .project-plan-process-card__body { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 12px; }
 .project-plan-process-card__intro { width: 100%; max-width: min(100%, 820px); }
+.project-sandbox-confirmation { width: 100%; }
+.project-sandbox-confirmation p { margin: 0 0 8px; line-height: 1.55; }
+.project-sandbox-confirmation ul { margin: 0 0 12px; padding-left: 20px; line-height: 1.6; }
 
 .project-composer, .project-plan-compose { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; padding-top: 10px; border-top: 1px solid var(--yb-border); background: var(--yb-bg-elevated); position: relative; z-index: 1; }
 .project-plan-compose { margin-top: 2px; }

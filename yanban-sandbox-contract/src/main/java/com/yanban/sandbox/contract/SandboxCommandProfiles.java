@@ -12,7 +12,8 @@ public final class SandboxCommandProfiles {
                 || !matches(argv)) throw new IllegalArgumentException("command profile is not allowed");
     }
     private static boolean matches(List<String> argv){return switch(argv.get(0)){
-        case "mvn" -> maven(argv); case "java" -> argv.equals(List.of("java","-version"));
+        case "mvn" -> maven(argv); case "java" -> argv.equals(List.of("java","-version"))
+                || argv.size()==2&&source(argv.get(1));
         case "javac" -> argv.size()>=2&&argv.size()<=33&&argv.subList(1,argv.size()).stream().allMatch(SandboxCommandProfiles::source);
         case "git" -> argv.equals(List.of("git","diff","--check"))||argv.equals(List.of("git","status","--short"))
                 ||argv.equals(List.of("git","rev-parse","--verify","HEAD")); default -> false;};}

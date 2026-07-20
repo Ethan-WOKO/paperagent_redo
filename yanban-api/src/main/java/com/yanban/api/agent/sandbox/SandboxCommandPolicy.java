@@ -24,7 +24,8 @@ public final class SandboxCommandPolicy {
     private boolean matchesProfile(List<String> argv) {
         return switch (argv.get(0)) {
             case "mvn" -> maven(argv);
-            case "java" -> argv.equals(List.of("java", "-version"));
+            case "java" -> argv.equals(List.of("java", "-version"))
+                    || argv.size() == 2 && safeJavaSource(argv.get(1));
             case "javac" -> argv.size() >= 2 && argv.size() <= 33
                     && argv.subList(1, argv.size()).stream().allMatch(this::safeJavaSource);
             case "git" -> argv.equals(List.of("git", "diff", "--check"))

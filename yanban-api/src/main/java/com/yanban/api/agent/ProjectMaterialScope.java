@@ -20,13 +20,22 @@ public final class ProjectMaterialScope {
     }
 
     public static Set<String> explicitRelativePaths(String... values) {
+        return explicitRelativePaths(true, values);
+    }
+
+    static Set<String> explicitRelativePathsPreservingCase(String... values) {
+        return explicitRelativePaths(false, values);
+    }
+
+    private static Set<String> explicitRelativePaths(boolean lowerCase, String... values) {
         LinkedHashSet<String> paths = new LinkedHashSet<>();
         if (values == null) return Set.of();
         for (String value : values) {
             if (value == null || value.isBlank()) continue;
             Matcher matcher = RELATIVE_FILE.matcher(value);
             while (matcher.find()) {
-                paths.add(normalize(matcher.group(1)));
+                String path = matcher.group(1).trim().replace('\\', '/');
+                paths.add(lowerCase ? path.toLowerCase(Locale.ROOT) : path);
             }
         }
         return Set.copyOf(paths);

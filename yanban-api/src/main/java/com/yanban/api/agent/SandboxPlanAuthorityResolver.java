@@ -56,9 +56,12 @@ public final class SandboxPlanAuthorityResolver {
     }
 
     public static String policyDigest(ResolvedToolPolicy policy, AgentPlanCheckpointService.Validation validation) {
-        String value = policy.allowedTools().stream().sorted().collect(java.util.stream.Collectors.joining(","))
-                + "|" + policy.maxToolCalls() + "|" + policy.maxDuplicateToolCalls() + "|"
-                + validation.checkpointVersion() + "|" + validation.budgetCeiling();
+        if (policy == null || !policy.allowedTools().contains(TOOL_NAME))
+            throw new IllegalStateException("sandbox tool authority is absent or revoked");
+        // The receipt binds only the sandbox capability and the immutable durable budget ceiling.
+        // Unrelated Project read tools may be resolved through different call paths and are not
+        // authority for this execution. Current sandbox revocation is checked before this digest.
+        String value = TOOL_NAME + "|" + validation.budgetCeiling();
         return AgentPlanCheckpointService.sha256(value);
     }
 

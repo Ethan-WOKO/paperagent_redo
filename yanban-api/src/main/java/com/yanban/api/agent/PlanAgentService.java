@@ -106,6 +106,8 @@ public class PlanAgentService {
     private SandboxExecutionProperties sandboxProperties;
     @Autowired(required = false)
     private com.yanban.api.agent.sandbox.SandboxCapabilityPolicyResolver sandboxCapabilityPolicy;
+    @Autowired(required = false)
+    private SandboxPlanConfirmationService sandboxConfirmations;
     private final ExecutorService planExecutor = Executors.newFixedThreadPool(
             PLAN_EXECUTOR_THREADS, daemonThreadFactory("yanban-plan-executor-"));
     private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(
@@ -385,11 +387,15 @@ public class PlanAgentService {
         List<AgentPlanStep> savedSteps = new ArrayList<>();
         int order = 1;
         for (PlanningAgentPlanner.StepSpec step : spec.steps()) {
+            String persistedType = governedSandboxStepType(
+                    sandboxEnabled(), projectContext != null, plan.getGoal(), step);
             // A controlled Plan step is itself part of the attested envelope. Persist its
             // exact server-planned Worker tool union; the ordinary semantic expansion below
             // is intentionally reserved for model-planned Project steps.
             List<String> allowedTools = controlledDispatch == null
-                    ? resolvePersistedStepAllowedTools(step, planToolPolicy, projectContext != null)
+                    ? "SANDBOX_EXECUTE".equals(persistedType)
+                        ? List.of(SandboxPlanAuthorityResolver.TOOL_NAME)
+                        : resolvePersistedStepAllowedTools(step, planToolPolicy, projectContext != null)
                     : resolvePersistedAllowedTools(step.allowedTools(), planToolPolicy);
             savedSteps.add(persistStep(new AgentPlanStep(
                     plan.getId(),
@@ -397,7 +403,7 @@ public class PlanAgentService {
                     order++,
                     step.title(),
                     step.description(),
-                    step.type(),
+                    persistedType,
                     writeJson(step.dependencies()),
                     writeJson(allowedTools),
                     step.successCriteria()
@@ -476,7 +482,11 @@ public class PlanAgentService {
 
     public AgentPlanResponse executePlanAsync(Long userId, Long planId) {
         AgentPlan plan = getOwnedPlan(userId, planId);
-        if (plan.terminal() || AgentPlanStatus.RUNNING.name().equals(plan.getStatus())) {
+        if (plan.terminal()) {
+            return toResponse(plan, steps.findByPlanIdOrderBySortOrderAsc(plan.getId()));
+        }
+        requireCurrentSandboxConfirmation(plan, userId);
+        if (AgentPlanStatus.RUNNING.name().equals(plan.getStatus())) {
             return toResponse(plan, steps.findByPlanIdOrderBySortOrderAsc(plan.getId()));
         }
         if (AgentPlanStatus.PAUSED.name().equals(plan.getStatus())) {
@@ -493,6 +503,27 @@ public class PlanAgentService {
         }
         recordEvent(plan.getId(), null, "plan_queued", Map.of("traceId", traceId, "mode", "async"));
         scheduleAsyncExecution(userId, planId, traceId);
+        return getPlan(userId, planId);
+    }
+
+    @Transactional
+    public AgentPlanResponse confirmAndExecuteSandboxPlanAsync(Long userId, Long planId,
+                                                               ConfirmSandboxExecutionRequest request) {
+        if (!sandboxEnabled() || sandboxConfirmations == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "governed sandbox confirmation is unavailable");
+        }
+        String traceId = newPlanTraceId(planId);
+        SandboxPlanConfirmationService.Confirmation confirmation = sandboxConfirmations.confirmAndQueue(
+                userId, planId, request.idempotencyKey());
+        if (confirmation.queued()) {
+            recordEvent(planId, null, "plan_queued", Map.of(
+                    "traceId", traceId, "mode", "sandbox-confirmed-async",
+                    "projectId", confirmation.scope().projectId(),
+                    "projectVersion", confirmation.scope().projectVersion(),
+                    "sandboxStepSetDigest", confirmation.scope().stepSetDigest()));
+            scheduleAsyncExecution(userId, planId, traceId);
+        }
         return getPlan(userId, planId);
     }
 
@@ -706,6 +737,7 @@ public class PlanAgentService {
             if (AgentPlanStatus.PAUSED.name().equals(plan.getStatus())) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Plan is paused and cannot be executed.");
             }
+            requireCurrentSandboxConfirmation(plan, userId);
 
             if (durableExecutionEnabled(plan)) {
                 var claim = runLeases.claim(planId, userId, executionOwner, PLAN_LEASE_DURATION);
@@ -932,6 +964,12 @@ public class PlanAgentService {
                 persistPlan(plan);
             }
             if (sandboxEnabled() && sandboxOutbox != null) sandboxOutbox.requestCancellation(planId, userId);
+            for (AgentPlanStep step : steps.findByPlanIdOrderBySortOrderAsc(planId)) {
+                if (!"SANDBOX_EXECUTE".equals(step.getType()) || stepTerminal(step)) continue;
+                step.markFailed("CANCELLED: User cancelled plan.");
+                persistStep(step);
+            }
+            if (sandboxConfirmations != null) sandboxConfirmations.cancel(userId, planId);
             recordEvent(plan.getId(), null, "plan_cancelled", Map.of("reason", "User cancelled plan."));
         }
         return toResponse(plan, steps.findByPlanIdOrderBySortOrderAsc(plan.getId()));
@@ -941,6 +979,11 @@ public class PlanAgentService {
         return AgentPlanStepStatus.COMPLETED.name().equals(step.getStatus())
                 || AgentPlanStepStatus.DEGRADED.name().equals(step.getStatus())
                 || AgentPlanStepStatus.SUPERSEDED.name().equals(step.getStatus());
+    }
+
+    private boolean stepTerminal(AgentPlanStep step) {
+        return step != null && Set.of("COMPLETED", "DEGRADED", "FAILED", "SKIPPED", "SUPERSEDED")
+                .contains(step.getStatus());
     }
 
     private AgentPlanStep firstFailedStep(List<AgentPlanStep> allSteps) {
@@ -1005,6 +1048,9 @@ public class PlanAgentService {
         if (preserveMissingMaterialDependencySynthesis(plan, allSteps, step)) {
             return;
         }
+        if (completeSandboxOutputPresentationStep(plan, allSteps, step, traceId)) {
+            return;
+        }
         Set<String> requiredMaterialPaths = requiredProjectMaterialPaths(step);
         for (int attempt = Math.max(0, step.getAttemptCount()); attempt < MAX_STEP_ATTEMPTS; attempt++) {
             if (deadlineExceeded(deadlineAt)) {
@@ -1037,14 +1083,22 @@ public class PlanAgentService {
                         attempt + 1, controlledParentRequest, checkpointCeiling);
                 return;
             }
-            ResolvedToolPolicy runtimeToolPolicy = constrainDurableToolPolicy(
-                    plan, step, resolveRuntimeToolPolicy(step, plan, skill, projectContext),
-                    checkpointCeiling, traceId);
-            if (runtimeToolPolicy == null) return;
+            ResolvedToolPolicy authorityPolicy = resolveRuntimeToolPolicy(step, plan, skill, projectContext);
             if ("SANDBOX_EXECUTE".equals(step.getType())) {
-                executeSandboxPlanStep(plan, step, runtimeToolPolicy, checkpointCeiling, requiredMaterialPaths, traceId);
+                // Checkpoint, dispatch and receipt projection must use the same Project-level authority.
+                // Step authorization is revalidated by SandboxPlanAuthorityResolver; it separately consumes
+                // one persisted tool call before every new sandbox dispatch.
+                ResolvedToolPolicy projectAuthorityPolicy = projectContext == null ? null
+                        : resolveSandboxCapability(resolveCurrentProjectToolPolicy(skill), skill);
+                ResolvedToolPolicy sandboxAuthorityPolicy = sandboxDispatchAuthorityPolicy(
+                        projectContext != null, authorityPolicy, projectAuthorityPolicy);
+                executeSandboxPlanStep(plan, step, sandboxAuthorityPolicy, checkpointCeiling,
+                        requiredSandboxMaterialPaths(step), traceId);
                 return;
             }
+            ResolvedToolPolicy runtimeToolPolicy = constrainDurableToolPolicy(
+                    plan, step, authorityPolicy, checkpointCeiling, traceId);
+            if (runtimeToolPolicy == null) return;
             step.markRunning();
             persistStep(step);
             UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
@@ -1684,6 +1738,7 @@ public class PlanAgentService {
     }
 
     private boolean tryDegradeFailedStep(AgentPlan plan, AgentPlanStep failedStep, String failedError) {
+        if ("SANDBOX_EXECUTE".equals(failedStep.getType())) return false;
         if (!isVerificationFailure(failedError) || !StringUtils.hasText(failedStep.getResult())) {
             return false;
         }
@@ -1731,10 +1786,11 @@ public class PlanAgentService {
         for (AgentPlanStep step : allSteps) {
             boolean relevant = failedDependencies.contains(step.getStepKey())
                     || AgentPlanStepStatus.COMPLETED.name().equals(step.getStatus());
-            if (relevant && StringUtils.hasText(step.getResult())) {
+            String trustedResult = SandboxTrustedResultBoundary.trusted(step);
+            if (relevant && StringUtils.hasText(trustedResult)) {
                 hasCompletedResult = true;
                 sb.append("## ").append(step.getStepKey()).append(" ").append(blankToDefault(step.getTitle(), "")).append("\n")
-                        .append(abbreviate(step.getResult(), 1200))
+                        .append(abbreviate(trustedResult, 1200))
                         .append("\n\n");
             }
         }
@@ -1943,7 +1999,7 @@ public class PlanAgentService {
         for (AgentPlanStep step : completed) {
             bounded.append("\n### ").append(blankToDefault(step.getTitle(), step.getStepKey()))
                     .append(" [").append(step.getStatus()).append("]\n")
-                    .append(step.getResult().strip()).append("\n");
+                    .append(SandboxTrustedResultBoundary.trusted(step).strip()).append("\n");
             if (AgentPlanStepStatus.DEGRADED.name().equals(step.getStatus())
                     && StringUtils.hasText(step.getErrorMessage())) {
                 bounded.append("Limitation: ").append(step.getErrorMessage().strip()).append("\n");
@@ -2009,7 +2065,7 @@ public class PlanAgentService {
             for (AgentPlanStep dependency : retained) {
                 bounded.append("\n### ").append(blankToDefault(dependency.getTitle(), dependency.getStepKey()))
                         .append("\n")
-                        .append(abbreviate(dependency.getResult().strip(), 6000)).append("\n");
+                        .append(abbreviate(SandboxTrustedResultBoundary.trusted(dependency).strip(), 6000)).append("\n");
             }
         }
         bounded.append("\n## 一致点\n")
@@ -2191,6 +2247,21 @@ public class PlanAgentService {
                 step.getTitle(), step.getDescription(), step.getSuccessCriteria());
     }
 
+    static Set<String> requiredSandboxMaterialPaths(AgentPlanStep step) {
+        if (step == null) return Set.of();
+        List<String> paths = new ArrayList<>(ProjectMaterialScope.explicitRelativePathsPreservingCase(
+                step.getTitle(), step.getDescription(), step.getSuccessCriteria()));
+        paths.sort(Comparator.comparingInt(String::length).reversed());
+        LinkedHashSet<String> selected = new LinkedHashSet<>();
+        for (String path : paths) {
+            String normalized = path.toLowerCase(Locale.ROOT);
+            if (selected.stream().anyMatch(existing -> existing.toLowerCase(Locale.ROOT)
+                    .endsWith("/" + normalized))) continue;
+            selected.add(path);
+        }
+        return Set.copyOf(selected);
+    }
+
     private String missingTargetProjectFile(AgentRuntimeResult result, Set<String> requiredMaterialPaths) {
         if (result == null || requiredMaterialPaths == null || requiredMaterialPaths.isEmpty()) return null;
         for (String fallback : result.fallbacks()) {
@@ -2241,6 +2312,33 @@ public class PlanAgentService {
     }
 
     private boolean sandboxEnabled(){return sandboxProperties!=null&&sandboxProperties.isEnabled();}
+    static ResolvedToolPolicy sandboxDispatchAuthorityPolicy(boolean projectPlan,
+                                                              ResolvedToolPolicy stepPolicy,
+                                                              ResolvedToolPolicy projectPolicy) {
+        ResolvedToolPolicy selected = projectPlan ? projectPolicy : stepPolicy;
+        if (selected == null) throw new IllegalStateException("sandbox dispatch authority is unavailable");
+        return selected;
+    }
+
+    static String governedSandboxStepType(boolean sandboxEnabled, boolean projectPlan, String goal,
+                                           PlanningAgentPlanner.StepSpec step) {
+        if (!sandboxEnabled || !projectPlan || step == null
+                || step.allowedTools() == null
+                || !step.allowedTools().contains(SandboxPlanAuthorityResolver.TOOL_NAME)) {
+            return step == null ? null : step.type();
+        }
+        if ("SANDBOX_EXECUTE".equals(step.type())) return step.type();
+        String semantics = String.join(" ",
+                goal == null ? "" : goal,
+                step.title() == null ? "" : step.title(),
+                step.description() == null ? "" : step.description(),
+                step.successCriteria() == null ? "" : step.successCriteria()).toLowerCase(Locale.ROOT);
+        boolean explicitExecution = java.util.stream.Stream.of(
+                        " run ", "execute", "compile", "build", " test ", "javac", "mvn",
+                        "\u8fd0\u884c", "\u6267\u884c", "\u7f16\u8bd1", "\u6784\u5efa", "\u6d4b\u8bd5")
+                .anyMatch(candidate -> (" " + semantics + " ").contains(candidate));
+        return explicitExecution ? "SANDBOX_EXECUTE" : step.type();
+    }
     private ResolvedToolPolicy resolveSandboxCapability(ResolvedToolPolicy policy,ResolvedSkill skill){return sandboxCapabilityPolicy==null?policy:sandboxCapabilityPolicy.resolve(policy,skill);}
     private ResolvedToolPolicy resolveCurrentProjectToolPolicy(ResolvedSkill skill){
         if(toolPolicyEngine==null)throw new IllegalStateException("current Project tool policy is unavailable");
@@ -2332,7 +2430,8 @@ public class PlanAgentService {
         }
         boolean hasDependencyResult = false;
         for (AgentPlanStep item : completedDependencyClosure(allSteps, step)) {
-            if (StringUtils.hasText(item.getResult())) {
+            String trustedResult = SandboxTrustedResultBoundary.trusted(item);
+            if (StringUtils.hasText(trustedResult)) {
                 hasDependencyResult = true;
                 sb.append("## ").append(item.getStepKey()).append(" ")
                         .append(blankToDefault(item.getTitle(), ""))
@@ -2342,7 +2441,7 @@ public class PlanAgentService {
                     sb.append("Dependency limitation: ")
                             .append(abbreviate(item.getErrorMessage(), 800)).append("\n");
                 }
-                sb.append(abbreviate(item.getResult(), 3200)).append("\n\n");
+                sb.append(abbreviate(trustedResult, 3200)).append("\n\n");
                 String dependencyState = sharedExecutionState.get(item.getStepKey());
                 if (StringUtils.hasText(dependencyState)) {
                     sb.append("Reusable tool observations from ").append(item.getStepKey())
@@ -2575,6 +2674,11 @@ public class PlanAgentService {
                 .map(AgentPlanStep::getId)
                 .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.toSet());
+        Set<Long> sandboxDependencyIds = completedDependencyClosure(allSteps, step).stream()
+                .filter(value -> "SANDBOX_EXECUTE".equals(value.getType()))
+                .map(AgentPlanStep::getId)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
         if (dependencyIds.isEmpty()) {
             return EvidenceLedger.empty();
         }
@@ -2584,7 +2688,7 @@ public class PlanAgentService {
         }
         Map<String, EvidenceRef> trusted = new LinkedHashMap<>();
         for (AgentPlanEvent event : persisted) {
-            if (!dependencyIds.contains(event.getStepId())
+            if (!dependencyIds.contains(event.getStepId()) || sandboxDependencyIds.contains(event.getStepId())
                     || !"step_project_evidence".equals(event.getEventType())
                     || !StringUtils.hasText(event.getPayloadJson())) {
                 continue;
@@ -2652,6 +2756,50 @@ public class PlanAgentService {
                 .toList();
     }
 
+    /**
+     * A tool-free step immediately following governed sandbox execution is presentation-only.
+     * Re-running the general Project agent here incorrectly requires fresh file evidence and can
+     * also reinterpret execution facts. Reuse the already persisted receipt and optional bounded
+     * output analysis instead; this path has no tools and cannot dispatch another action.
+     */
+    private boolean completeSandboxOutputPresentationStep(AgentPlan plan,
+                                                          List<AgentPlanStep> allSteps,
+                                                          AgentPlanStep step,
+                                                          String traceId) {
+        if (plan == null || step == null || !readStringList(step.getAllowedToolsJson()).isEmpty()) {
+            return false;
+        }
+        List<AgentPlanStep> sandboxDependencies = completedDependencyClosure(allSteps, step).stream()
+                .filter(value -> "SANDBOX_EXECUTE".equals(value.getType()))
+                .filter(value -> AgentPlanStepStatus.COMPLETED.name().equals(value.getStatus()))
+                .toList();
+        if (sandboxDependencies.isEmpty()) return false;
+
+        Set<Long> sandboxStepIds = sandboxDependencies.stream().map(AgentPlanStep::getId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        StringBuilder result = new StringBuilder("Sandbox execution presentation (read-only; no additional execution).\n");
+        for (AgentPlanStep dependency : sandboxDependencies) {
+            if (StringUtils.hasText(dependency.getResult())) result.append(dependency.getResult().strip()).append("\n");
+        }
+        for (AgentPlanEvent event : events.findByPlanIdOrderByCreatedAtAsc(plan.getId())) {
+            if (!sandboxStepIds.contains(event.getStepId()) || !"sandbox_output_analysis".equals(event.getEventType())) continue;
+            try {
+                JsonNode payload = objectMapper.readTree(event.getPayloadJson());
+                if (payload.hasNonNull("summary")) {
+                    result.append(com.yanban.api.agent.sandbox.SandboxOutputAnalysisService.DISCLAIMER)
+                            .append("\n").append(abbreviate(payload.path("summary").asText(), 2000)).append("\n");
+                }
+            } catch (Exception ignored) {
+                // Optional display analysis never changes the authoritative receipt facts.
+            }
+        }
+        step.markCompleted(result.toString().strip());
+        persistStep(step);
+        recordEvent(plan.getId(), step.getId(), "sandbox_output_presentation_reused", Map.of(
+                "stepKey", step.getStepKey(), "traceId", traceId));
+        return true;
+    }
+
     private boolean isUsableDependency(AgentPlanStep step) {
         return AgentPlanStepStatus.COMPLETED.name().equals(step.getStatus())
                 || AgentPlanStepStatus.DEGRADED.name().equals(step.getStatus());
@@ -2665,12 +2813,35 @@ public class PlanAgentService {
                     .append(step.getStepKey()).append(" ")
                     .append(blankToDefault(step.getTitle(), ""))
                     .append(": ")
-                    .append(StringUtils.hasText(step.getResult())
-                            ? abbreviate(step.getResult(), 300)
+                    .append(StringUtils.hasText(SandboxTrustedResultBoundary.trusted(step))
+                            ? abbreviate(SandboxTrustedResultBoundary.trusted(step), 300)
                             : blankToDefault(step.getErrorMessage(), "No result"))
                     .append("\n");
         }
+        appendSandboxExecutionFactsAndAnalysis(sb, plan.getId());
         return sb.toString().trim();
+    }
+
+    private void appendSandboxExecutionFactsAndAnalysis(StringBuilder target, Long planId) {
+        for (AgentPlanEvent event : events.findByPlanIdOrderByCreatedAtAsc(planId)) {
+            try {
+                JsonNode payload = objectMapper.readTree(event.getPayloadJson());
+                if (("step_project_evidence".equals(event.getEventType())
+                        || "sandbox_execution_failed".equals(event.getEventType())) && payload.hasNonNull("executionId")) {
+                    target.append("- Sandbox execution facts: status=").append(payload.path("status").asText("UNKNOWN"))
+                            .append(", exitCode=").append(payload.path("exitCode").asText("unknown"))
+                            .append(", timedOut=").append(payload.path("timedOut").asBoolean(false))
+                            .append(", provider=").append(payload.path("provider").asText("unknown"))
+                            .append(", candidate=NOT_APPLIED\n");
+                } else if ("sandbox_output_analysis".equals(event.getEventType())
+                        && payload.hasNonNull("summary")) {
+                    target.append("- ").append(com.yanban.api.agent.sandbox.SandboxOutputAnalysisService.DISCLAIMER)
+                            .append("\n  ").append(abbreviate(payload.path("summary").asText(), 2000)).append("\n");
+                }
+            } catch (Exception ignored) {
+                // Optional presentation data must not affect execution state.
+            }
+        }
     }
 
     private void persistConversationSummary(Long userId, Long sessionId, AgentPlan plan, List<AgentPlanStep> allSteps) {
@@ -2753,6 +2924,7 @@ public class PlanAgentService {
 
     private void validatePlanExecutionBoundary(AgentPlan plan, Long userId, String traceId) {
         restoreProjectContext(plan, userId);
+        requireCurrentSandboxConfirmation(plan, userId);
         JsonNode controlled = ProjectPlanEnvelope.restoreControlled(objectMapper, plan.getRawPlanJson(), userId);
         boolean persistedControlledMarker = steps.findByPlanIdOrderBySortOrderAsc(plan.getId()).stream()
                 .anyMatch(this::hasControlledEnvelopeMarker);
@@ -2762,6 +2934,15 @@ public class PlanAgentService {
         if (controlled != null && restoreControlledExecutionRequest(plan, userId, traceId, true) == null) {
             throw new IllegalStateException("controlled Plan authority could not be recovered");
         }
+    }
+
+    private void requireCurrentSandboxConfirmation(AgentPlan plan, Long userId) {
+        if (!containsSandboxStep(plan.getId())) return;
+        if (!sandboxEnabled() || sandboxConfirmations == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "SANDBOX_CONFIRMATION_REQUIRED: governed confirmation service is unavailable");
+        }
+        sandboxConfirmations.requireCurrent(plan, userId);
     }
 
     private AgentRuntimeRequest restoreControlledExecutionRequest(AgentPlan plan, Long userId, String traceId,
@@ -2876,10 +3057,15 @@ public class PlanAgentService {
     /** Reads only server-persisted step evidence events, never model result prose. */
     private EvidenceLedger evidenceFromStepEvents(Long planId) {
         Map<String, EvidenceRef> refs = new LinkedHashMap<>();
+        Set<Long> sandboxStepIds = steps.findByPlanIdOrderBySortOrderAsc(planId).stream()
+                .filter(step -> "SANDBOX_EXECUTE".equals(step.getType()))
+                .map(AgentPlanStep::getId).filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
         List<AgentPlanEvent> persisted = events.findByPlanIdOrderByCreatedAtAsc(planId);
         if (persisted == null) persisted = List.of();
         for (AgentPlanEvent event : persisted) {
-            if (!"step_project_evidence".equals(event.getEventType()) || !StringUtils.hasText(event.getPayloadJson())) continue;
+            if (sandboxStepIds.contains(event.getStepId()) || !"step_project_evidence".equals(event.getEventType())
+                    || !StringUtils.hasText(event.getPayloadJson())) continue;
             try {
                 JsonNode values = objectMapper.readTree(event.getPayloadJson()).path("evidence");
                 if (!values.isArray()) continue;
@@ -3094,7 +3280,8 @@ public class PlanAgentService {
         AgentPlanExecutionLease lease = currentExecutionLease();
         if (lease == null) return persistPlan(plan);
         String canonical = AgentPlanStatus.COMPLETED.name().equals(plan.getStatus())
-                ? toResponse(plan, planSteps).finalAnswer() : null;
+                ? (containsSandboxStep(plan.getId()) ? buildFinalSummary(plan, planSteps)
+                        : toResponse(plan, planSteps).finalAnswer()) : null;
         if (AgentPlanStatus.COMPLETED.name().equals(plan.getStatus()) && !StringUtils.hasText(canonical)) {
             canonical = buildFinalSummary(plan, planSteps);
         }
@@ -3213,8 +3400,16 @@ public class PlanAgentService {
         step.markRunning();
         persistStep(step);
         String key = "plan-" + plan.getId() + "-step-" + step.getId();
+        List<String> command;
+        try {
+            command = governedSandboxCommand(relativePaths, step.getDescription());
+        } catch (IllegalArgumentException exception) {
+            step.markFailed("COMMAND_NOT_ALLOWED: no unambiguous server-owned command profile matches the selected files.");
+            persistStep(step);
+            return;
+        }
         SandboxExecutionOutboxService.Claim claim = sandboxOutbox.claim(currentExecutionLease(), step.getId(), policy,
-                ceiling, key, relativePaths, List.of("mvn", "-o", "test"));
+                ceiling, key, relativePaths, command);
         recordEvent(plan.getId(), step.getId(), "sandbox_execution_dispatched", Map.of(
                 "executionId", claim.executionId(), "requestDigest", claim.requestDigest(),
                 "candidateApplicationStatus", "NOT_APPLIED", "traceId", traceId));
@@ -3225,6 +3420,28 @@ public class PlanAgentService {
         for (AgentPlanStep step : planSteps) if ("SANDBOX_EXECUTE".equals(step.getType())
                 && sandboxOutbox.isAwaiting(planId, step.getId())) return true;
         return false;
+    }
+
+    static List<String> governedSandboxCommand(Set<String> relativePaths) {
+        return governedSandboxCommand(relativePaths, null);
+    }
+
+    static List<String> governedSandboxCommand(Set<String> relativePaths, String instruction) {
+        if (relativePaths == null || relativePaths.isEmpty()) throw new IllegalArgumentException("files required");
+        List<String> explicitlyNamedJavaSources = relativePaths.stream()
+                .filter(path -> path != null && path.endsWith(".java"))
+                .filter(path -> instruction != null && instruction.contains(path))
+                .sorted().toList();
+        if (explicitlyNamedJavaSources.size() == 1) return List.of("java", explicitlyNamedJavaSources.get(0));
+        if (explicitlyNamedJavaSources.size() > 1) throw new IllegalArgumentException("ambiguous command profile");
+        if (relativePaths.stream().anyMatch(path -> "pom.xml".equals(path))) {
+            return List.of("mvn", "-o", "test");
+        }
+        List<String> javaSources = relativePaths.stream()
+                .filter(path -> path != null && path.endsWith(".java"))
+                .sorted().toList();
+        if (javaSources.size() == 1) return List.of("java", javaSources.get(0));
+        throw new IllegalArgumentException("ambiguous command profile");
     }
 
     private LeaseHeartbeat startHeartbeat(AgentPlanExecutionLease lease, LocalDateTime startedAt) {

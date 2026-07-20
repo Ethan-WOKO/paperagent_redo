@@ -6,10 +6,35 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class PlanReflectionRuntimeAdapterTest {
+
+    @Test
+    void reflectionDisplaysPersistedSandboxCanonicalAnalysis() {
+        PlanAgentService service = mock(PlanAgentService.class);
+        PlanReflectionRuntimeAdapter adapter = new PlanReflectionRuntimeAdapter(service, new AgentStrategySelector());
+        String canonical = "Sandbox execution facts: status=SUCCEEDED, exitCode=0\n"
+                + "AI interpretation based on program output; not independently verified.\nPrinted six rows.";
+        AgentPlanStepResponse sandbox = new AgentPlanStepResponse(1L, "sandbox", 1, "Run", "run",
+                "SANDBOX_EXECUTE", List.of(), List.of("sandbox_execute"), "done", "COMPLETED", 1,
+                "display-only stdout", null, null, null);
+        AgentPlanResponse response = new AgentPlanResponse(81L, 21L, "goal", "summary", "COMPLETED", true,
+                null, null, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now(),
+                List.of(sandbox), "SUCCESS", canonical);
+        when(service.createAndExecuteRuntimeReflectionPlan(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("run code"))).thenReturn(new PlanAgentService.PlanExecutionResult(
+                response, AgentRuntimeStopSignal.NONE, EvidenceLedger.empty(), DomainRuntimeFacts.empty()));
+
+        AgentRuntimeResult result = adapter.run(new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE_WITH_REFLECTION,
+                21L, List.of(), 11L, "/plan reflect run code", "deepseek", "model", null, null, 4, true,
+                null, null, null, null, AgentRuntimeMode.LANGCHAIN4J,
+                AgentToolCallingMode.LANGCHAIN4J_TOOL_BINDING, List.of(), 0, 1, "trace", null, null));
+
+        assertThat(result.assistantContent()).contains(canonical).doesNotContain("display-only stdout");
+    }
 
     @Test
     void reflectionSummaryExposesDegradedAndFailedLimitations() {

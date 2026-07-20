@@ -235,6 +235,10 @@ export function executePlanAsync(planId: number) {
   return http.post<AgentPlanResponse>(`/agent/plans/${planId}/execute-async`, {});
 }
 
+export function confirmAndQueueSandboxPlan(planId: number, idempotencyKey: string) {
+  return http.post<AgentPlanResponse>(`/agent/plans/${planId}/sandbox-confirm-and-queue`, { idempotencyKey });
+}
+
 export function retryPlan(planId: number) {
   return http.post<AgentPlanResponse>(`/agent/plans/${planId}/retry`, {});
 }

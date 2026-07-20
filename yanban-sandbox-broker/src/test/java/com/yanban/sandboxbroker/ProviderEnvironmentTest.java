@@ -16,7 +16,9 @@ class ProviderEnvironmentTest {
         ProcessBuilder builder = new ProcessBuilder("ignored");
         builder.environment().put("DATABASE_PASSWORD", "must-not-leak");
         new ProviderEnvironment(properties).apply(builder);
-        assertThat(builder.environment()).containsOnlyKeys("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "SBX_NO_TELEMETRY");
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("windows"))
+            assertThat(builder.environment()).containsOnlyKeys("HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "SBX_NO_TELEMETRY");
+        else assertThat(builder.environment()).containsOnlyKeys("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "SBX_NO_TELEMETRY");
         assertThat(builder.environment()).doesNotContainKey("DATABASE_PASSWORD");
     }
 }

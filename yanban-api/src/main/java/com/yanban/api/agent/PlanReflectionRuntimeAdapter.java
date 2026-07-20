@@ -81,7 +81,8 @@ public class PlanReflectionRuntimeAdapter implements RuntimeAdapter {
         for (AgentPlanStepResponse step : steps) {
             if ("DEGRADED".equals(step.status()) || "FAILED".equals(step.status()) || "SKIPPED".equals(step.status())) {
                 limitations.add("- " + step.stepKey() + " [" + step.status() + "]: "
-                        + blankToDefault(firstNonBlank(step.errorMessage(), step.result()), "No detail recorded."));
+                        + blankToDefault(firstNonBlank(step.errorMessage(), SandboxTrustedResultBoundary.trusted(
+                                step.type(), step.status(), step.result())), "No detail recorded."));
             }
         }
         if (StringUtils.hasText(plan.errorMessage())) {
@@ -132,7 +133,8 @@ public class PlanReflectionRuntimeAdapter implements RuntimeAdapter {
 
         sb.append("Follow-up suggestions:\n");
         followUps.forEach(item -> sb.append(item).append("\n"));
-        String finalAnswer = PlanRuntimeAdapter.withoutInternalPresentationMetadata(plan.finalAnswer());
+        String finalAnswer = PlanRuntimeAdapter.withoutInternalPresentationMetadata(
+                SandboxTrustedResultBoundary.trustedPlanFinalAnswer(plan));
         if (StringUtils.hasText(finalAnswer)) {
             sb.append("Final Plan synthesis:\n")
                     .append(finalAnswer)

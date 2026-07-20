@@ -163,6 +163,12 @@ public class AgentPlanStep {
         this.finishedAt = LocalDateTime.now();
     }
 
+    public void appendReadOnlyTerminalResult(String appendix) {
+        if (!AgentPlanStepStatus.FAILED.name().equals(status) || appendix == null || appendix.isBlank()) return;
+        if (result == null || result.isBlank()) result = appendix;
+        else if (!result.contains(appendix)) result = result + "\n\n" + appendix;
+    }
+
     public void markSkipped(String reason) {
         this.status = AgentPlanStepStatus.SKIPPED.name();
         this.errorMessage = reason;

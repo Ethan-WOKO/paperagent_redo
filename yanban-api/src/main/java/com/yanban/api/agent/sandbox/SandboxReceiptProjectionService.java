@@ -13,6 +13,9 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +31,7 @@ public class SandboxReceiptProjectionService {
     private final AgentToolPolicyEngine toolPolicies; private final SandboxCapabilityPolicyResolver sandboxPolicies; private final SkillsService skills;
     private final ProjectService projects; private final ObjectMapper json; private final JdbcTemplate jdbc;
     private final String owner="sandbox-projector-"+UUID.randomUUID();
+    @Autowired(required=false) private SandboxOutputAnalysisProjectionService outputAnalysisProjection;
 
     public SandboxReceiptProjectionService(SandboxOutboxRepository outbox,AgentPlanRepository plans,AgentPlanStepRepository steps,
             AgentPlanRunLeaseService leases,AgentSessionRepository sessions,AgentPlanCheckpointService checkpoints,
@@ -56,7 +60,11 @@ public class SandboxReceiptProjectionService {
             locked=outbox.lockByExecutionId(executionId).orElseThrow();
             LocalDateTime now=dbNow();
             if(!"RECEIPT_PENDING_PROJECTION".equals(locked.status()))return Result.PROJECTED;
-            if(lease.fence()!=Math.addExact(locked.leaseFence(),1L)||!"RUNNING".equals(plan.getStatus())
+            // A verified receipt may outlive more than one legitimate durable-plan recovery.
+            // claim() already proves that this projector owns the current Plan lease, so the
+            // receipt's dispatch fence only needs to be older than the current lease. Requiring
+            // exact adjacency incorrectly rejects receipts after intermediate recovery claims.
+            if(lease.fence()<=locked.leaseFence()||!"RUNNING".equals(plan.getStatus())
                     ||!locked.sessionId().equals(plan.getSessionId()))return reject(locked,now);
             AgentPlanStep step=steps.findById(locked.stepId()).orElse(null);
             AgentSession session=sessions.findById(locked.sessionId()).orElse(null);
@@ -74,6 +82,7 @@ public class SandboxReceiptProjectionService {
             SandboxReceipt receipt=readReceipt(locked.receiptJson());
             projectExactlyOnce(locked,step,lease,request,receipt);
             locked.finishProjection(receipt.status().name(),null,now);
+            scheduleOutputAnalysisAfterCommit(locked.executionId());
             return Result.PROJECTED;
         }catch(RuntimeException exception){
             if(locked!=null&&deterministicAuthorityRejection(exception))return reject(locked,dbNow());
@@ -94,18 +103,37 @@ public class SandboxReceiptProjectionService {
 
     private Result reject(SandboxOutboxExecution value,LocalDateTime now){value.finishProjection("CANCELLED","SANDBOX_PROJECTION_AUTHORITY_REJECTED",now);return Result.REJECTED;}
     private void projectExactlyOnce(SandboxOutboxExecution value,AgentPlanStep step,AgentPlanExecutionLease lease,SandboxDispatch request,SandboxReceipt receipt){
-        String result="Sandbox receipt "+value.receiptDigest()+"; provider="+receipt.provider()+"; status="+receipt.status()+"; exitCode="+receipt.exitCode()+"; stdoutSha256="+sha256(receipt.stdout())+"; stderrSha256="+sha256(receipt.stderr())+"; candidate=NOT_APPLIED";
+        String result="Sandbox receipt "+value.receiptDigest()+"; provider="+receipt.provider()+"; status="+receipt.status()+"; exitCode="+receipt.exitCode()+"; stdoutSha256="+sha256(receipt.stdout())+"; stderrSha256="+sha256(receipt.stderr())+"; candidate=NOT_APPLIED"
+                +"; outputTrust=UNTRUSTED_DISPLAY_ONLY\nstdout:\n"+receipt.stdout()+"\nstderr:\n"+receipt.stderr();
         if(receipt.status()==SandboxExecutionStatus.SUCCEEDED)step.markCompleted(result);else step.markFailed("SANDBOX_"+receipt.status(),result);
         leases.saveOwnedStep(lease,step);
         String key="sandbox-receipt:"+value.executionId();
         AgentPlanEvent event=new AgentPlanEvent(value.planId(),value.stepId(),receipt.status()==SandboxExecutionStatus.SUCCEEDED?"step_project_evidence":"sandbox_execution_failed",
-                write(receipt.status()==SandboxExecutionStatus.SUCCEEDED?sandboxEvidence(value,receipt,request):Map.of("executionId",value.executionId(),"status",receipt.status().name(),"candidateApplicationStatus","NOT_APPLIED")),key);
+                write(receipt.status()==SandboxExecutionStatus.SUCCEEDED?sandboxEvidence(value,receipt,request):sandboxFailureFacts(value,receipt)),key);
         leases.saveOwnedEvent(lease,event);
+    }
+    private Map<String,Object> sandboxFailureFacts(SandboxOutboxExecution value,SandboxReceipt receipt){
+        Map<String,Object> facts=new LinkedHashMap<>();facts.put("executionId",value.executionId());facts.put("status",receipt.status().name());
+        facts.put("exitCode",receipt.exitCode());facts.put("timedOut",receipt.status()==SandboxExecutionStatus.TIMED_OUT);
+        facts.put("provider",receipt.provider());facts.put("candidateApplicationStatus","NOT_APPLIED");return facts;
+    }
+    private void scheduleOutputAnalysisAfterCommit(String executionId){
+        if(outputAnalysisProjection==null)return;
+        if(TransactionSynchronizationManager.isSynchronizationActive()){
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization(){
+                @Override public void afterCommit(){outputAnalysisProjection.analyzeAfterCommit(executionId);}
+            });
+        }else outputAnalysisProjection.analyzeAfterCommit(executionId);
     }
     private Map<String,Object> sandboxEvidence(SandboxOutboxExecution value,SandboxReceipt receipt,SandboxDispatch request){
         List<Map<String,Object>> evidence=new ArrayList<>();
         request.files().forEach((path,content)->evidence.add(Map.ofEntries(Map.entry("id","trusted-tool:"+value.projectId()+":sandbox:"+value.executionId()+":"+sha256(path)),Map.entry("sourceType","PROJECT"),Map.entry("source","PROJECT"),Map.entry("file",path),Map.entry("chunk","status="+receipt.status()+" exitCode="+receipt.exitCode()+" stdoutSha256="+sha256(receipt.stdout())+" stderrSha256="+sha256(receipt.stderr())),Map.entry("citation","sandbox:"+value.executionId()),Map.entry("version",sha256(content)),Map.entry("selectionReason","server-verified governed sandbox receipt; candidate NOT_APPLIED"),Map.entry("projectVersion",value.projectVersion()),Map.entry("fileHash",sha256(content)),Map.entry("startLine",1),Map.entry("endLine",1),Map.entry("parserVersion","sandbox-receipt-v1"),Map.entry("versionStatus","VERIFIED"))));
-        return Map.of("executionId",value.executionId(),"requestDigest",value.requestDigest(),"receiptDigest",value.receiptDigest(),"status",receipt.status().name(),"commandProfile",request.argv().isEmpty()?"":request.argv().get(0),"artifacts",receipt.artifacts(),"candidateApplicationStatus","NOT_APPLIED","evidence",evidence);
+        Map<String,Object> result=new LinkedHashMap<>();
+        result.put("executionId",value.executionId());result.put("requestDigest",value.requestDigest());result.put("receiptDigest",value.receiptDigest());
+        result.put("provider",receipt.provider());result.put("status",receipt.status().name());result.put("exitCode",receipt.exitCode());
+        result.put("timedOut",receipt.status()==SandboxExecutionStatus.TIMED_OUT);result.put("commandProfile",request.argv().isEmpty()?"":request.argv().get(0));
+        result.put("artifacts",receipt.artifacts());result.put("candidateApplicationStatus","NOT_APPLIED");result.put("evidence",evidence);
+        return result;
     }
     private List<String> readTools(String value){try{var node=json.readTree(value);if(node==null||!node.isArray())return List.of();List<String> out=new ArrayList<>();node.forEach(v->{if(v.isTextual())out.add(v.asText());});return out;}catch(Exception ex){return List.of();}}
     private SandboxDispatch readDispatch(String value){try{return json.readValue(value,SandboxDispatch.class);}catch(Exception ex){throw new IllegalStateException(ex);}}

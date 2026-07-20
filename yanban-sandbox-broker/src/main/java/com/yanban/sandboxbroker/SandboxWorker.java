@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(prefix="yanban.broker",name="enabled",havingValue="true")
 class SandboxWorker {
     private static final Duration LEASE=Duration.ofSeconds(30);
+    private static final long CREATE_TIMEOUT_MILLIS=60_000L;
     private final SandboxLeaseService leases; private final BrokerProperties properties; private final ObjectMapper json;
     private final SandboxProcessRegistry processes; private final ProviderEnvironment providerEnvironment; private final String owner=UUID.randomUUID().toString();
     SandboxWorker(SandboxLeaseService leases,BrokerProperties properties,ObjectMapper json,SandboxProcessRegistry processes,ProviderEnvironment providerEnvironment){this.leases=leases;this.properties=properties;this.json=json;this.processes=processes;this.providerEnvironment=providerEnvironment;}
@@ -39,7 +40,7 @@ class SandboxWorker {
         Instant startedAt=leases.now(lease); ExecResult result=null; SandboxExecutionStatus desired=SandboxExecutionStatus.FAILED; SandboxErrorCode error=null;
         try{
             materialize(root,request.files()); leases.transition(lease,"MATERIALIZING",checkpoint("MATERIALIZED",entity.sandboxName()));
-            requireOk(execute(lease,commands.create(entity.sandboxName(),root,request.cpus(),request.memoryBytes()),30000,65536),"create");
+            requireOk(execute(lease,commands.create(entity.sandboxName(),root,request.cpus(),request.memoryBytes()),CREATE_TIMEOUT_MILLIS,65536),"create");
             leases.transition(lease,"CREATED",checkpoint("CREATED",entity.sandboxName()));
             requireOk(execute(lease,commands.denyAllNetwork(entity.sandboxName()),30000,65536),"network policy");
             ExecResult policy=execute(lease,commands.verifyNetworkPolicy(entity.sandboxName()),30000,262144);
@@ -62,6 +63,8 @@ class SandboxWorker {
             leases.terminal(lease,"CANCELLED",sha256(encoded),encoded,"CANCELLED");
         }else if(desired!=SandboxExecutionStatus.SUCCEEDED)leases.terminal(lease,desired.name(),digest,receiptJson,error==null?null:error.name());
     }
+
+    static long createTimeoutMillis(){return CREATE_TIMEOUT_MILLIS;}
 
     private void recoverUnexpected(SandboxLeaseService.Lease lease) {
         try {
@@ -89,11 +92,20 @@ class SandboxWorker {
         case SUCCEEDED -> "SUCCEEDED_PENDING_CLEANUP"; case TIMED_OUT -> "TIMED_OUT_PENDING_CLEANUP";
         case CANCELLED -> "CANCEL_REQUESTED"; default -> "FAILED_PENDING_CLEANUP";};}
     private boolean cleanup(SandboxLeaseService.Lease lease,SbxCommandFactory commands,String name,Path root){
-        try{leases.transition(lease,"CLEANING",checkpoint("CLEANING",name));processes.terminate(lease.executionId());
-            execute(lease,commands.stop(name),10000,65536,false);execute(lease,commands.remove(name),20000,65536,false);
-            ExecResult list=execute(lease,commands.list(),10000,1048576,false);if(list.exitCode()!=0||sandboxExists(list.stdout(),name))return false;
-            return deleteWorkspace(root);
-        }catch(Exception ex){return false;}
+        try{leases.transition(lease,"CLEANING",checkpoint("CLEANING",name));processes.terminate(lease.executionId());}
+        catch(Exception ex){return false;}
+        for(int attempt=1;attempt<=3;attempt++){
+            try{
+                execute(lease,commands.stop(name),10000,65536,false);
+                execute(lease,commands.remove(name),20000,65536,false);
+                ExecResult list=execute(lease,commands.list(),10000,1048576,false);
+                if(list.exitCode()==0&&!sandboxExists(list.stdout(),name)&&deleteWorkspace(root))return true;
+            }catch(Exception ignored){ }
+            if(attempt<3){
+                try{Thread.sleep(250L*attempt);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();return false;}
+            }
+        }
+        return false;
     }
     private ExecResult execute(SandboxLeaseService.Lease lease,List<String> argv,long timeout,long limit)throws Exception{
         return execute(lease,argv,timeout,limit,true);
@@ -122,7 +134,8 @@ class SandboxWorker {
     private Thread reader(InputStream input,ByteArrayOutputStream output,AtomicLong budget,AtomicReference<Throwable> failure){return new Thread(()->{try(input){byte[] b=new byte[8192];int n;while((n=input.read(b))>=0){long left=budget.addAndGet(-n);if(left<0){failure.compareAndSet(null,new OutputLimitException());return;}output.write(b,0,n);}}catch(Throwable ex){failure.compareAndSet(null,ex);}},"sandbox-output-reader");}
     private String decode(ByteArrayOutputStream bytes)throws CharacterCodingException{return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString();}
     private void requireDenyAll(String value)throws Exception{JsonNode root=json.readTree(value);if(!containsRule(root))throw new IllegalStateException("active scoped deny-all rule missing");}
-    private boolean containsRule(JsonNode node){if(node==null)return false;if(node.isObject()){boolean match="local".equals(node.path("source").asText())&&"deny".equals(node.path("decision").asText())&&"network".equals(node.path("type").asText())&&node.path("active").asBoolean(false)&&"**".equals(node.path("resource").asText());if(match)return true;var fields=node.fields();while(fields.hasNext())if(containsRule(fields.next().getValue()))return true;}else if(node.isArray())for(JsonNode child:node)if(containsRule(child))return true;return false;}
+    private boolean containsRule(JsonNode node){if(node==null)return false;if(node.isObject()){boolean legacy="local".equals(node.path("source").asText())&&"network".equals(node.path("type").asText())&&node.path("active").asBoolean(false)&&"**".equals(node.path("resource").asText());boolean current=("local".equals(node.path("origin").asText())||"scoped".equals(node.path("origin").asText()))&&"network".equals(node.path("resource_type").asText())&&"active".equals(node.path("status").asText())&&containsResource(node.path("resources"),"**");if("deny".equals(node.path("decision").asText())&&(legacy||current))return true;var fields=node.fields();while(fields.hasNext())if(containsRule(fields.next().getValue()))return true;}else if(node.isArray())for(JsonNode child:node)if(containsRule(child))return true;return false;}
+    private boolean containsResource(JsonNode resources,String expected){if(!resources.isArray())return false;for(JsonNode resource:resources)if(resource.isTextual()&&expected.equals(resource.asText()))return true;return false;}
     private boolean sandboxExists(String value,String name)throws Exception{JsonNode root=json.readTree(value);return exactName(root,name);}
     private boolean exactName(JsonNode node,String name){if(node==null)return false;if(node.isObject()){if(name.equals(node.path("name").asText()))return true;var it=node.fields();while(it.hasNext())if(exactName(it.next().getValue(),name))return true;}else if(node.isArray())for(JsonNode child:node)if(exactName(child,name))return true;return false;}
     private void materialize(Path root,Map<String,String> files)throws Exception{Files.createDirectory(root);Path canonical=root.toRealPath(LinkOption.NOFOLLOW_LINKS);for(var file:files.entrySet()){Path relative=Path.of(file.getKey());if(relative.isAbsolute()||!relative.normalize().equals(relative)||java.util.stream.StreamSupport.stream(relative.spliterator(),false).anyMatch(part->"..".equals(part.toString())||".".equals(part.toString())))throw new IOException("unsafe path");Path parent=root;for(Path segment:relative.getParent()==null?List.<Path>of():relative.getParent()){parent=parent.resolve(segment.toString());try{Files.createDirectory(parent);}catch(FileAlreadyExistsException exists){if(!Files.isDirectory(parent,LinkOption.NOFOLLOW_LINKS))throw new IOException("workspace alias",exists);}if(Files.isSymbolicLink(parent)||!parent.toRealPath(LinkOption.NOFOLLOW_LINKS).startsWith(canonical))throw new IOException("workspace alias");}Path target=root.resolve(relative);Files.writeString(target,file.getValue(),StandardOpenOption.CREATE_NEW,LinkOption.NOFOLLOW_LINKS);}}

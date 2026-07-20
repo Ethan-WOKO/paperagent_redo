@@ -12,10 +12,31 @@ import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
 import com.yanban.core.model.ChatMessage;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class PlanRuntimeAdapterTest {
+
+    @Test
+    void sandboxPlanDisplaysPersistedFactsAndLabeledOutputAnalysis() {
+        PlanAgentService service = mock(PlanAgentService.class);
+        String canonical = "Sandbox execution facts: status=SUCCEEDED, exitCode=0\n"
+                + "AI interpretation based on program output; not independently verified.\nPrinted six rows.";
+        AgentPlanStepResponse sandbox = new AgentPlanStepResponse(1L, "sandbox", 1, "Run", "run",
+                "SANDBOX_EXECUTE", List.of(), List.of("sandbox_execute"), "done", "COMPLETED", 1,
+                "display-only stdout", null, null, null);
+        AgentPlanResponse completed = new AgentPlanResponse(19L, 11L, "goal", "summary", "COMPLETED", true,
+                null, null, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now(),
+                List.of(sandbox), "SUCCESS", canonical);
+        when(service.executePlanResultWithinAdapter(7L, 19L, "trace", true))
+                .thenReturn(new PlanAgentService.PlanExecutionResult(completed, AgentRuntimeStopSignal.NONE));
+
+        AgentRuntimeResult result = new PlanRuntimeAdapter(service).run(projectRequest());
+
+        assertThat(result.assistantContent()).contains(canonical).doesNotContain("display-only stdout");
+        verify(service).executePlanResultWithinAdapter(7L, 19L, "trace", true);
+    }
 
     @Test
     void mapsPersistedPlanTerminalStatesWithoutTrustingTheSummaryText() {

@@ -14,7 +14,12 @@ class SandboxWorkerPolicyTest {
     @Test void acceptsOnlyExactActiveLocalDenyAllAndExactSandboxName(){
         String valid="[{\"source\":\"local\",\"decision\":\"deny\",\"type\":\"network\",\"active\":true,\"resource\":\"**\"}]";
         ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",valid);
+        String current="{\"rules\":[{\"origin\":\"scoped\",\"decision\":\"deny\",\"resource_type\":\"network\",\"status\":\"active\",\"resources\":[\"**\"]}]}";
+        ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",current);
         assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",valid.replace("true","false"))).isInstanceOf(Exception.class);
+        assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",current.replace("active","inactive"))).isInstanceOf(Exception.class);
+        assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",current.replace("scoped","kit"))).isInstanceOf(Exception.class);
+        assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",current.replace("[\"**\"]","[\"example.com\"]"))).isInstanceOf(Exception.class);
         assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(worker,"requireDenyAll","{\"note\":\"**\"}")).isInstanceOf(Exception.class);
         assertThat((Boolean)ReflectionTestUtils.invokeMethod(worker,"sandboxExists","[{\"name\":\"yb-123\"}]","yb-123")).isTrue();
         assertThat((Boolean)ReflectionTestUtils.invokeMethod(worker,"sandboxExists","[{\"name\":\"yb-1234\"}]","yb-123")).isFalse();

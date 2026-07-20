@@ -20,6 +20,11 @@ final class ProviderEnvironment {
     Map<String, String> values() {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("HOME", properties.getProviderHome());
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("windows")) {
+            values.put("USERPROFILE", properties.getProviderHome());
+            values.put("LOCALAPPDATA", properties.getProviderDataHome());
+            values.put("APPDATA", properties.getProviderConfigHome());
+        }
         values.put("XDG_CONFIG_HOME", properties.getProviderConfigHome());
         values.put("XDG_DATA_HOME", properties.getProviderDataHome());
         values.put("XDG_STATE_HOME", properties.getProviderStateHome());

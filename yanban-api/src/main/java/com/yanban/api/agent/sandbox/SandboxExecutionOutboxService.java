@@ -66,8 +66,10 @@ public class SandboxExecutionOutboxService {
     }
     @Transactional
     public void requestCancellation(long planId, long userId) {
-        for (SandboxOutboxExecution value : outbox.findByPlanId(planId)) if (value.userId() == userId) {
-            value.requestCancel(dbNow()); outbox.save(value);
+        LocalDateTime now=dbNow();
+        for (SandboxOutboxExecution value : outbox.lockByPlanId(planId)) if (value.userId() == userId) {
+            if(value.brokerExecutionId()==null)value.cancelBeforeDispatch(now);else value.requestCancel(now);
+            outbox.save(value);
         }
     }
     private LocalDateTime dbNow(){return jdbc.queryForObject("select current_timestamp",LocalDateTime.class);}
