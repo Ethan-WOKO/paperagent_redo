@@ -10,9 +10,13 @@
             <NButton v-if="activeProject" size="small" secondary type="error" :disabled="loading.send" @click="deleteModalOpen = true">Delete Project</NButton>
             <NButton size="small" type="primary" @click="openCreateProjectModal">New Project</NButton>
           </NSpace>
-          <button type="button" class="workspace-hero__collapse" @click="setProjectHeaderCollapsed(true)">-</button>
+          <button type="button" class="workspace-hero__collapse" title="Collapse Project header" aria-label="Collapse Project header" @click="setProjectHeaderCollapsed(true)">
+            <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
+          </button>
         </header>
-        <button v-if="projectHeaderCollapsed" type="button" class="workspace-hero__restore" @click="setProjectHeaderCollapsed(false)">+</button>
+        <button v-if="projectHeaderCollapsed" type="button" class="workspace-hero__restore" title="Expand Project header" aria-label="Expand Project header" @click="setProjectHeaderCollapsed(false)">
+          <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
+        </button>
       </div>
 
       <NAlert v-if="error" type="error" closable class="project-workspace__alert" @close="error = ''">{{ error }}</NAlert>
@@ -28,10 +32,15 @@
       <section v-else class="project-workspace__grid">
         <aside class="project-panel project-panel--files">
           <section class="project-sidebar-section project-sidebar-section--projects" :class="{ 'project-sidebar-section--collapsed': sidebarSections.projects }">
-            <button type="button" class="project-sidebar-section__toggle" :aria-expanded="!sidebarSections.projects" @click="toggleSidebarSection('projects')">
-              <span><span class="project-sidebar-section__chevron">{{ sidebarSections.projects ? '>' : 'v' }}</span><strong>Projects</strong></span>
+            <div class="project-sidebar-section__toggle">
+              <span>
+                <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.projects }" :aria-expanded="!sidebarSections.projects" :aria-label="sidebarSections.projects ? 'Expand Projects' : 'Collapse Projects'" :title="sidebarSections.projects ? 'Expand Projects' : 'Collapse Projects'" @click="toggleSidebarSection('projects')">
+                  <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
+                </button>
+                <strong>Projects</strong>
+              </span>
               <span class="project-panel__count">{{ projects.length }}</span>
-            </button>
+            </div>
             <div v-show="!sidebarSections.projects" class="project-list">
               <button v-for="project in projects" :key="project.id" class="project-list__item" :class="{ active: project.id === activeProjectId }" @click="selectProject(project.id)">
                 <strong>{{ project.name }}</strong>
@@ -41,10 +50,15 @@
           </section>
 
           <section class="project-sidebar-section project-sidebar-section--chats" :class="{ 'project-sidebar-section--collapsed': sidebarSections.conversations }">
-            <button type="button" class="project-sidebar-section__toggle" :aria-expanded="!sidebarSections.conversations" @click="toggleSidebarSection('conversations')">
-              <span><span class="project-sidebar-section__chevron">{{ sidebarSections.conversations ? '>' : 'v' }}</span><strong>Conversations</strong></span>
+            <div class="project-sidebar-section__toggle">
+              <span>
+                <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.conversations }" :aria-expanded="!sidebarSections.conversations" :aria-label="sidebarSections.conversations ? 'Expand Conversations' : 'Collapse Conversations'" :title="sidebarSections.conversations ? 'Expand Conversations' : 'Collapse Conversations'" @click="toggleSidebarSection('conversations')">
+                  <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
+                </button>
+                <strong>Conversations</strong>
+              </span>
               <span class="project-panel__count">{{ projectSessions.length }}</span>
-            </button>
+            </div>
             <div v-show="!sidebarSections.conversations" class="project-conversation-history project-conversation-history--sidebar" aria-label="Project conversation history">
               <div
                 v-for="session in projectSessions"
@@ -68,9 +82,14 @@
 
           <section class="project-sidebar-section project-sidebar-section--file-browser" :class="{ 'project-sidebar-section--collapsed': sidebarSections.files }">
             <div class="project-sidebar-section__header">
-              <button type="button" class="project-sidebar-section__toggle" :aria-expanded="!sidebarSections.files" @click="toggleSidebarSection('files')">
-                <span><span class="project-sidebar-section__chevron">{{ sidebarSections.files ? '>' : 'v' }}</span><strong>Files</strong></span>
-              </button>
+              <div class="project-sidebar-section__toggle">
+                <span>
+                  <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.files }" :aria-expanded="!sidebarSections.files" :aria-label="sidebarSections.files ? 'Expand Files' : 'Collapse Files'" :title="sidebarSections.files ? 'Expand Files' : 'Collapse Files'" @click="toggleSidebarSection('files')">
+                    <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
+                  </button>
+                  <strong>Files</strong>
+                </span>
+              </div>
               <NSpace class="project-panel__title-actions" :size="4" align="center">
                 <span class="project-panel__count">{{ manifest?.files.length || 0 }}</span>
                 <template v-if="!sidebarSections.files">
@@ -94,7 +113,7 @@
                 @click="node.directory ? toggleDirectory(node.path) : openFile(node.path)"
               >
                 <span>
-                  <span v-if="node.directory" class="project-file-list__chevron">{{ collapsedDirectories.has(node.path) ? '>' : 'v' }}</span>
+                  <NIcon v-if="node.directory" class="project-file-list__chevron" :class="{ 'project-file-list__chevron--expanded': !collapsedDirectories.has(node.path) }" aria-hidden="true"><ChevronRightIcon /></NIcon>
                   {{ node.name }}
                 </span>
                 <small v-if="!node.directory">{{ shortHash(node.sha256) }}</small>
@@ -118,10 +137,7 @@
 
         <section class="project-panel project-panel--main">
           <div class="project-tabs">
-            <div>
-              <button :class="{ active: centerTab === 'chat' }" @click="centerTab = 'chat'">Conversation</button>
-              <button :class="{ active: centerTab === 'plan' }" @click="centerTab = 'plan'">Execution details <span v-if="plans.length">{{ plans.length }}</span></button>
-            </div>
+            <strong class="project-tabs__title">Conversation</strong>
             <div class="project-tabs__actions">
               <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'preview' }" @click="toggleInspector('preview')">Preview</button>
               <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'evidence' }" @click="toggleInspector('evidence')">Evidence <span>{{ evidence.length }}</span></button>
@@ -133,12 +149,7 @@
 
           <section v-if="inspectorOpen" class="project-inspector">
             <div class="project-inspector__tabs">
-              <div>
-                <button :class="{ active: inspectorTab === 'preview' }" @click="inspectorTab = 'preview'">Preview</button>
-                <button :class="{ active: inspectorTab === 'evidence' }" @click="inspectorTab = 'evidence'">Evidence</button>
-                <button :class="{ active: inspectorTab === 'changes' }" @click="inspectorTab = 'changes'">Changes</button>
-                <button :class="{ active: inspectorTab === 'versions' }" @click="inspectorTab = 'versions'">Versions</button>
-              </div>
+              <strong>Inspector</strong>
               <button type="button" class="project-inspector__close" @click="inspectorOpen = false">Hide</button>
             </div>
 
@@ -363,188 +374,141 @@
             </div>
           </section>
 
-          <template v-if="centerTab === 'chat'">
-            <div class="project-scroll-shell">
-              <div ref="messagesContainer" class="project-messages" @scroll="handleProjectContentScroll">
+          <div class="project-scroll-shell">
+            <div ref="messagesContainer" class="project-messages" aria-label="Project conversation" @scroll="handleProjectContentScroll">
+              <template v-for="item in projectTimelineItems" :key="item.key">
                 <div
-                  v-for="message in messages"
-                  :key="message.localId"
-                  :ref="(el) => setProjectContentRef(el, message.localId)"
+                  v-if="item.type === 'message'"
+                  :ref="(el) => setProjectContentRef(el, item.message.localId)"
                   class="project-message-row"
-                  :class="`project-message-row--${message.role}`"
+                  :class="`project-message-row--${item.message.role}`"
                 >
-                  <details v-if="message.role === 'process'" class="project-process-card" :open="message.processOpen" @toggle="syncProcessOpen(message, $event)">
-                    <summary><span>{{ processSummary(message) }}</span><span class="project-process-card__chevron">&gt;</span></summary>
-                    <pre>{{ message.content }}</pre>
+                  <details v-if="item.message.role === 'process'" class="project-process-card" :open="item.message.processOpen" @toggle="syncProcessOpen(item.message, $event)">
+                    <summary title="Toggle process details">
+                      <span>{{ processSummary(item.message) }}</span>
+                      <NIcon class="project-process-card__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
+                    </summary>
+                    <pre>{{ item.message.content }}</pre>
                   </details>
-                  <div v-else class="project-message" :class="`project-message--${message.role}`">
-                    <small>{{ message.role === 'user' ? 'You' : 'Project Agent' }}</small>
-                    <MarkdownMessage :content="message.content || (message.pending ? 'Thinking...' : '')" :variant="message.role === 'assistant' ? 'project' : 'default'" />
+                  <div v-else class="project-message" :class="`project-message--${item.message.role}`">
+                    <small>{{ item.message.role === 'user' ? 'You' : 'Project Agent' }}</small>
+                    <MarkdownMessage :content="item.message.content || (item.message.pending ? 'Thinking...' : '')" :variant="item.message.role === 'assistant' ? 'project' : 'default'" />
                   </div>
                 </div>
-                <NEmpty v-if="!loading.messages && messages.length === 0" description="Ask the Project Agent to inspect the selected Project." />
-                <NSpin v-if="loading.messages" size="small" />
-              </div>
-              <nav v-if="projectNavItems.length" class="project-content-nav" aria-label="Project conversation navigation">
-                <button
-                  v-for="item in projectNavItems"
-                  :key="item.id"
-                  type="button"
-                  class="project-content-nav__item"
-                  :class="[`project-content-nav__item--${item.kind}`, { active: activeProjectNavId === item.id }]"
-                  :title="item.title"
-                  @click="scrollToProjectNavItem(item)"
+
+                <div
+                  v-else
+                  :ref="(el) => setProjectContentRef(el, projectPlanItemId(item.plan.id, 'plan'))"
+                  class="project-message-row project-message-row--process"
                 >
-                  <span>{{ item.label }}</span>
-                </button>
-              </nav>
-            </div>
-            <div class="project-composer">
-              <NInput v-model:value="chatInput" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="Ask about this read-only Project..." @keydown.ctrl.enter.prevent="sendChat" />
-              <NButton type="primary" :loading="loading.send" :disabled="!chatInput.trim() || !activeProject" @click="sendChat">Send</NButton>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="project-plans">
-              <NEmpty v-if="!loading.plans && plans.length === 0" description="No Project Plans in this session." />
-              <NSpin v-else-if="loading.plans && timelinePlans.length === 0" size="small" />
-              <div v-else class="project-scroll-shell project-scroll-shell--plan">
-                <div ref="planThreadContainer" class="project-plan-thread" aria-label="Project plan conversation" @scroll="handleProjectContentScroll">
-                  <template v-for="plan in timelinePlans" :key="plan.id">
-                  <div
-                    :ref="(el) => setProjectContentRef(el, projectPlanItemId(plan.id, 'request'))"
-                    class="project-message-row project-message-row--user"
-                  >
-                    <div class="project-message project-message--user project-plan-message">
-                      <small>You - Plan request</small>
-                      <MarkdownMessage :content="plan.goal" />
-                    </div>
-                  </div>
-
-                  <div class="project-message-row project-message-row--process">
-                    <details class="project-plan-process-card">
-                      <summary class="project-plan-process-card__summary" @click="selectPlan(plan)">
-                        <span>{{ planProcessSummary(plan) }}</span>
-                        <span class="project-plan-process-card__chevron">&gt;</span>
+                  <article class="project-execution-card" :class="{ 'project-execution-card--selected': selectedPlan?.id === item.plan.id }">
+                    <details class="project-execution-card__details">
+                      <summary title="Toggle execution details" @click="selectPlan(item.plan)">
+                        <NIcon class="project-execution-card__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
+                        <span class="project-execution-card__heading">
+                          <strong>Execution plan</strong>
+                          <span>{{ item.plan.summary || abbreviateText(item.plan.goal, 100) }}</span>
+                        </span>
+                        <span class="project-execution-card__meta">
+                          <NTag size="tiny" :type="planTagType(planDisplayStatus(item.plan))">{{ planDisplayStatus(item.plan) }}</NTag>
+                          <span>{{ planProgressLabel(item.plan) }}</span>
+                          <span>{{ formatPlanElapsed(planElapsedMs(item.plan)) || '0s' }}</span>
+                        </span>
                       </summary>
-                      <div class="project-plan-process-card__body">
-                        <div
-                          class="project-message project-message--assistant project-plan-message project-plan-process-card__intro"
-                          :class="{ 'project-plan-message--selected': selectedPlan?.id === plan.id }"
-                          @click="selectPlan(plan)"
-                        >
-                          <small>
-                            Project Agent - Plan
-                            <NTag size="tiny" :type="planTagType(planDisplayStatus(plan))">{{ planDisplayStatus(plan) }}</NTag>
-                          </small>
-                          <MarkdownMessage :content="planConversationIntro(plan)" variant="project" />
-                        </div>
 
-                        <NAlert
-                          v-if="requiresSandboxConfirmation(plan)"
-                          class="project-sandbox-confirmation"
-                          type="warning"
-                          title="Sandbox execution requires confirmation"
-                        >
-                          <p>
-                            This plan is paused before {{ sandboxConfirmationStepCount(plan) }} code-execution step(s).
-                            Confirm only if you intend to run the Project code.
-                          </p>
-                          <ul>
-                            <li>Network access is disabled by default.</li>
-                            <li>Only server-approved commands and Project-relative files are available.</li>
-                            <li>CPU, memory, duration, output, and concurrency limits are enforced.</li>
-                            <li>Execution may produce sandbox logs or artifacts, but it does not apply a Candidate to the Project.</li>
-                          </ul>
-                          <NButton
-                            type="warning"
-                            :loading="executingSandboxPlanId === plan.id"
-                            :disabled="executingSandboxPlanId !== null"
-                            @click.stop="confirmSandboxExecution(plan)"
-                          >
-                            Confirm and run in sandbox
-                          </NButton>
-                          <NButton
-                            class="project-sandbox-cancel"
-                            :loading="cancellingPlanId === plan.id"
-                            :disabled="cancellingPlanId !== null || executingSandboxPlanId !== null"
-                            @click.stop="cancelProjectPlan(plan)"
-                          >
-                            Reject and cancel plan
-                          </NButton>
-                        </NAlert>
+                      <div class="project-execution-card__body">
+                        <div class="project-execution-card__details-title">Execution details</div>
+                        <p v-if="item.plan.summary" class="project-execution-card__summary-copy">{{ item.plan.summary }}</p>
 
-                        <NButton
-                          v-else-if="!planTerminal(plan.status)"
-                          size="small"
-                          type="error"
-                          secondary
-                          :loading="cancellingPlanId === plan.id"
-                          :disabled="cancellingPlanId !== null"
-                          @click.stop="cancelProjectPlan(plan)"
-                        >
-                          Cancel running plan
-                        </NButton>
-
-                        <div
-                          v-for="step in plan.steps"
-                          :key="`${plan.id}-${step.id}`"
-                          class="project-message project-message--assistant project-plan-message project-plan-step-message"
-                          @click="selectPlan(plan)"
-                        >
-                          <details class="project-plan-step-details">
-                            <summary>
+                        <details v-for="step in item.plan.steps" :key="`${item.plan.id}-${step.id}`" class="project-plan-step-details">
+                          <summary @click="selectPlan(item.plan)">
+                            <NIcon class="project-plan-step-details__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
+                            <span class="project-plan-step-message__copy">
                               <small>
-                                Project Agent - Step {{ step.sortOrder }}
+                                Step {{ step.sortOrder }}
                                 <NTag size="tiny" :type="planTagType(step.status)">{{ step.status }}</NTag>
                               </small>
                               <strong class="project-plan-step-message__title">{{ step.title || step.stepKey }}</strong>
                               <span class="project-plan-step-message__preview">{{ planStepPreviewLine(step) }}</span>
-                              <span class="project-plan-step-details__chevron">&gt;</span>
-                            </summary>
-                            <div class="project-plan-step-details__body">
-                              <MarkdownMessage :content="planStepMessageContent(step)" variant="project" />
-                            </div>
-                          </details>
-                        </div>
+                            </span>
+                          </summary>
+                          <div class="project-plan-step-details__body">
+                            <MarkdownMessage :content="planStepMessageContent(step)" variant="project" />
+                          </div>
+                        </details>
+
+                        <NButton
+                          v-if="!requiresSandboxConfirmation(item.plan) && !planTerminal(item.plan.status)"
+                          size="small"
+                          type="error"
+                          secondary
+                          :loading="cancellingPlanId === item.plan.id"
+                          :disabled="cancellingPlanId !== null"
+                          @click.stop="cancelProjectPlan(item.plan)"
+                        >
+                          Cancel running plan
+                        </NButton>
                       </div>
                     </details>
-                  </div>
 
-                  <div
-                    v-if="planFinalMessageContent(plan)"
-                    :ref="(el) => setProjectContentRef(el, projectPlanItemId(plan.id, 'final'))"
-                    class="project-message-row project-message-row--assistant"
-                  >
-                    <div
-                      class="project-message project-message--assistant project-plan-message project-plan-final-answer"
-                      :class="{ 'project-plan-message--selected': selectedPlan?.id === plan.id }"
-                      @click="selectPlan(plan)"
+                    <NAlert
+                      v-if="requiresSandboxConfirmation(item.plan)"
+                      class="project-sandbox-confirmation"
+                      type="warning"
+                      title="Sandbox execution requires confirmation"
                     >
-                      <small>Project Agent - {{ projectPlanFinalAnswer(plan) ? 'Final step synthesis' : planTerminal(plan.status) ? 'Terminal status' : 'Progress update' }}</small>
-                      <MarkdownMessage :content="planFinalMessageContent(plan)" variant="project" />
-                    </div>
-                  </div>
-                  </template>
-                  <NSpin v-if="loading.plans" size="small" />
+                      <p>
+                        Paused before {{ sandboxConfirmationStepCount(item.plan) }} code-execution step(s). Network is disabled by default; only approved commands and Project-relative files are available.
+                      </p>
+                      <NButton
+                        type="warning"
+                        size="small"
+                        :loading="executingSandboxPlanId === item.plan.id"
+                        :disabled="executingSandboxPlanId !== null"
+                        @click.stop="confirmSandboxExecution(item.plan)"
+                      >
+                        Confirm and run in sandbox
+                      </NButton>
+                      <NButton
+                        class="project-sandbox-cancel"
+                        size="small"
+                        :loading="cancellingPlanId === item.plan.id"
+                        :disabled="cancellingPlanId !== null || executingSandboxPlanId !== null"
+                        @click.stop="cancelProjectPlan(item.plan)"
+                      >
+                        Reject and cancel plan
+                      </NButton>
+                    </NAlert>
+
+                    <p v-if="planFailureReason(item.plan)" class="project-execution-card__failure">
+                      <strong>Failure reason</strong>
+                      <span>{{ planFailureReason(item.plan) }}</span>
+                    </p>
+                  </article>
                 </div>
-                <nav v-if="projectNavItems.length" class="project-content-nav" aria-label="Project plan navigation">
-                  <button
-                    v-for="item in projectNavItems"
-                    :key="item.id"
-                    type="button"
-                    class="project-content-nav__item"
-                    :class="[`project-content-nav__item--${item.kind}`, { active: activeProjectNavId === item.id }]"
-                    :title="item.title"
-                    @click="scrollToProjectNavItem(item)"
-                  >
-                    <span>{{ item.label }}</span>
-                  </button>
-                </nav>
-              </div>
+              </template>
+
+              <NEmpty v-if="!loading.messages && !loading.plans && projectTimelineItems.length === 0" description="Ask the Project Agent to inspect the selected Project." />
+              <NSpin v-if="loading.messages || loading.plans" size="small" />
             </div>
-          </template>
+            <nav v-if="projectNavItems.length" class="project-content-nav" aria-label="Project conversation navigation">
+              <button
+                v-for="item in projectNavItems"
+                :key="item.id"
+                type="button"
+                class="project-content-nav__item"
+                :class="[`project-content-nav__item--${item.kind}`, { active: activeProjectNavId === item.id }]"
+                :title="item.title"
+                @click="scrollToProjectNavItem(item)"
+              >
+                <span>{{ item.label }}</span>
+              </button>
+            </nav>
+          </div>
+          <div class="project-composer">
+            <NInput v-model:value="chatInput" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="Ask about this read-only Project..." @keydown.ctrl.enter.prevent="sendChat" />
+            <NButton type="primary" :loading="loading.send" :disabled="!chatInput.trim() || !activeProject" @click="sendChat">Send</NButton>
+          </div>
         </section>
       </section>
     </main>
@@ -658,7 +622,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { NAlert, NButton, NCheckbox, NDropdown, NEmpty, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTag } from 'naive-ui';
+import { NAlert, NButton, NCheckbox, NDropdown, NEmpty, NForm, NFormItem, NIcon, NInput, NModal, NSelect, NSpace, NSpin, NTag } from 'naive-ui';
+import { ChevronRightIcon } from 'naive-ui/es/_internal/icons';
 import AppLayout from '@/components/AppLayout.vue';
 import MarkdownMessage from '@/components/MarkdownMessage.vue';
 import { cancelPlan, confirmAndQueueSandboxPlan, deleteSession as deleteAgentSession, listMessages, listPlans, updateSession as updateAgentSession, type AgentMessageResponse, type AgentPlanResponse, type AgentSessionResponse } from '@/api/agent';
@@ -669,8 +634,6 @@ import { useI18n } from '@/composables/useI18n';
 import {
   isControlledProjectPartial,
   projectPlanExecutionOutcome,
-  projectPlanFinalAnswer,
-  projectPlanLifecycle,
   withoutInternalProjectEvidenceRefs,
 } from '@/utils/projectCompletion';
 import { requiresSandboxConfirmation, sandboxConfirmationStepCount } from '@/utils/projectSandboxConfirmation';
@@ -688,6 +651,7 @@ interface ProjectChatMessage {
   processDone?: boolean;
   processStartedAt?: number;
   processElapsedMs?: number;
+  createdAt?: string;
 }
 
 interface ProjectWsChatEvent {
@@ -763,7 +727,6 @@ const validationMessage = ref('');
 const validationMessageType = ref<'success' | 'warning' | 'error'>('success');
 const revisionMessage = ref('');
 const revisionMessageType = ref<'success' | 'warning' | 'error'>('success');
-const centerTab = ref<'chat' | 'plan'>('chat');
 const inspectorTab = ref<ProjectInspectorTab>('preview');
 const inspectorOpen = ref(true);
 const chatInput = ref('');
@@ -774,7 +737,6 @@ const renameSessionModalOpen = ref(false);
 const renameSessionId = ref<number | null>(null);
 const renameSessionDraft = ref('');
 const messagesContainer = ref<HTMLElement | null>(null);
-const planThreadContainer = ref<HTMLElement | null>(null);
 const activeProjectNavId = ref<string | null>(null);
 const projectContentRefs: Record<string, HTMLElement | null> = {};
 let projectEpoch = 0;
@@ -849,25 +811,31 @@ const sessionMenuOptions = computed(() => [
 ]);
 const activeProject = computed(() => projects.value.find((item) => item.id === activeProjectId.value) || null);
 const timelinePlans = computed(() => [...plans.value].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()));
+const projectTimelineItems = computed(() => [
+  ...messages.value.map((message, index) => ({
+    type: 'message' as const,
+    key: message.localId,
+    message,
+    sortAt: parseTimestamp(message.createdAt) ?? index,
+    order: index,
+  })),
+  ...timelinePlans.value.map((plan, index) => ({
+    type: 'plan' as const,
+    key: `plan-${plan.id}`,
+    plan,
+    sortAt: parseTimestamp(plan.createdAt) ?? Number.MAX_SAFE_INTEGER - timelinePlans.value.length + index,
+    order: messages.value.length + index,
+  })),
+].sort((left, right) => left.sortAt - right.sortAt || left.order - right.order));
 const projectNavItems = computed<ProjectContentNavItem[]>(() => {
-  if (centerTab.value === 'chat') {
-    return messages.value
-      .filter((message) => message.role === 'user')
-      .map((message, index) => ({
-        id: message.localId,
-        label: String(index + 1),
-        title: abbreviateText(message.content || 'User message', 140),
-        kind: 'user' as const,
-      }));
-  }
-
-  return timelinePlans.value.map((plan, planIndex) => ({
-    id: projectPlanItemId(plan.id, 'request'),
-    label: `Q${planIndex + 1}`,
-    title: abbreviateText(plan.goal, 140),
-    kind: 'user' as const,
-    planId: plan.id,
-  }));
+  return messages.value
+    .filter((message) => message.role === 'user')
+    .map((message, index) => ({
+      id: message.localId,
+      label: String(index + 1),
+      title: abbreviateText(message.content || 'User message', 140),
+      kind: 'user' as const,
+    }));
 });
 const directoryPaths = computed(() => collectDirectoryPaths(manifest.value?.files || []));
 const fileTree = computed(() => {
@@ -1042,12 +1010,8 @@ function abbreviateText(value: string, max = 220) {
   return compact.length > max ? `${compact.slice(0, max - 3)}...` : compact;
 }
 
-function projectPlanItemId(planId: number, part: 'request' | 'plan' | 'final') {
+function projectPlanItemId(planId: number, part: 'plan') {
   return `plan-${planId}-${part}`;
-}
-
-function projectPlanStepItemId(planId: number, stepId: number) {
-  return `plan-${planId}-step-${stepId}`;
 }
 
 function setProjectContentRef(el: any, id: string) {
@@ -1059,7 +1023,7 @@ function setProjectContentRef(el: any, id: string) {
 }
 
 function getProjectScrollContainer() {
-  return centerTab.value === 'chat' ? messagesContainer.value : planThreadContainer.value;
+  return messagesContainer.value;
 }
 
 function handleProjectContentScroll() {
@@ -1099,24 +1063,6 @@ async function scrollToProjectNavItem(item: ProjectContentNavItem) {
   container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 }
 
-function planConversationIntro(plan: AgentPlanResponse) {
-  const lines = [
-    plan.summary || 'I created a plan and will execute it step by step.',
-    `Plan lifecycle status: ${projectPlanLifecycle(plan)}.`,
-    `Plan execution outcome: ${projectPlanExecutionOutcome(plan)}.`,
-  ];
-  return lines.join('\n');
-}
-
-function planProcessSummary(plan: AgentPlanResponse) {
-  const elapsed = formatPlanElapsed(planElapsedMs(plan));
-  if (requiresSandboxConfirmation(plan)) return 'Awaiting sandbox confirmation';
-  if (!planTerminal(plan.status)) {
-    return elapsed ? `处理中 ${elapsed}` : '处理中';
-  }
-  return elapsed ? `已处理 ${elapsed}` : '已处理';
-}
-
 function planElapsedMs(plan: AgentPlanResponse) {
   const start = parseTimestamp(plan.startedAt || plan.createdAt);
   const end = parseTimestamp(plan.finishedAt || plan.updatedAt);
@@ -1152,6 +1098,19 @@ function formatPlanElapsed(value: number | null) {
   return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 }
 
+function planProgressLabel(plan: AgentPlanResponse) {
+  const completed = plan.steps.filter((step) => ['COMPLETED', 'SKIPPED'].includes(step.status.toUpperCase())).length;
+  return `${completed}/${plan.steps.length} steps`;
+}
+
+function planFailureReason(plan: AgentPlanResponse) {
+  if (plan.errorMessage?.trim()) return withoutInternalProjectEvidenceRefs(plan.errorMessage);
+  const failedStep = [...plan.steps]
+    .sort((left, right) => right.sortOrder - left.sortOrder)
+    .find((step) => step.errorMessage?.trim());
+  return failedStep?.errorMessage ? withoutInternalProjectEvidenceRefs(failedStep.errorMessage) : '';
+}
+
 function planStepPreviewLine(step: AgentPlanResponse['steps'][number]) {
   const source = withoutInternalProjectEvidenceRefs(step.errorMessage || step.result || step.description || '');
   if (source.trim()) return abbreviateText(source, 140);
@@ -1180,28 +1139,6 @@ function planStepMessageContent(step: AgentPlanResponse['steps'][number]) {
     lines.push('No detailed result yet.');
   }
   return lines.join('\n\n');
-}
-
-function planFinalMessageContent(plan: AgentPlanResponse) {
-  const status = planDisplayStatus(plan);
-  if (requiresSandboxConfirmation(plan)) {
-    return 'Ready to run, but paused for your confirmation. Review the sandbox restrictions above, then confirm to queue execution.';
-  }
-  if (!planTerminal(plan.status)) return `Still working. Current status: ${status}.`;
-
-  const finalStepResult = projectPlanFinalAnswer(plan);
-  if (finalStepResult) {
-    return `This is the final step synthesis. See Chat for the governed completion status and canonical answer.\n\n${finalStepResult}`;
-  }
-
-  const failedStep = [...plan.steps]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .reverse()
-    .find((step) => step.errorMessage?.trim());
-  if (plan.errorMessage) return plan.errorMessage;
-  if (failedStep?.errorMessage) return failedStep.errorMessage;
-  if (plan.summary) return plan.summary;
-  return `Finished with status: ${status}.`;
 }
 
 function toggleInspector(tab: ProjectInspectorTab) {
@@ -1632,6 +1569,7 @@ function buildProjectMessages(serverMessages: AgentMessageResponse[]) {
   const hasProcessSummary = serverMessages.some((item) => item.role?.toLowerCase() === 'process');
   let pendingProcess: string[] = [];
   let pendingIds: number[] = [];
+  let pendingCreatedAt: string | undefined;
   const flushProcess = () => {
     if (!pendingProcess.length) return;
     result.push({
@@ -1640,15 +1578,18 @@ function buildProjectMessages(serverMessages: AgentMessageResponse[]) {
       content: pendingProcess.join('\n'),
       processOpen: false,
       processDone: true,
+      createdAt: pendingCreatedAt,
     });
     pendingProcess = [];
     pendingIds = [];
+    pendingCreatedAt = undefined;
   };
 
   for (const item of serverMessages) {
     const role = item.role?.toLowerCase();
     if (role === 'assistant' && item.toolCallsJson) {
       if (!hasProcessSummary) {
+        pendingCreatedAt ||= item.createdAt;
         pendingIds.push(item.id);
         pendingProcess.push(...(parseToolNames(item.toolCallsJson).map(projectToolLabel).length ? parseToolNames(item.toolCallsJson).map(projectToolLabel) : ['Selecting an authorized read-only Project tool.']));
       }
@@ -1656,6 +1597,7 @@ function buildProjectMessages(serverMessages: AgentMessageResponse[]) {
     }
     if (role === 'tool') {
       if (!hasProcessSummary) {
+        pendingCreatedAt ||= item.createdAt;
         pendingIds.push(item.id);
         pendingProcess.push(toolResultLabel(item.content));
       }
@@ -1663,13 +1605,14 @@ function buildProjectMessages(serverMessages: AgentMessageResponse[]) {
     }
     if (role === 'system') continue;
     if (role === 'process') {
+      pendingCreatedAt ||= item.createdAt;
       pendingIds.push(item.id);
       if (item.content?.trim()) pendingProcess.push(item.content.trim());
       continue;
     }
     if (role === 'user' || role === 'assistant') {
       flushProcess();
-      result.push({ localId: `server-${item.id}`, role, content: item.content || '' });
+      result.push({ localId: `server-${item.id}`, role, content: item.content || '', createdAt: item.createdAt });
     }
   }
 
@@ -2018,9 +1961,10 @@ async function sendChat() {
     activeClientRequestId = requestId;
     currentProcessMessageId = `process-${requestId}`;
     currentAssistantMessageId = `assistant-${requestId}`;
-    appendChatMessage({ localId: `user-${requestId}`, role: 'user', content });
-    appendChatMessage({ localId: currentProcessMessageId, role: 'process', content: 'Starting authenticated read-only Project request.', processOpen: true, processDone: false, processStartedAt: Date.now() });
-    appendChatMessage({ localId: currentAssistantMessageId, role: 'assistant', content: '', pending: true });
+    const createdAt = new Date().toISOString();
+    appendChatMessage({ localId: `user-${requestId}`, role: 'user', content, createdAt });
+    appendChatMessage({ localId: currentProcessMessageId, role: 'process', content: 'Starting authenticated read-only Project request.', processOpen: false, processDone: false, processStartedAt: Date.now(), createdAt });
+    appendChatMessage({ localId: currentAssistantMessageId, role: 'assistant', content: '', pending: true, createdAt });
     await scrollMessagesToBottom();
     await sendProjectWithFallback(projectId, sessionId, content, requestId);
     finishProcess();
@@ -2242,7 +2186,6 @@ async function startNewConversation() {
     projectSessions.value = [created, ...projectSessions.value.filter((item) => item.id !== created.id)];
     activeSessionId.value = created.id;
     syncProjectLocation(project.id, created.id);
-    centerTab.value = 'chat';
   } catch (cause) {
     if (epoch === projectEpoch) error.value = apiError(cause);
   } finally {
@@ -2422,6 +2365,9 @@ onUnmounted(() => {
 .project-workspace__header { position: relative; min-height: 48px; overflow: visible; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 2px 12px; border-bottom: 1px solid var(--yb-border); transition: min-height 280ms cubic-bezier(.2,.8,.2,1), height 280ms cubic-bezier(.2,.8,.2,1), padding 280ms cubic-bezier(.2,.8,.2,1), opacity 220ms ease, transform 280ms cubic-bezier(.2,.8,.2,1), border-color 220ms ease; }
 .project-workspace__header--collapsed { min-height: 0; height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; overflow: hidden; pointer-events: none; transform: translateY(-12px); border-color: transparent; }
 .project-workspace__header h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+.workspace-hero__collapse :deep(.n-icon), .workspace-hero__restore :deep(.n-icon) { width: 16px; height: 16px; font-size: 16px; }
+.workspace-hero__collapse :deep(.n-icon) { transform: rotate(-90deg); }
+.workspace-hero__restore :deep(.n-icon) { transform: rotate(90deg); }
 .project-workspace__alert { margin: 0; }
 .project-workspace__state { min-height: 420px; display: grid; place-items: center; color: var(--yb-text-muted); }
 
@@ -2446,16 +2392,19 @@ onUnmounted(() => {
 .project-sidebar-section--collapsed { flex: 0 0 auto; min-height: 0; gap: 0; }
 .project-sidebar-section--collapsed + .project-sidebar-section--collapsed { margin-top: 0; }
 .project-sidebar-section__header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.project-sidebar-section__toggle { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px; border: 0; background: transparent; color: var(--yb-text); text-align: left; cursor: pointer; font: inherit; }
+.project-sidebar-section__toggle { box-sizing: border-box; flex: 0 0 32px; min-width: 0; height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px; border: 0; background: transparent; color: var(--yb-text); text-align: left; font: inherit; }
 .project-sidebar-section + .project-sidebar-section .project-sidebar-section__toggle,
 .project-sidebar-section + .project-sidebar-section .project-sidebar-section__header { border-top: 1px solid var(--yb-border); }
 .project-sidebar-section__header .project-sidebar-section__toggle { border-top: 0 !important; }
 .project-sidebar-section__toggle > span { min-width: 0; display: inline-flex; align-items: center; gap: 5px; }
 .project-sidebar-section__toggle strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.project-sidebar-section__chevron { width: 12px; color: var(--yb-text-muted); font-family: ui-monospace, monospace; font-size: 10px; }
-.project-sidebar-section--collapsed .project-sidebar-section__toggle { padding-top: 8px; padding-bottom: 8px; }
+.project-chevron-button { flex: 0 0 22px; width: 22px; height: 22px; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--yb-text-muted); cursor: pointer; }
+.project-chevron-button:hover { background: var(--yb-bg-muted); color: var(--yb-text); }
+.project-chevron-button:focus-visible { outline: 2px solid var(--yb-primary); outline-offset: 1px; }
+.project-chevron-button :deep(.n-icon) { width: 14px; height: 14px; font-size: 14px; transition: transform 160ms ease; }
+.project-chevron-button--expanded :deep(.n-icon) { transform: rotate(90deg); }
 
-.project-list, .project-file-list, .project-search-results, .project-evidence-list, .project-candidate-list, .project-plans, .project-messages, .project-preview pre, .project-diff pre { overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.project-list, .project-file-list, .project-search-results, .project-evidence-list, .project-candidate-list, .project-messages, .project-preview pre, .project-diff pre { overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .project-list { flex: 0 1 112px; min-height: 36px; display: flex; flex-direction: column; gap: 3px; }
 .project-sidebar-section .project-list { flex: 1 1 auto; min-height: 0; }
 .project-list__item, .project-file-list__item, .project-search-results button, .project-candidate-list button { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: 7px; }
@@ -2472,7 +2421,8 @@ onUnmounted(() => {
 .project-file-list__item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-file-list__item small { flex: 0 0 auto; color: var(--yb-text-muted); font-size: 9px; }
 .project-file-list__directory { font-weight: 650; }
-.project-file-list__chevron { display: inline-block; width: 13px; color: var(--yb-text-muted); }
+.project-file-list__chevron { display: inline-flex; width: 13px; height: 13px; margin-right: 2px; color: var(--yb-text-muted); font-size: 13px; vertical-align: -2px; transition: transform 160ms ease; }
+.project-file-list__chevron--expanded { transform: rotate(90deg); }
 
 .project-search { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 6px; }
 .project-search-results { flex: 0 1 90px; min-height: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -2480,16 +2430,15 @@ onUnmounted(() => {
 .project-search-results strong, .project-search-results span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
 .project-search-results span { color: var(--yb-text-muted); margin-top: 2px; }
 
-.project-tabs { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--yb-border); }
-.project-tabs > div { display: flex; gap: 14px; }
-.project-tabs > div > button { padding: 0 0 8px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--yb-text-muted); font: 600 12px inherit; cursor: pointer; }
-.project-tabs > div > button.active { border-color: var(--yb-primary); color: var(--yb-text); }
-.project-tabs > div > button span { margin-left: 4px; color: var(--yb-text-muted); }
-.project-tabs__actions { align-items: center; }
+.project-tabs { flex: 0 0 auto; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--yb-border); }
+.project-tabs__title { flex: 0 0 auto; font-size: 12px; line-height: 26px; }
+.project-tabs__actions { min-width: 0; display: flex; align-items: center; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.project-tabs__actions > * { flex: 0 0 auto; }
 
-.project-utility-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--yb-border); border-radius: 999px; background: transparent; color: var(--yb-text-secondary); font-size: 10px; cursor: pointer; }
+.project-utility-chip { min-height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--yb-border); border-radius: 999px; background: transparent; color: var(--yb-text-secondary); font-size: 10px; line-height: 1; white-space: nowrap; cursor: pointer; }
 .project-utility-chip span { color: var(--yb-text-muted); }
 .project-utility-chip.active { border-color: var(--yb-primary); background: var(--yb-sidebar-active); color: var(--yb-text); }
+.project-utility-chip:focus-visible { outline: 2px solid var(--yb-primary); outline-offset: 1px; }
 
 .project-conversation-history { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; padding-bottom: 3px; }
 .project-conversation-history > span, .project-conversation-history > small { flex: 0 0 auto; color: var(--yb-text-muted); font-size: 10px; }
@@ -2507,9 +2456,8 @@ onUnmounted(() => {
 
 .project-inspector { flex: 0 0 auto; display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--yb-border); border-radius: 12px; background: color-mix(in srgb, var(--yb-bg-muted) 58%, transparent); }
 .project-inspector__tabs { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.project-inspector__tabs > div { display: flex; gap: 10px; flex-wrap: wrap; }
+.project-inspector__tabs > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .project-inspector__tabs button { padding: 0; border: 0; background: transparent; color: var(--yb-text-muted); font: 600 11px inherit; cursor: pointer; }
-.project-inspector__tabs button.active { color: var(--yb-text); }
 .project-inspector__close { color: var(--yb-text-secondary) !important; }
 .project-inspector__body { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .project-inspector__changes-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -2519,8 +2467,7 @@ onUnmounted(() => {
 .project-preview pre, .project-diff pre { flex: 1 1 auto; min-height: 0; margin: 0; max-height: none; white-space: pre-wrap; word-break: break-word; color: var(--yb-text); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 
 .project-scroll-shell { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 20px; gap: 8px; align-items: stretch; overflow: hidden; }
-.project-scroll-shell > .project-messages,
-.project-scroll-shell > .project-plan-thread { min-height: 0; height: 100%; }
+.project-scroll-shell > .project-messages { min-height: 0; height: 100%; }
 .project-content-nav { min-height: 0; display: flex; flex-direction: column; gap: 5px; align-items: center; overflow-y: auto; overscroll-behavior: contain; padding: 4px 0; scrollbar-width: none; }
 .project-content-nav::-webkit-scrollbar { display: none; }
 .project-content-nav__item { width: 13px; min-height: 13px; display: grid; place-items: center; padding: 0; border: 1px solid var(--yb-border); border-radius: 999px; background: var(--yb-bg-muted); color: transparent; cursor: pointer; transition: transform 140ms ease, background 140ms ease, border-color 140ms ease; }
@@ -2549,74 +2496,43 @@ onUnmounted(() => {
 .project-process-card { width: min(92%, 620px); border: 1px solid var(--yb-border); border-radius: 10px; background: var(--yb-bg-muted); font-size: 11px; color: var(--yb-text-secondary); }
 .project-process-card summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none; font-weight: 600; }
 .project-process-card summary::-webkit-details-marker { display: none; }
-.project-process-card__chevron { transition: transform 160ms ease; }
+.project-process-card__chevron { flex: 0 0 auto; width: 14px; height: 14px; font-size: 14px; transition: transform 160ms ease; }
 .project-process-card[open] .project-process-card__chevron { transform: rotate(90deg); }
 .project-process-card pre { margin: 0; padding: 0 10px 10px; white-space: pre-wrap; word-break: break-word; font: 10px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--yb-text-secondary); }
 
-.project-plan-process-card { width: min(92%, 820px); border: 0; border-bottom: 1px solid var(--yb-border); border-radius: 0; background: transparent; color: var(--yb-text-muted); }
-.project-plan-process-card__summary { display: flex; align-items: center; justify-content: flex-start; gap: 6px; padding: 6px 0 9px; cursor: pointer; list-style: none; font-size: 12px; font-weight: 500; }
-.project-plan-process-card__summary::-webkit-details-marker { display: none; }
-.project-plan-process-card__chevron { color: var(--yb-text-muted); font-size: 14px; line-height: 1; transition: transform 160ms ease; }
-.project-plan-process-card[open] .project-plan-process-card__chevron { transform: rotate(90deg); }
-.project-plan-process-card__body { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 12px; }
-.project-plan-process-card__intro { width: 100%; max-width: min(100%, 820px); }
-.project-sandbox-confirmation { width: 100%; }
+.project-execution-card { box-sizing: border-box; width: min(96%, 860px); overflow: hidden; border: 1px solid var(--yb-border); border-radius: 12px; background: color-mix(in srgb, var(--yb-bg-muted) 58%, var(--yb-bg-elevated)); color: var(--yb-text-secondary); }
+.project-execution-card--selected { border-color: color-mix(in srgb, var(--yb-primary) 42%, var(--yb-border)); }
+.project-execution-card__details > summary { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 10px 12px; list-style: none; cursor: pointer; }
+.project-execution-card__details > summary::-webkit-details-marker { display: none; }
+.project-execution-card__chevron { width: 15px; height: 15px; font-size: 15px; color: var(--yb-text-muted); transition: transform 160ms ease; }
+.project-execution-card__details[open] > summary .project-execution-card__chevron { transform: rotate(90deg); }
+.project-execution-card__heading { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.project-execution-card__heading strong { color: var(--yb-text); font-size: 12px; line-height: 1.35; }
+.project-execution-card__heading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--yb-text-muted); font-size: 10px; line-height: 1.35; }
+.project-execution-card__meta { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--yb-text-muted); font-size: 10px; white-space: nowrap; }
+.project-execution-card__body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--yb-border); background: color-mix(in srgb, var(--yb-bg-elevated) 72%, transparent); }
+.project-execution-card__details-title { color: var(--yb-text); font-size: 11px; font-weight: 700; }
+.project-execution-card__summary-copy { margin: 0; overflow-wrap: anywhere; color: var(--yb-text-secondary); font-size: 11px; line-height: 1.5; }
+.project-execution-card__failure { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; margin: 0; padding: 8px 12px; border-top: 1px solid color-mix(in srgb, #dc2626 28%, var(--yb-border)); background: color-mix(in srgb, #dc2626 7%, transparent); color: #b91c1c; font-size: 10px; line-height: 1.45; }
+.project-execution-card__failure span { min-width: 0; overflow-wrap: anywhere; }
+.project-sandbox-confirmation { width: auto; margin: 0 10px 10px; }
 .project-sandbox-confirmation p { margin: 0 0 8px; line-height: 1.55; }
 .project-sandbox-confirmation ul { margin: 0 0 12px; padding-left: 20px; line-height: 1.6; }
 
 .project-composer { flex: 0 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; padding-top: 10px; border-top: 1px solid var(--yb-border); background: var(--yb-bg-elevated); position: relative; z-index: 1; }
 
-.project-plans { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; overflow: hidden; }
-.project-plan-thread { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: auto; padding-right: 4px; scrollbar-gutter: stable; }
-.project-plan-message { cursor: pointer; }
-.project-plan-message--selected { border-color: color-mix(in srgb, var(--yb-primary) 42%, var(--yb-border)); box-shadow: inset 3px 0 0 var(--yb-primary); }
-.project-plan-message small { display: flex; align-items: center; gap: 6px; }
-.project-plan-step-message__title { display: block; margin: 0 0 6px; font-size: 13px; line-height: 1.4; }
-.project-plan-step-message__preview { display: block; color: var(--yb-text-secondary); font-size: 12px; line-height: 1.45; }
-.project-plan-step-details summary { position: relative; display: grid; gap: 4px; padding-right: 18px; list-style: none; cursor: pointer; }
+.project-plan-step-details { overflow: hidden; border: 1px solid var(--yb-border); border-radius: 8px; background: var(--yb-bg-elevated); }
+.project-plan-step-message__copy { min-width: 0; display: block; }
+.project-plan-step-message__copy small { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; color: var(--yb-text-muted); font-size: 9px; }
+.project-plan-step-message__title { display: block; margin: 0 0 3px; overflow-wrap: anywhere; color: var(--yb-text); font-size: 11px; line-height: 1.4; }
+.project-plan-step-message__preview { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--yb-text-secondary); font-size: 10px; line-height: 1.45; }
+.project-plan-step-details summary { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 7px; padding: 8px 9px; list-style: none; cursor: pointer; }
 .project-plan-step-details summary::-webkit-details-marker { display: none; }
-.project-plan-step-details__chevron { position: absolute; top: 2px; right: 0; color: var(--yb-text-muted); font-size: 12px; transition: transform 160ms ease; }
+.project-plan-step-details__chevron { width: 13px; height: 13px; margin-top: 2px; color: var(--yb-text-muted); font-size: 13px; transition: transform 160ms ease; }
 .project-plan-step-details[open] .project-plan-step-details__chevron { transform: rotate(90deg); }
-.project-plan-step-details__body { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--yb-border); }
-.project-plan-final-message { border-style: dashed; }
-.project-plan-final-answer { max-width: min(92%, 900px); border-color: color-mix(in srgb, var(--yb-primary) 28%, var(--yb-border)); background: color-mix(in srgb, var(--yb-bg-elevated) 92%, var(--yb-primary-soft)); box-shadow: inset 3px 0 0 var(--yb-primary); }
-.project-plan-final-answer small { color: var(--yb-primary); }
-.project-plan-history { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
-.project-plan-history__chip { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 300px; padding: 6px 10px; border: 1px solid var(--yb-border); border-radius: 999px; background: transparent; color: var(--yb-text-secondary); cursor: pointer; }
-.project-plan-history__chip.active { border-color: var(--yb-primary); background: var(--yb-sidebar-active); color: var(--yb-text); }
-.project-plan-history__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-
-.project-plan-shell { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
-.project-plan-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--yb-border); border-radius: 14px; background: color-mix(in srgb, var(--yb-bg-muted) 60%, transparent); }
-.project-plan-header__copy { min-width: 0; }
-.project-plan-header__copy small { display: block; margin-bottom: 6px; color: var(--yb-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-.project-plan-header__copy h3 { margin: 0; font-size: 15px; line-height: 1.35; }
-.project-plan-header__copy p { margin: 8px 0 0; color: var(--yb-text-secondary); font-size: 12px; line-height: 1.55; }
-
-.project-plan-steps { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; padding-right: 4px; }
-.project-plan-step-card { border: 1px solid var(--yb-border); border-radius: 12px; background: color-mix(in srgb, var(--yb-bg-elevated) 72%, transparent); }
-.project-plan-step-card summary { list-style: none; cursor: pointer; }
-.project-plan-step-card summary::-webkit-details-marker { display: none; }
-.project-plan-step-card__summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
-.project-plan-step-card__lead { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-.project-plan-step-card__index { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-width: 56px; padding: 3px 8px; border-radius: 999px; background: var(--yb-bg-muted); color: var(--yb-text-secondary); font-size: 10px; font-weight: 600; }
-.project-plan-step-card__copy { min-width: 0; }
-.project-plan-step-card__copy strong { display: block; font-size: 13px; line-height: 1.4; }
-.project-plan-step-card__copy p { margin: 4px 0 0; color: var(--yb-text-secondary); font-size: 11px; line-height: 1.45; }
-.project-plan-step-card__meta { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; color: var(--yb-text-muted); font-size: 10px; }
-.project-plan-step-card__body { padding: 0 12px 12px; border-top: 1px solid var(--yb-border); }
-.project-plan-step-card__body :deep(.message-markdown) { font-size: 12px; line-height: 1.62; overflow-wrap: anywhere; }
-.project-plan-step-card__body :deep(.message-markdown table) { display: block; max-width: 100%; overflow-x: auto; }
-.project-plan-step__error { margin: 0; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, #d97706 10%, transparent); color: #b45309; font-size: 11px; white-space: pre-wrap; }
-.project-plan-step__pending { margin: 0; color: var(--yb-text-muted); font-size: 11px; }
-.project-plan-final__label { margin-bottom: 8px; color: var(--yb-text-muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.project-plan-final__preview { margin: 0; color: var(--yb-text-secondary); font-size: 12px; line-height: 1.45; }
-.project-plan-final-card { border: 1px solid var(--yb-border); border-radius: 14px; background: var(--yb-bg-elevated); }
-.project-plan-final-card summary { list-style: none; cursor: pointer; }
-.project-plan-final-card summary::-webkit-details-marker { display: none; }
-.project-plan-final-card__summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; }
-.project-plan-final-card__body { padding: 0 14px 14px; border-top: 1px solid var(--yb-border); }
-
+.project-plan-step-details__body { padding: 9px; border-top: 1px solid var(--yb-border); }
+.project-plan-step-details__body :deep(.message-markdown) { overflow-wrap: anywhere; font-size: 10px; line-height: 1.55; }
+.project-plan-step-details__body :deep(.message-markdown pre) { max-width: 100%; overflow: auto; }
 .project-evidence-list { display: flex; flex-direction: column; gap: 7px; min-height: 0; max-height: 260px; }
 .project-evidence-list article { padding: 8px; border: 1px solid var(--yb-border); border-radius: 7px; }
 .project-evidence-list article > div { display: flex; justify-content: space-between; gap: 6px; }
@@ -2726,13 +2642,15 @@ onUnmounted(() => {
   .project-file-list { flex: none; max-height: 260px; }
   .project-search-results { flex: none; max-height: 120px; }
   .project-preview--inline { min-height: 180px; max-height: 260px; }
-  .project-messages, .project-plans { min-height: 320px; max-height: 520px; }
+  .project-messages { min-height: 320px; max-height: 520px; }
   .project-evidence-list, .project-candidate-list { max-height: 220px; }
   .project-tabs, .project-inspector__tabs, .project-inspector__changes-head { flex-direction: column; align-items: stretch; }
-  .project-tabs__actions, .project-inspector__tabs > div { flex-wrap: wrap; }
+  .project-tabs__actions { width: 100%; flex-wrap: nowrap; }
 }
 
 @media (max-width: 620px) {
+  .project-execution-card__details > summary { grid-template-columns: 16px minmax(0, 1fr); align-items: start; }
+  .project-execution-card__meta { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
   .project-folder-picker { grid-template-columns: 34px minmax(0, 1fr); }
   .project-folder-picker > :deep(.n-button) { grid-column: 1 / -1; width: 100%; }
   .project-create-advanced__body { grid-template-columns: 1fr; gap: 0; }

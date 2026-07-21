@@ -31,14 +31,13 @@
 
 ## 当前下一步
 
-Worker 16 已完成 Project 单输入入口、`DIRECT / PLAN_EXECUTE` LLM Router、长期记忆贯通和真实 E2B 用户旅程验收。普通非 Project Chat 保留现有 ReAct，Project 步骤内 ReAct 延后到阶段 11。当前不继续扩科研工具、沙箱 Provider 或自由多 Agent。下一项生产开发任务是：
+Worker 16 与 Worker 17 已完成：Project 单输入入口、`DIRECT / PLAN_EXECUTE` LLM Router、长期记忆贯通，以及 Project 页面和执行过程展示整理均已通过真实用户旅程验收。普通非 Project Chat 保留现有 ReAct，Project 步骤内 ReAct 延后到阶段 11。当前不继续扩科研工具、沙箱 Provider 或自由多 Agent。下一项生产开发任务是：
 
-> 阶段 9 / Worker 17：整理 Project 页面与执行过程展示，并保持项目、会话、文件三区域现有高度比例。
+> 阶段 10 / Worker 18：Evidence 分层、工具自修复和状态语义统一。
 
 随后依次实施：
 
-1. 阶段 10 / Worker 18：Evidence 分层、工具自修复和状态语义统一。
-2. 阶段 11 / Worker 19：在前三阶段验收后，实现 Plan-and-Execute、步骤内 ReAct 与事件触发 Reflection。
+1. 阶段 11 / Worker 19：在前三阶段验收后，实现 Plan-and-Execute、步骤内 ReAct 与事件触发 Reflection。
 
 执行原则：Project 的 LLM Router 提出 `DIRECT / PLAN_EXECUTE`，Runtime 只校验 capability、权限、工具、沙箱确认与预算并执行；普通非 Project Chat 暂时保留 ReAct。每个阶段串行开发、独立审查、真实用户旅程验收后再进入下一阶段。
 

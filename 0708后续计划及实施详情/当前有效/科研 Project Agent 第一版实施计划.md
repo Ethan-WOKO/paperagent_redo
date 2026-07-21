@@ -9,7 +9,7 @@
 > Worker 3 只读工具工程基线：`1fc1e0f`（五个受治理科研工具与 Evidence 闭环）
 > 当前工程基线：GitHub `origin/main` 最新提交（Worker 16 已验收并进入发布流程）
 > Worker 启动基线：以串行任务包中冻结的完整 `HEAD` 为准
-> 当前发布状态：`WORKER_16_ACCEPTED / STAGE_9_READY`
+> 当前发布状态：`WORKER_17_ACCEPTED / STAGE_10_READY`
 > 设计依据：《通用 Agent Runtime 设计》《Agent 对比分析与后续改造建议》
 
 > 当前进度：Worker 1 至 Worker 7 已完成主对话复审。用户已完成 Project 文件树/预览、五个科研工具和 Plan 关键场景测试；`56e6b5c` 已加入浏览器文件夹上传、托管对象存储、Project 会话与 Plan 展示，并修复规划 JSON 截断、步骤 Verifier 截断、依赖证据复用和受控 PARTIAL。Worker 4 基线 `ff6f6e5` 统一了 Chat/ReAct/Plan 的 run identity、status/phase/outcome、canonical answer 与 PARTIAL/取消/失败语义。Worker 5 基线 `1c40159` 在该投影上增加 L0 Task Workspace，保存目标、成功条件、计划引用、观测步骤摘要、剩余工作和有界短期记忆；任意 JSON 快照中的记忆只能降级为明确标记的非权威审计摘要，不能伪造 Evidence、Candidate、Artifact、失败结果或工具观察。`823a820` 在不扩权的前提下完成 Worker 5 后本地回归闭环。Worker 6 基线 `956ce42` 以服务端 manifest 的 portable relative path、文件大小和 SHA-256 内容哈希确定性派生 ProjectVersion，并将 Project Evidence、Plan 持久化 Evidence、Candidate 与 Artifact 绑定到同一版本；旧 Evidence 缺少完整版本、范围或 parser provenance 时保持 fail-closed，不能伪造 VERIFIED。Worker 7A 至 7D 完成长短期记忆治理、受信只读接入、用户确认/拒绝/纠正/删除和双语治理界面。Worker 8A 基线 `d4970cd` 冻结受信 ProjectVersion 沙箱快照、不可变 UTF-8 全文替换 Candidate、base/result hash、EvidenceRefs、审查 diff、预算和 `NOT_APPLIED` 验证契约。Worker 8B 基线 `83c6b56` 将该契约接入服务端受信工作副本：只读取 Candidate 与 Evidence 涉及的文本文件，读取前后对完整 manifest 二次校验，任意未请求文件并发变化也返回 409；Candidate 只能由显式结构化 intent 和当前受信 Evidence ledger 生成，公共 artifact API 不能伪造保留类型，持久化后每次读取都重新物化、证明和验证，始终保持 `NOT_APPLIED`。Worker 8C 基线 `8ff3339` 新增受治理的 `project_propose_candidate` 生产入口，并通过当前轮真实工具结果和服务端 artifact 再认证投影 Candidate；Project 页从真实 API 展示多文件变更、ProjectVersion、指纹、验证状态、review diff 与 Evidence provenance，始终保持 `NOT_APPLIED`。主对话独立验证 Worker 8C 定向后端 66/66、完整 reactor 889 项零失败且 9 项既有条件跳过、前端 3/3、生产构建及 `git diff --check` 通过。Worker 8 不包含真实 Project 写入、命令、外部网络、migration 或自动应用；真实模型生成、多文件展示、409 STALE 和 422 INVALID 仍由用户进行本地 UI 验收。MVP 发布门脚本仍有基线遗留的绝对路径创建用例禁用治理项，发布前必须单独收口。该结论不表示用户本地科研验收完成，也不表示持久化 checkpoint/重启恢复、多版本历史与导出或安全应用已经完成。
@@ -368,7 +368,7 @@ Plan：
 
 ### 阶段 9：Project 页面与执行过程展示整理
 
-状态：`READY_TO_START`
+状态：`COMPLETED`
 
 - 保留项目、会话、文件三个区域平均分配页面高度的现有结构，禁止修改三区域的 flex 比例、最小高度和总体布局算法。
 - 标题栏高度与内边距保持稳定，展开/收起只改变区域内容可见性；文字箭头替换为标准图标按钮。
@@ -376,11 +376,13 @@ Plan：
 - 默认只展示状态、步骤进度、耗时、等待确认和失败原因；工具参数、原始输出与内部过程进入运行详情，不作为普通聊天气泡刷屏。
 - “预览 / 证据 / 改动 / Versions”只保留一组标签，修复选中态、文字包裹和点击区域，不保留重复导航。
 
-退出条件：桌面与窄屏下标题不跳动、文字不溢出、三区域比例不变；Project 的 DIRECT/PLAN 均从同一输入框完成；Plan 过程可展开查看但默认不污染会话；检查器不存在重复标签。
+完成记录：Worker 17 在不改变项目、会话、文件三区域 `25% / 25% / 50%` flex 与最小高度规则的前提下，稳定标题栏尺寸，使用现有 UI 图标替换字符箭头，移除用户层面的 Chat/Plan 双标签和重复检查器导航，并把 Plan 整理为同一会话中的默认折叠执行卡。桌面、窄屏和沙箱确认三条真实浏览器旅程通过；主对话独立复跑 4 个前端测试文件共 16 项、类型检查、生产构建与 `git diff --check`，均通过。
+
+退出条件：已满足。桌面与窄屏下标题不跳动、文字不溢出、三区域比例不变；Project 的 DIRECT/PLAN 均从同一输入框完成；Plan 过程可展开查看但默认不污染会话；检查器不存在重复标签，沙箱确认按钮保持可用。
 
 ### 阶段 10：Evidence 分层、工具自修复与状态语义
 
-状态：`PENDING_AFTER_STAGE_9`
+状态：`READY_TO_START`
 
 - 普通知识问答、产品说明和操作咨询不因缺少 Project Evidence 被阻断；只有引用当前 Project 事实、Candidate 验证/应用和其他外部影响操作进入对应硬校验。
 - 工具失败后向模型提供结构化、脱敏的工具名、参数、错误码、错误消息和剩余尝试次数，使下一次调用能够修正参数或改变方法。
@@ -659,15 +661,15 @@ Worker 开发
 
 ### Worker 17：Project 页面与执行过程展示整理
 
-状态：`READY_TO_START`
+状态：`COMPLETED`
 
 - 对应阶段 9。只整理 Project 页面入口、标题栏、展开图标、Plan 执行卡和检查器标签。
 - 冻结项目、会话、文件三区域平均分配页面高度的现有结构；禁止修改三区域 flex 比例、最小高度与总体布局算法。
-- 必测：桌面/窄屏视觉回归、标题位置稳定、单输入入口、Plan 详情折叠、无重复标签、无文字溢出。
+- 验收完成：桌面/窄屏视觉回归、标题位置稳定、单输入入口、Plan 详情折叠、无重复标签、无文字溢出和沙箱确认卡均已通过；无后端、Provider、migration 或 Evidence 逻辑改动。
 
 ### Worker 18：Evidence 分层、工具自修复与状态语义
 
-状态：`PENDING_AFTER_WORKER_17`
+状态：`READY_TO_START`
 
 - 对应阶段 10。普通问答不受 Project Evidence 硬闸门阻断；Project 事实声明和外部影响操作继续使用对应校验。
 - 工具错误以结构化、脱敏上下文反馈给模型，允许改变参数或方法的有界重试，禁止相同失败循环和不可恢复错误重试。
