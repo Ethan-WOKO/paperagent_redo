@@ -47,6 +47,11 @@ public class SandboxExecutionProperties {
         return !requiredAtStartup || enabled;
     }
 
+    @AssertTrue(message = "sandbox provider must be a supported governed provider")
+    public boolean isProviderSupported() {
+        return "docker-sbx".equals(provider) || "e2b".equals(provider);
+    }
+
     @AssertTrue(message = "the first sandbox release is fail-closed with networking disabled")
     public boolean isNetworkPolicySafe() {
         return !networkEnabled;
@@ -69,7 +74,8 @@ public class SandboxExecutionProperties {
         if ("https".equalsIgnoreCase(brokerUrl.getScheme())) return true;
         String host = brokerUrl.getHost();
         return "http".equalsIgnoreCase(brokerUrl.getScheme())
-                && ("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host));
+                && ("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host)
+                    || ("e2b".equals(provider) && "sandbox-broker".equals(host) && brokerUrl.getPort() == 8091));
     }
 
     @AssertTrue(message = "enabled sandbox requires deployment-provided broker authentication")

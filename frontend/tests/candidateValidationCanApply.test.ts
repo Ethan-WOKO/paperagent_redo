@@ -39,10 +39,12 @@ function validation(overrides: Partial<CandidateValidationResponse> = {}): Candi
 describe('Candidate validation application eligibility', () => {
   it('allows a successful bounded receipt even when its output was truncated', () => {
     expect(candidateValidationCanApply(validation(), binding)).toBe(true);
+    expect(candidateValidationCanApply(validation({ provider: 'e2b' }), binding)).toBe(true);
   });
 
   it('still rejects failed and timed-out validations', () => {
     expect(candidateValidationCanApply(validation({ status: 'FAILED', exitCode: 1 }), binding)).toBe(false);
     expect(candidateValidationCanApply(validation({ timedOut: true }), binding)).toBe(false);
+    expect(candidateValidationCanApply(validation({ provider: 'untrusted' }), binding)).toBe(false);
   });
 });

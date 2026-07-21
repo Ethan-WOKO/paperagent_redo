@@ -212,12 +212,12 @@ public class CandidateSandboxValidationService {
 
     private List<String> validationArgv(CandidateValidationProfile profile, CandidateArtifactResponse candidate,
                                         List<Integer> accepted) {
-        if (profile != CandidateValidationProfile.JAVA_SOURCE_RUN) return profile.argv(null);
-        if (accepted.size() != 1) invalid("JAVA_SOURCE_RUN requires exactly one selected Candidate change");
+        if (!profile.sourceProfile()) return profile.argv(null);
+        if (accepted.size() != 1) invalid(profile.name() + " requires exactly one selected Candidate change");
         CandidateFileChange change = candidate.changes().get(accepted.get(0));
         String path = change.relativePath().value();
-        if (change.type() == CandidateFileChange.Type.DELETE || !path.endsWith(".java")) {
-            invalid("JAVA_SOURCE_RUN requires one added or modified Java source");
+        if (change.type() == CandidateFileChange.Type.DELETE || !profile.accepts(path)) {
+            invalid(profile.name() + " requires one added or modified matching source");
         }
         return profile.argv(path);
     }

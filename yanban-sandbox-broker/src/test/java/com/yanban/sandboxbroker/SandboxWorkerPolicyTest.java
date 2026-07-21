@@ -10,7 +10,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 class SandboxWorkerPolicyTest {
     private final BrokerProperties properties=new BrokerProperties();
-    private final SandboxWorker worker=new SandboxWorker(mock(SandboxLeaseService.class),properties,new ObjectMapper(),new SandboxProcessRegistry(),new ProviderEnvironment(properties));
+    private final SandboxWorker worker=new SandboxWorker(mock(SandboxLeaseService.class),properties,new ObjectMapper(),new SandboxProcessRegistry(),new ProviderEnvironment(properties),new SandboxProviderCommandFactory(properties));
     @Test void acceptsOnlyExactActiveLocalDenyAllAndExactSandboxName(){
         String valid="[{\"source\":\"local\",\"decision\":\"deny\",\"type\":\"network\",\"active\":true,\"resource\":\"**\"}]";
         ReflectionTestUtils.invokeMethod(worker,"requireDenyAll",valid);

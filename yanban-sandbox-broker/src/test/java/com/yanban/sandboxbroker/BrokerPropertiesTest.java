@@ -2,6 +2,7 @@ package com.yanban.sandboxbroker;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 class BrokerPropertiesTest {
@@ -18,5 +19,21 @@ class BrokerPropertiesTest {
         value.setBindAddress("127.0.0.1");
         value.setRemoteAccess(true);
         assertThat(value.isProcessIdentitySafe()).isFalse();
+    }
+
+    @Test void e2bRequiresKeyPinnedTemplateAndAbsoluteHelperExecutables() {
+        BrokerProperties value = new BrokerProperties();
+        value.setEnabled(true);
+        value.setProvider(BrokerProperties.Provider.E2B);
+        value.setE2bApiKey("server-side-key-that-is-long-enough");
+        value.setE2bTemplate("yanban-research-v1");
+        Path root = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
+        value.setE2bPythonExecutable(root.resolve("python3").toString());
+        value.setE2bHelper(root.resolve("e2b_provider.py").toString());
+
+        assertThat(value.isExecutableSafe()).isTrue();
+        assertThat(value.isE2bConfigurationSafe()).isTrue();
+        value.setE2bTemplate("unsafe template; rm -rf");
+        assertThat(value.isE2bConfigurationSafe()).isFalse();
     }
 }

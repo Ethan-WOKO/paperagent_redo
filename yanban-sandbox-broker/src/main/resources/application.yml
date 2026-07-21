@@ -5,8 +5,12 @@ server:
 spring:
   application:
     name: yanban-sandbox-broker
+  config:
+    import:
+      - optional:file:.env.sandbox.local[.properties]
+      - optional:file:../.env.sandbox.local[.properties]
   datasource:
-    url: ${YANBAN_SANDBOX_DB_URL:jdbc:mysql://mysql:3306/yanban_sandbox?useSSL=false&serverTimezone=UTC}
+    url: ${YANBAN_SANDBOX_DB_URL:jdbc:mysql://mysql:3306/yanban_sandbox?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true}
     username: ${YANBAN_SANDBOX_DB_USER:yanban_sandbox}
     password: ${YANBAN_SANDBOX_DB_PASSWORD:}
   jpa:
@@ -21,6 +25,7 @@ server.tomcat.max-http-form-post-size: 22MB
 yanban:
   broker:
     enabled: ${YANBAN_SANDBOX_BROKER_ENABLED:false}
+    provider: ${YANBAN_SANDBOX_BROKER_PROVIDER:DOCKER_SBX}
     sbx-executable: ${YANBAN_SBX_EXECUTABLE:}
     workspace-root: ${YANBAN_SANDBOX_WORKSPACE_ROOT:}
     bearer-token: ${YANBAN_SANDBOX_BROKER_TOKEN:}
@@ -33,3 +38,7 @@ yanban:
     provider-config-home: ${YANBAN_SBX_CONFIG_HOME:}
     provider-data-home: ${YANBAN_SBX_DATA_HOME:}
     provider-state-home: ${YANBAN_SBX_STATE_HOME:}
+    e2b-api-key: ${E2B_API_KEY:}
+    e2b-template: ${YANBAN_E2B_TEMPLATE:yanban-research-v1}
+    e2b-python-executable: ${YANBAN_E2B_PYTHON_EXECUTABLE:}
+    e2b-helper: ${YANBAN_E2B_HELPER:}

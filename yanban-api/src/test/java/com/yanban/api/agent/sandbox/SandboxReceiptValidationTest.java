@@ -18,7 +18,7 @@ class SandboxReceiptValidationTest {
     @Test void rejectsIdentityReplayOversizeArtifactsAndImpossibleStatus(){
         SandboxOutboxExecution value=new SandboxOutboxExecution("api-e",1,2,3,4,5,7,"key","a".repeat(64),"b".repeat(64),"c".repeat(64),"{}");
         value.dispatched("broker-e","RUNNING",java.time.LocalDateTime.now());
-        SandboxOutboxDispatcher dispatcher=new SandboxOutboxDispatcher(mock(SandboxOutboxRepository.class),mock(SandboxBrokerClient.class),new ObjectMapper(),mock(AgentPlanStepRepository.class),mock(AgentPlanEventRepository.class),mock(org.springframework.jdbc.core.JdbcTemplate.class),mock(org.springframework.transaction.support.TransactionTemplate.class),mock(SandboxReceiptProjectionService.class));
+        SandboxOutboxDispatcher dispatcher=new SandboxOutboxDispatcher(mock(SandboxOutboxRepository.class),mock(SandboxBrokerClient.class),new ObjectMapper(),mock(AgentPlanStepRepository.class),mock(AgentPlanEventRepository.class),mock(org.springframework.jdbc.core.JdbcTemplate.class),mock(org.springframework.transaction.support.TransactionTemplate.class),mock(SandboxReceiptProjectionService.class),new SandboxExecutionProperties());
         SandboxReceipt valid=receipt("broker-e",Map.of(),"",0,null);
         invoke(dispatcher,value,valid,SandboxExecutionStatus.SUCCEEDED);
         assertThatThrownBy(()->invoke(dispatcher,value,receipt("other",Map.of(),"",0,null),SandboxExecutionStatus.SUCCEEDED)).isInstanceOf(Exception.class);

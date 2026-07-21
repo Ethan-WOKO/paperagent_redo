@@ -19,8 +19,8 @@ class SandboxWorker {
     private static final Duration LEASE=Duration.ofSeconds(30);
     private static final long CREATE_TIMEOUT_MILLIS=60_000L;
     private final SandboxLeaseService leases; private final BrokerProperties properties; private final ObjectMapper json;
-    private final SandboxProcessRegistry processes; private final ProviderEnvironment providerEnvironment; private final String owner=UUID.randomUUID().toString();
-    SandboxWorker(SandboxLeaseService leases,BrokerProperties properties,ObjectMapper json,SandboxProcessRegistry processes,ProviderEnvironment providerEnvironment){this.leases=leases;this.properties=properties;this.json=json;this.processes=processes;this.providerEnvironment=providerEnvironment;}
+    private final SandboxProcessRegistry processes; private final ProviderEnvironment providerEnvironment; private final SandboxProviderCommandFactory providers; private final String owner=UUID.randomUUID().toString();
+    SandboxWorker(SandboxLeaseService leases,BrokerProperties properties,ObjectMapper json,SandboxProcessRegistry processes,ProviderEnvironment providerEnvironment,SandboxProviderCommandFactory providers){this.leases=leases;this.properties=properties;this.json=json;this.processes=processes;this.providerEnvironment=providerEnvironment;this.providers=providers;}
 
     @Scheduled(fixedDelayString="${yanban.broker.poll-delay-ms:1000}")
     void poll(){leases.claim(owner,LEASE).ifPresent(lease -> {
@@ -32,7 +32,7 @@ class SandboxWorker {
         SandboxExecutionEntity entity=leases.owned(lease);
         SandboxDispatch request=read(entity.requestJson());
         Path root=workspace(lease.executionId(),lease.recovery());
-        SbxCommandFactory commands=new SbxCommandFactory(properties.getSbxExecutable());
+        SandboxProviderCommands commands=providers.commands();
         if(lease.recovery()){
             boolean clean=cleanup(lease,commands,entity.sandboxName(),root);
             finishRecovery(lease,entity,request,clean);return;
@@ -44,7 +44,7 @@ class SandboxWorker {
             throwIfCancelled(lease);
             // Interrupting sbx create can leave the provider holding the workspace before the sandbox is listable.
             // Let the bounded create finish, then honor cancellation before policy or user code can run.
-            requireOk(execute(lease,commands.create(entity.sandboxName(),root,request.cpus(),request.memoryBytes()),CREATE_TIMEOUT_MILLIS,65536,false),"create");
+            requireOk(execute(lease,commands.create(entity.sandboxName(),root,request.cpus(),request.memoryBytes(),request.timeoutMillis()),CREATE_TIMEOUT_MILLIS,65536,false),"create");
             throwIfCancelled(lease);
             leases.transition(lease,"CREATED",checkpoint("CREATED",entity.sandboxName()));
             requireOk(execute(lease,commands.denyAllNetwork(entity.sandboxName()),30000,65536),"network policy");
@@ -75,7 +75,7 @@ class SandboxWorker {
         try {
             SandboxExecutionEntity entity = leases.owned(lease);
             Path root = workspace(lease.executionId(), true);
-            SbxCommandFactory commands = new SbxCommandFactory(properties.getSbxExecutable());
+            SandboxProviderCommands commands = providers.commands();
             leases.transition(lease, "FAILED_PENDING_CLEANUP", checkpoint("CLEANUP_REQUIRED", entity.sandboxName()));
             if (cleanup(lease, commands, entity.sandboxName(), root))
                 leases.terminal(lease, "FAILED", null, null, "PROVIDER_REJECTED");
@@ -96,7 +96,7 @@ class SandboxWorker {
     private String pendingCleanupStatus(SandboxExecutionStatus desired){return switch(desired){
         case SUCCEEDED -> "SUCCEEDED_PENDING_CLEANUP"; case TIMED_OUT -> "TIMED_OUT_PENDING_CLEANUP";
         case CANCELLED -> "CANCEL_REQUESTED"; default -> "FAILED_PENDING_CLEANUP";};}
-    private boolean cleanup(SandboxLeaseService.Lease lease,SbxCommandFactory commands,String name,Path root){
+    private boolean cleanup(SandboxLeaseService.Lease lease,SandboxProviderCommands commands,String name,Path root){
         try{leases.transition(lease,"CLEANING",checkpoint("CLEANING",name));processes.terminate(lease.executionId());}
         catch(Exception ex){return false;}
         for(int attempt=1;attempt<=3;attempt++){
@@ -150,7 +150,7 @@ class SandboxWorker {
     private SandboxDispatch read(String value){try{return json.readValue(value,SandboxDispatch.class);}catch(Exception ex){throw new IllegalStateException("stored sandbox request invalid",ex);}}
     private SandboxReceipt readReceipt(String value){try{return json.readValue(value,SandboxReceipt.class);}catch(Exception ex){throw new IllegalStateException("stored sandbox receipt invalid",ex);}}
     private String checkpoint(String phase,String name){return "{\"phase\":\""+phase+"\",\"sandboxName\":\""+name+"\"}";}
-    private SandboxReceipt receipt(String id,SandboxDispatch r,SandboxExecutionStatus status,ExecResult x,SandboxErrorCode error,Instant started,Instant finished){return new SandboxReceipt(id,r.idempotencyKey(),r.requestDigest(),r.userId(),r.projectId(),r.sessionId(),r.planId(),r.stepId(),r.fence(),r.projectVersion(),r.policyDigest(),"docker-sbx",status,x==null?null:x.exitCode(),x==null?"":x.stdout(),x==null?"":x.stderr(),false,Map.of(),started,finished,error);}
+    private SandboxReceipt receipt(String id,SandboxDispatch r,SandboxExecutionStatus status,ExecResult x,SandboxErrorCode error,Instant started,Instant finished){return new SandboxReceipt(id,r.idempotencyKey(),r.requestDigest(),r.userId(),r.projectId(),r.sessionId(),r.planId(),r.stepId(),r.fence(),r.projectVersion(),r.policyDigest(),providers.commands().provider(),status,x==null?null:x.exitCode(),x==null?"":x.stdout(),x==null?"":x.stderr(),false,Map.of(),started,finished,error);}
     private String write(Object value){try{return json.writeValueAsString(value);}catch(Exception ex){throw new IllegalStateException(ex);}}
     private String sha256(String value){try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception ex){throw new IllegalStateException(ex);}}
     private void requireOk(ExecResult result,String phase){if(result.exitCode()!=0)throw new IllegalStateException(phase+" failed");}

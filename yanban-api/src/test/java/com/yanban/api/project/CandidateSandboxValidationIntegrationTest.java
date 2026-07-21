@@ -59,6 +59,7 @@ import org.springframework.web.server.ResponseStatusException;
         "spring.datasource.driver-class-name=org.h2.Driver", "spring.datasource.username=sa",
         "spring.datasource.password=", "spring.jpa.hibernate.ddl-auto=none", "spring.flyway.enabled=true",
         "spring.kafka.listener.auto-startup=false", "yanban.sandbox.enabled=true",
+        "yanban.sandbox.provider=docker-sbx",
         "yanban.sandbox.broker-token=01234567890123456789012345678901",
         "yanban.sandbox.dispatch-delay-ms=3600000",
         "yanban.jwt.secret=test_secret_123456789012345678901234567890"
@@ -143,7 +144,7 @@ class CandidateSandboxValidationIntegrationTest {
 
         dispatcher.reconcile(queued.validationId());
 
-        assertThat(dispatch.get().argv()).containsExactly("java", "Success.java");
+        assertThat(dispatch.get().argv()).containsExactly("yanban-runner", "java", "Success.java");
     }
 
     @Test
