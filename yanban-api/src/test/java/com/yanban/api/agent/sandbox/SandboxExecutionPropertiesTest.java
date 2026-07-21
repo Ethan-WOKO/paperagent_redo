@@ -99,6 +99,20 @@ class SandboxExecutionPropertiesTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
+    @Test
+    void acceptsOnlyThePrivateComposeEndpointForE2b() {
+        contextRunner.withPropertyValues(
+                        "yanban.sandbox.provider=e2b",
+                        "yanban.sandbox.broker-url=http://sandbox-broker:8091")
+                .run(context -> assertThat(context).hasNotFailed());
+        contextRunner.withPropertyValues(
+                        "yanban.sandbox.provider=docker-sbx",
+                        "yanban.sandbox.broker-url=http://sandbox-broker:8091")
+                .run(context -> assertThat(context).hasFailed());
+        contextRunner.withPropertyValues("yanban.sandbox.provider=unknown")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties(SandboxExecutionProperties.class)
     static class TestConfiguration {

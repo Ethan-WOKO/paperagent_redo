@@ -10,10 +10,11 @@ export function candidateValidationCanApply(
   validation: CandidateValidationResponse,
   binding: CandidateValidationBinding,
 ) {
+  const trustedProvider = validation.provider === 'docker-sbx' || validation.provider === 'e2b';
   return validation.status === 'SUCCEEDED'
     && validation.exitCode === 0
     && !validation.timedOut
-    && validation.provider === 'docker-sbx'
+    && trustedProvider
     && validation.decisionStatus === 'PENDING'
     && validation.projectVersion === binding.projectVersion
     && validation.candidateFingerprint === binding.candidateFingerprint

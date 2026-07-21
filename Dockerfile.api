@@ -7,6 +7,8 @@ COPY yanban-paper ./yanban-paper
 COPY yanban-mcp ./yanban-mcp
 COPY yanban-skills ./yanban-skills
 COPY yanban-api ./yanban-api
+COPY yanban-sandbox-contract ./yanban-sandbox-contract
+COPY yanban-sandbox-broker ./yanban-sandbox-broker
 COPY yanban-cli ./yanban-cli
 RUN mvn -pl yanban-api -am -DskipTests package
 

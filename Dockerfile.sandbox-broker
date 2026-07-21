@@ -1,0 +1,31 @@
+FROM maven:3.9.16-eclipse-temurin-17 AS build
+WORKDIR /workspace
+COPY pom.xml ./
+COPY yanban-core ./yanban-core
+COPY yanban-knowledge ./yanban-knowledge
+COPY yanban-paper ./yanban-paper
+COPY yanban-mcp ./yanban-mcp
+COPY yanban-skills ./yanban-skills
+COPY yanban-api ./yanban-api
+COPY yanban-sandbox-contract ./yanban-sandbox-contract
+COPY yanban-sandbox-broker ./yanban-sandbox-broker
+COPY yanban-cli ./yanban-cli
+RUN mvn -pl yanban-sandbox-broker -am -DskipTests package
+
+FROM eclipse-temurin:17-jre-noble
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/e2b-venv
+COPY deploy/sandbox/e2b/requirements.txt /tmp/e2b-requirements.txt
+RUN /opt/e2b-venv/bin/pip install --no-cache-dir -r /tmp/e2b-requirements.txt \
+    && rm /tmp/e2b-requirements.txt
+RUN useradd --system --home-dir /var/lib/yanban-sandbox --create-home yanban-sandbox \
+    && install -d -o yanban-sandbox -g yanban-sandbox /var/lib/yanban-sandbox/work
+WORKDIR /app
+COPY --from=build /workspace/yanban-sandbox-broker/target/yanban-sandbox-broker-*.jar /app/yanban-sandbox-broker.jar
+COPY deploy/sandbox/e2b/e2b_provider.py /app/e2b_provider.py
+RUN chmod 0555 /app/e2b_provider.py
+USER yanban-sandbox
+EXPOSE 8091
+ENTRYPOINT ["java", "-jar", "/app/yanban-sandbox-broker.jar"]

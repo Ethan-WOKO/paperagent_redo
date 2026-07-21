@@ -130,7 +130,7 @@ services:
       YANBAN_ES_ENDPOINT: http://elasticsearch:9200
       YANBAN_MINIO_ENDPOINT: http://minio:9000
       YANBAN_MINIO_SECURE: "false"
-      YANBAN_SANDBOX_BROKER_URL: ${YANBAN_SANDBOX_BROKER_URL:-https://host.docker.internal:8443}
+      YANBAN_SANDBOX_BROKER_URL: ${YANBAN_SANDBOX_BROKER_URL:-http://sandbox-broker:8091}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -146,6 +146,36 @@ services:
         condition: service_healthy
     volumes:
       - api_data:/app/data
+
+  sandbox-broker:
+    profiles: ["sandbox"]
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox-broker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      YANBAN_SANDBOX_BROKER_ENABLED: "true"
+      YANBAN_SANDBOX_BROKER_PROVIDER: E2B
+      YANBAN_SANDBOX_BROKER_ADDRESS: 0.0.0.0
+      YANBAN_SANDBOX_BROKER_MODE: PRODUCTION
+      YANBAN_SANDBOX_BROKER_USER: yanban-sandbox
+      YANBAN_SANDBOX_BROKER_REMOTE: "false"
+      YANBAN_SANDBOX_WORKSPACE_ROOT: /var/lib/yanban-sandbox/work
+      YANBAN_E2B_PYTHON_EXECUTABLE: /opt/e2b-venv/bin/python
+      YANBAN_E2B_HELPER: /app/e2b_provider.py
+      YANBAN_SANDBOX_DB_URL: jdbc:mysql://mysql:3306/${YANBAN_SANDBOX_DB_NAME:-yanban_sandbox}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - sandbox_broker_data:/var/lib/yanban-sandbox
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer $$YANBAN_SANDBOX_BROKER_TOKEN\" http://127.0.0.1:8091/internal/v1/health >/dev/null"]
+      interval: 15s
+      timeout: 15s
+      retries: 10
 
   frontend:
     build:
@@ -164,3 +194,4 @@ volumes:
   kafka_data:
   minio_data:
   api_data:
+  sandbox_broker_data:

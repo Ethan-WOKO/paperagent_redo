@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.agent.sandbox.SandboxBrokerClient;
 import com.yanban.api.agent.sandbox.SandboxExecutionException;
 import com.yanban.api.agent.sandbox.SandboxFailureCode;
+import com.yanban.api.agent.sandbox.SandboxExecutionProperties;
 import com.yanban.sandbox.contract.SandboxDispatch;
 import com.yanban.sandbox.contract.SandboxDispatchResponse;
 import com.yanban.sandbox.contract.SandboxExecutionStatus;
@@ -28,13 +29,15 @@ class CandidateSandboxValidationDispatcher {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final CandidateValidationAnalysisProjectionService analysis;
+    private final SandboxExecutionProperties sandboxProperties;
 
     CandidateSandboxValidationDispatcher(CandidateSandboxValidationRepository validations,
                                          SandboxBrokerClient broker, ObjectMapper json, JdbcTemplate jdbc,
                                          TransactionTemplate transactions,
-                                         CandidateValidationAnalysisProjectionService analysis) {
+                                         CandidateValidationAnalysisProjectionService analysis,
+                                         SandboxExecutionProperties sandboxProperties) {
         this.validations = validations; this.broker = broker; this.json = json; this.jdbc = jdbc;
-        this.transactions = transactions; this.analysis = analysis;
+        this.transactions = transactions; this.analysis = analysis; this.sandboxProperties = sandboxProperties;
     }
 
     @Scheduled(fixedDelayString = "${yanban.sandbox.dispatch-delay-ms:1000}")
@@ -111,7 +114,8 @@ class CandidateSandboxValidationDispatcher {
                 || value.userId() != receipt.userId() || value.projectId() != receipt.projectId()
                 || value.sessionId() != receipt.sessionId() || value.artifactId() != receipt.planId()
                 || request.stepId() != receipt.stepId() || !value.projectVersion().equals(receipt.projectVersion())
-                || !value.policyDigest().equals(receipt.policyDigest()) || !"docker-sbx".equals(receipt.provider())
+                || !value.policyDigest().equals(receipt.policyDigest())
+                || !sandboxProperties.getProvider().equals(receipt.provider())
                 || receipt.status() != status || receipt.startedAt() == null || receipt.finishedAt() == null
                 || receipt.finishedAt().isBefore(receipt.startedAt()) || receipt.stdout() == null || receipt.stderr() == null
                 || (long) receipt.stdout().getBytes(StandardCharsets.UTF_8).length

@@ -751,6 +751,9 @@ const validationProfileOptions = [
   { label: 'Maven offline test', value: 'MAVEN_TEST' },
   { label: 'Maven offline verify', value: 'MAVEN_VERIFY' },
   { label: 'Java source compile and run', value: 'JAVA_SOURCE_RUN' },
+  { label: 'Python source run', value: 'PYTHON_SOURCE_RUN' },
+  { label: 'C source compile and run', value: 'C_SOURCE_RUN' },
+  { label: 'C++ source compile and run', value: 'CPP_SOURCE_RUN' },
 ];
 const revisions = ref<ProjectRevisionResponse[]>([]);
 const applyModalOpen = ref(false);

@@ -29,9 +29,10 @@ class SandboxOutboxDispatcher {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions; private final String owner=java.util.UUID.randomUUID().toString();
     private final SandboxReceiptProjectionService receiptProjection;
+    private final SandboxExecutionProperties sandboxProperties;
     SandboxOutboxDispatcher(SandboxOutboxRepository outbox,SandboxBrokerClient broker,ObjectMapper json,
                             AgentPlanStepRepository steps,AgentPlanEventRepository events,JdbcTemplate jdbc,TransactionTemplate transactions,
-                            SandboxReceiptProjectionService receiptProjection){this.outbox=outbox;this.broker=broker;this.json=json;this.steps=steps;this.events=events;this.jdbc=jdbc;this.transactions=transactions;this.receiptProjection=receiptProjection;}
+                            SandboxReceiptProjectionService receiptProjection,SandboxExecutionProperties sandboxProperties){this.outbox=outbox;this.broker=broker;this.json=json;this.steps=steps;this.events=events;this.jdbc=jdbc;this.transactions=transactions;this.receiptProjection=receiptProjection;this.sandboxProperties=sandboxProperties;}
     @Scheduled(fixedDelayString="${yanban.sandbox.dispatch-delay-ms:1000}")
     void reconcile(){for(SandboxOutboxExecution candidate:outbox.findReconcileable()){Claim claim=claim(candidate.executionId());if(claim==null)continue;try{reconcile(claim);}catch(RuntimeException ignored){scheduleRetryAfterFailure(claim);}}}
 
@@ -88,7 +89,7 @@ class SandboxOutboxDispatcher {
                 ||value.userId()!=receipt.userId()||value.projectId()!=receipt.projectId()||value.sessionId()!=receipt.sessionId()
                 ||value.planId()!=receipt.planId()||value.stepId()!=receipt.stepId()
                 ||!value.projectVersion().equals(receipt.projectVersion())||!value.policyDigest().equals(receipt.policyDigest())
-                ||!"docker-sbx".equals(receipt.provider())
+                ||!sandboxProperties.getProvider().equals(receipt.provider())
                 ||receipt.status()!=status||receipt.startedAt()==null||receipt.finishedAt()==null||receipt.finishedAt().isBefore(receipt.startedAt())
                 ||receipt.stdout()==null||receipt.stderr()==null||receipt.outputTruncated()
                 ||(long)receipt.stdout().getBytes(StandardCharsets.UTF_8).length+receipt.stderr().getBytes(StandardCharsets.UTF_8).length>20L*1024*1024

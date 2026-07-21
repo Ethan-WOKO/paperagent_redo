@@ -1,10 +1,12 @@
 package com.yanban.sandboxbroker;
 import java.nio.file.Path; import java.util.ArrayList; import java.util.List;
 /** Constructs argv arrays only; never invokes a host shell. */
-public final class SbxCommandFactory {
+public final class SbxCommandFactory implements SandboxProviderCommands {
  private final String executable;
  public SbxCommandFactory(String executable){if(executable==null||executable.isBlank())throw new IllegalArgumentException();this.executable=executable;}
- public List<String> create(String name,Path workspace,int cpus,long memoryBytes){return List.of(executable,"create","shell",workspace.toString(),"--name",name,"--cpus",Integer.toString(cpus),"--memory",memory(memoryBytes),"--quiet");}
+ @Override public String provider(){return "docker-sbx";}
+ @Override public List<String> health(){return List.of(executable,"version");}
+ @Override public List<String> create(String name,Path workspace,int cpus,long memoryBytes,long timeoutMillis){return List.of(executable,"create","shell",workspace.toString(),"--name",name,"--cpus",Integer.toString(cpus),"--memory",memory(memoryBytes),"--quiet");}
  public List<String> denyAllNetwork(String name){return List.of(executable,"policy","deny","network","--sandbox",name,"**");}
  public List<String> verifyNetworkPolicy(String name){return List.of(executable,"policy","ls",name,"--type","network","--decision","deny","--source","local","--json");}
  public List<String> exec(String name,List<String> argv){var out=new ArrayList<String>();out.add(executable);out.add("exec");out.add(name);out.addAll(argv);return List.copyOf(out);}

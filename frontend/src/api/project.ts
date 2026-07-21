@@ -60,7 +60,8 @@ export interface ProjectRevisionOperationResponse {
   completedAt: string;
 }
 
-export type CandidateValidationProfile = 'MAVEN_TEST' | 'MAVEN_VERIFY' | 'JAVA_SOURCE_RUN';
+export type CandidateValidationProfile = 'MAVEN_TEST' | 'MAVEN_VERIFY' | 'JAVA_SOURCE_RUN'
+  | 'PYTHON_SOURCE_RUN' | 'C_SOURCE_RUN' | 'CPP_SOURCE_RUN';
 
 export interface CandidateValidationResponse {
   validationId: string;

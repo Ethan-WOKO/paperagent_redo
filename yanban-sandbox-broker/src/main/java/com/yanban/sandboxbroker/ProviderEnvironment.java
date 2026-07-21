@@ -4,7 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
-/** The complete, non-secret environment visible to every sbx subprocess. */
+/** Complete provider-process environment. Provider secrets are never forwarded into a user sandbox. */
 @Component
 final class ProviderEnvironment {
     private final BrokerProperties properties;
@@ -19,6 +19,11 @@ final class ProviderEnvironment {
 
     Map<String, String> values() {
         Map<String, String> values = new LinkedHashMap<>();
+        if (properties.getProvider() == BrokerProperties.Provider.E2B) {
+            values.put("E2B_API_KEY", properties.getE2bApiKey());
+            values.put("PYTHONUNBUFFERED", "1");
+            return Map.copyOf(values);
+        }
         values.put("HOME", properties.getProviderHome());
         if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("windows")) {
             values.put("USERPROFILE", properties.getProviderHome());

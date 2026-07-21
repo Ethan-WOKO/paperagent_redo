@@ -3,6 +3,7 @@ package com.yanban.api.project;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.agent.sandbox.CandidateArtifactResponse;
+import com.yanban.api.agent.sandbox.SandboxExecutionProperties;
 import com.yanban.sandbox.contract.SandboxExecutionStatus;
 import com.yanban.sandbox.contract.SandboxReceipt;
 import java.time.LocalDateTime;
@@ -20,10 +21,13 @@ public class CandidateValidationApplicationGate {
     private final CandidateSandboxValidationRepository validations;
     private final ObjectMapper json;
     private final JdbcTemplate jdbc;
+    private final SandboxExecutionProperties sandboxProperties;
 
     public CandidateValidationApplicationGate(CandidateSandboxValidationRepository validations,
-                                              ObjectMapper json, JdbcTemplate jdbc) {
+                                              ObjectMapper json, JdbcTemplate jdbc,
+                                              SandboxExecutionProperties sandboxProperties) {
         this.validations = validations; this.json = json; this.jdbc = jdbc;
+        this.sandboxProperties = sandboxProperties;
     }
 
     @Transactional(readOnly = true)
@@ -44,7 +48,7 @@ public class CandidateValidationApplicationGate {
                 || !"SUCCEEDED".equals(value.status()) || !"PENDING".equals(value.decisionStatus())
                 || receipt == null || receipt.status() != SandboxExecutionStatus.SUCCEEDED
                 || receipt.exitCode() == null || receipt.exitCode() != 0 || receipt.errorCode() != null
-                || !"docker-sbx".equals(receipt.provider())
+                || !sandboxProperties.getProvider().equals(receipt.provider())
                 || !value.requestDigest().equals(receipt.requestDigest())
                 || !value.projectVersion().equals(receipt.projectVersion())
                 || value.userId() != receipt.userId() || value.projectId() != receipt.projectId()

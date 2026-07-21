@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Narrow E2B adapter for the governed Java Broker; never accepts a shell string."""
+
+import argparse
+import json
+import math
+import os
+from pathlib import Path, PurePosixPath
+import shlex
+import signal
+import sys
+
+from e2b import Sandbox, SandboxQuery
+
+
+MANAGED_KEY = "yanban-managed"
+NAME_KEY = "yanban-name"
+REMOTE_ROOT = PurePosixPath("/home/user/project")
+active_sandbox_id = None
+
+
+def managed(name=None):
+    metadata = {MANAGED_KEY: "true"}
+    if name:
+        metadata[NAME_KEY] = name
+    paginator = Sandbox.list(query=SandboxQuery(metadata=metadata), limit=100)
+    result = []
+    while paginator.has_next:
+        result.extend(paginator.next_items())
+    return result
+
+
+def exact(name):
+    matches = [item for item in managed(name) if item.metadata.get(NAME_KEY) == name]
+    if len(matches) > 1:
+        raise RuntimeError("duplicate managed E2B sandbox identity")
+    return matches[0] if matches else None
+
+
+def terminate_on_signal(signum, _frame):
+    if active_sandbox_id:
+        try:
+            Sandbox.kill(active_sandbox_id)
+        except Exception:
+            pass
+    raise SystemExit(128 + signum)
+
+
+def command_health(_args):
+    managed()
+    print(json.dumps({"status": "UP", "provider": "e2b"}, separators=(",", ":")))
+    return 0
+
+
+def command_create(args):
+    global active_sandbox_id
+    if exact(args.name):
+        raise RuntimeError("managed E2B sandbox already exists")
+    ttl_seconds = min(3600, max(180, math.ceil(args.timeout_millis / 1000) + 120))
+    sandbox = Sandbox.create(
+        args.template,
+        timeout=ttl_seconds,
+        metadata={MANAGED_KEY: "true", NAME_KEY: args.name},
+        envs={},
+        secure=True,
+        allow_internet_access=False,
+        lifecycle={"on_timeout": "kill", "auto_resume": False},
+    )
+    active_sandbox_id = sandbox.sandbox_id
+    try:
+        info = sandbox.get_info()
+        if info.cpu_count > args.cpus or info.memory_mb * 1024 * 1024 > args.memory_bytes:
+            raise RuntimeError("E2B template exceeds the requested resource limits")
+        workspace = Path(args.workspace).resolve(strict=True)
+        for source in sorted(workspace.rglob("*")):
+            if source.is_symlink():
+                raise RuntimeError("workspace links are forbidden")
+            if not source.is_file():
+                continue
+            relative = source.relative_to(workspace)
+            remote = REMOTE_ROOT.joinpath(*relative.parts).as_posix()
+            sandbox.files.write(remote, source.read_bytes(), request_timeout=60)
+        print(json.dumps({"name": args.name, "sandboxId": sandbox.sandbox_id}, separators=(",", ":")))
+        active_sandbox_id = None
+        return 0
+    except BaseException:
+        try:
+            sandbox.kill()
+        finally:
+            active_sandbox_id = None
+        raise
+
+
+def command_policy(args):
+    item = exact(args.name)
+    if not item:
+        raise RuntimeError("managed E2B sandbox not found")
+    info = Sandbox.get_info(item.sandbox_id)
+    if info.allow_internet_access is not False:
+        raise RuntimeError("E2B deny-all network policy is not active")
+    print(json.dumps({
+        "origin": "scoped",
+        "resource_type": "network",
+        "status": "active",
+        "decision": "deny",
+        "resources": ["**"],
+    }, separators=(",", ":")))
+    return 0
+
+
+def command_exec(args):
+    global active_sandbox_id
+    item = exact(args.name)
+    if not item:
+        raise RuntimeError("managed E2B sandbox not found")
+    argv = list(args.argv)
+    if argv and argv[0] == "--":
+        argv = argv[1:]
+    if not argv:
+        raise RuntimeError("empty governed command")
+    sandbox = Sandbox.connect(item.sandbox_id)
+    active_sandbox_id = item.sandbox_id
+    try:
+        result = sandbox.commands.run(shlex.join(argv), cwd=REMOTE_ROOT.as_posix(), envs={}, stdin=False, timeout=0)
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        return int(result.exit_code)
+    finally:
+        active_sandbox_id = None
+
+
+def command_kill(args):
+    item = exact(args.name)
+    if item:
+        Sandbox.kill(item.sandbox_id)
+    return 0
+
+
+def command_list(_args):
+    print(json.dumps([
+        {"name": item.metadata.get(NAME_KEY), "sandboxId": item.sandbox_id, "state": str(item.state)}
+        for item in managed()
+    ], separators=(",", ":")))
+    return 0
+
+
+def parser():
+    root = argparse.ArgumentParser(add_help=False)
+    commands = root.add_subparsers(dest="command", required=True)
+    commands.add_parser("health", add_help=False).set_defaults(handler=command_health)
+    create = commands.add_parser("create", add_help=False)
+    create.add_argument("--name", required=True)
+    create.add_argument("--workspace", required=True)
+    create.add_argument("--template", required=True)
+    create.add_argument("--cpus", required=True, type=int)
+    create.add_argument("--memory-bytes", required=True, type=int)
+    create.add_argument("--timeout-millis", required=True, type=int)
+    create.set_defaults(handler=command_create)
+    policy = commands.add_parser("policy", add_help=False)
+    policy.add_argument("--name", required=True)
+    policy.set_defaults(handler=command_policy)
+    execute = commands.add_parser("exec", add_help=False)
+    execute.add_argument("--name", required=True)
+    execute.add_argument("argv", nargs=argparse.REMAINDER)
+    execute.set_defaults(handler=command_exec)
+    kill = commands.add_parser("kill", add_help=False)
+    kill.add_argument("--name", required=True)
+    kill.set_defaults(handler=command_kill)
+    commands.add_parser("list", add_help=False).set_defaults(handler=command_list)
+    return root
+
+
+def main():
+    if not os.environ.get("E2B_API_KEY"):
+        raise RuntimeError("E2B_API_KEY is required")
+    signal.signal(signal.SIGTERM, terminate_on_signal)
+    signal.signal(signal.SIGINT, terminate_on_signal)
+    args = parser().parse_args()
+    return args.handler(args)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as error:
+        print(f"E2B provider error: {type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(70)
