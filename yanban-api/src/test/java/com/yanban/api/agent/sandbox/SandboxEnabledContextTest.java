@@ -23,6 +23,8 @@ import com.yanban.api.project.ProjectFileEntry;
 import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectService;
 import com.yanban.core.agent.AgentPlan;
+import com.yanban.core.agent.AgentMessage;
+import com.yanban.core.agent.AgentMessageRepository;
 import com.yanban.core.agent.AgentPlanEventRepository;
 import com.yanban.core.agent.AgentPlanExecutionLease;
 import com.yanban.core.agent.AgentPlanEvent;
@@ -84,6 +86,7 @@ class SandboxEnabledContextTest {
     @Autowired AgentPlanRepository plans;
     @Autowired AgentPlanStepRepository steps;
     @Autowired AgentPlanEventRepository events;
+    @Autowired AgentMessageRepository messages;
     @Autowired AgentSessionRepository sessions;
     @Autowired AgentPlanRunLeaseService leases;
     @Autowired AgentPlanCheckpointService checkpoints;
@@ -383,6 +386,62 @@ class SandboxEnabledContextTest {
             assertThat(payload.path("status").asText()).isEqualTo(status.name());
             assertThat(payload.path("timedOut").asBoolean()).isEqualTo(status == SandboxExecutionStatus.TIMED_OUT);
         }
+    }
+
+    @Test
+    void failedReceiptCannotReflectSupersedeOrUpgradeThePlanAndSingleHandoffMessage() throws Exception {
+        Fixture fixture = createFixture(SandboxExecutionStatus.FAILED);
+        messages.saveAndFlush(new AgentMessage(fixture.plan().getSessionId(), USER, "assistant", "waiting",
+                null, "plan-handoff:" + fixture.plan().getId(), null));
+        leases.release(fixture.lease(), "DISPATCHED");
+
+        assertThat(projection.project(fixture.executionId()))
+                .isEqualTo(SandboxReceiptProjectionService.Result.PROJECTED);
+        AgentPlanResponse terminal = ReflectionTestUtils.invokeMethod(planAgentService,
+                "executePlanWithinAdapter", USER, fixture.plan().getId(), "sandbox-failed-receipt", false);
+
+        assertThat(terminal.status()).isEqualTo("FAILED");
+        assertThat(terminal.executionOutcome()).isEqualTo("FAILED");
+        assertThat(terminal.steps()).singleElement().satisfies(step -> {
+            assertThat(step.status()).isEqualTo("FAILED");
+            assertThat(step.errorMessage()).isEqualTo("SANDBOX_FAILED");
+        });
+        assertThat(events.findByPlanIdOrderByCreatedAtAsc(fixture.plan().getId()))
+                .extracting(AgentPlanEvent::getEventType)
+                .contains("sandbox_execution_failed", "step_reflection_not_triggered", "plan_failed")
+                .doesNotContain("plan_reflection_triggered", "plan_reflection_applied", "step_superseded");
+        assertThat(messages.findBySessionIdOrderByCreatedAtAsc(fixture.plan().getSessionId()))
+                .filteredOn(message -> "assistant".equals(message.getRole()))
+                .singleElement()
+                .satisfies(message -> assertThat(message.getContent())
+                        .startsWith("Plan execution failed.")
+                        .doesNotContain("completed successfully"));
+    }
+
+    @Test
+    void succeededReceiptStillCompletesThePlanAndSingleHandoffMessage() throws Exception {
+        Fixture fixture = createFixture(SandboxExecutionStatus.SUCCEEDED);
+        messages.saveAndFlush(new AgentMessage(fixture.plan().getSessionId(), USER, "assistant", "waiting",
+                null, "plan-handoff:" + fixture.plan().getId(), null));
+        leases.release(fixture.lease(), "DISPATCHED");
+
+        assertThat(projection.project(fixture.executionId()))
+                .isEqualTo(SandboxReceiptProjectionService.Result.PROJECTED);
+        AgentPlanResponse terminal = ReflectionTestUtils.invokeMethod(planAgentService,
+                "executePlanWithinAdapter", USER, fixture.plan().getId(), "sandbox-success-receipt", false);
+
+        assertThat(terminal.status()).isEqualTo("COMPLETED");
+        assertThat(terminal.executionOutcome()).isEqualTo("SUCCESS");
+        assertThat(terminal.steps()).singleElement().satisfies(step -> assertThat(step.status()).isEqualTo("COMPLETED"));
+        assertThat(events.findByPlanIdOrderByCreatedAtAsc(fixture.plan().getId()))
+                .extracting(AgentPlanEvent::getEventType)
+                .contains("step_project_evidence", "plan_completed")
+                .doesNotContain("plan_reflection_triggered", "plan_reflection_applied");
+        assertThat(messages.findBySessionIdOrderByCreatedAtAsc(fixture.plan().getSessionId()))
+                .filteredOn(message -> "assistant".equals(message.getRole()))
+                .singleElement()
+                .satisfies(message -> assertThat(message.getContent())
+                        .startsWith("Plan execution completed successfully."));
     }
 
     @Test

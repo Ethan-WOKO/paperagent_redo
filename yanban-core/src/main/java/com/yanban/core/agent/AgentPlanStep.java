@@ -170,12 +170,14 @@ public class AgentPlanStep {
     }
 
     public void markSkipped(String reason) {
+        requireUnexecutedForPlanRewrite("skip");
         this.status = AgentPlanStepStatus.SKIPPED.name();
         this.errorMessage = reason;
         this.finishedAt = LocalDateTime.now();
     }
 
     public void markSuperseded(String reason) {
+        requireUnexecutedForPlanRewrite("supersede");
         this.status = AgentPlanStepStatus.SUPERSEDED.name();
         this.errorMessage = reason;
         this.finishedAt = LocalDateTime.now();
@@ -211,6 +213,13 @@ public class AgentPlanStep {
                 || AgentPlanStepStatus.DEGRADED.name().equals(status))
                 && (!target.name().equals(status) || !java.util.Objects.equals(result, candidate))) {
             throw new IllegalStateException("terminal step result is immutable");
+        }
+    }
+
+    private void requireUnexecutedForPlanRewrite(String action) {
+        if (AgentPlanStepStatus.COMPLETED.name().equals(status)
+                || AgentPlanStepStatus.DEGRADED.name().equals(status)) {
+            throw new IllegalStateException("completed step cannot transition to " + action);
         }
     }
 }

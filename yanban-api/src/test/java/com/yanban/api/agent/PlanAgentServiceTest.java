@@ -177,6 +177,62 @@ class PlanAgentServiceTest {
 
     @Test
     @MockitoSettings(strictness = Strictness.LENIENT)
+    void persistedPlannerStepBudgetNarrowsTheExistingStepRuntime() {
+        String plannerJson = """
+                {"summary":"bounded","steps":[{"id":"bounded","title":"Bounded","description":"Read once",
+                "type":"RESEARCH","dependencies":[],"allowedTools":["search_web"],
+                "successCriteria":"A usable result exists.","budget":{"maxToolCalls":2,"maxRuntimeSteps":3}}],
+                "supersededStepIds":[]}
+                """;
+        ReflectionTestUtils.setField(plan, "rawPlanJson",
+                ProjectPlanEnvelope.wrap(objectMapper, plannerJson, null));
+        AgentPlanStep step = newStep("bounded", 1, List.of(), "[\"search_web\"]");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(toolPolicyEngine.decide(any(), org.mockito.ArgumentMatchers.anyBoolean(), any()))
+                .thenReturn(new AgentToolPolicyEngine.Decision(List.of("search_web"), 7, 1, "session_policy"));
+        when(agentRuntimeService.run(any())).thenReturn(success("bounded result"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        service.executePlan(USER_ID, PLAN_ID);
+
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService).run(request.capture());
+        assertThat(request.getValue().strategy()).isEqualTo(AgentStrategy.SINGLE_STEP_REACT);
+        assertThat(request.getValue().toolPolicy().allowedTools()).containsExactly("search_web");
+        assertThat(request.getValue().toolPolicy().maxToolCalls()).isEqualTo(2);
+        assertThat(request.getValue().toolPolicy().reason()).contains("planner_step_budget");
+        assertThat(request.getValue().maxSteps()).isEqualTo(3);
+    }
+
+    @Test
+    void retryableRepairContextIsPassedToTheSecondBoundedStepAttempt() {
+        AgentPlanStep step = newStep("repairable", 1, List.of());
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        RepairContext repair = RepairContext.create(objectMapper, "project_read_file",
+                "{\"relativePath\":\"missing.tex\"}", "INVALID_ARGUMENT",
+                "Use a current relative path", true, 1);
+        AgentRuntimeResult first = new AgentRuntimeResult(
+                false, null, List.of(ChatMessage.assistant("failed")), 1,
+                "INVALID_ARGUMENT: relativePath does not exist", List.of(),
+                List.of(repair.toFallback(objectMapper)), null, null, null);
+        when(agentRuntimeService.run(any())).thenReturn(first).thenReturn(success("repaired result"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(step.getAttemptCount()).isEqualTo(2);
+        ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
+        verify(agentRuntimeService, times(2)).run(request.capture());
+        assertThat(request.getAllValues().get(0).repairContext()).isNull();
+        assertThat(request.getAllValues().get(1).repairContext()).isNotNull();
+        assertThat(request.getAllValues().get(1).repairContext().signature(objectMapper))
+                .isEqualTo(repair.signature(objectMapper));
+        assertThat(request.getAllValues().get(1).repairContext().remainingAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
     void controlledPlanStepAndFinalSynthesisReceivePersistedGovernedLanguagePreference() {
         AgentPlanStep analysis = newStep("analysis", 1, List.of());
         AgentPlanStep synthesis = newStep("final_synthesis", 2, List.of("analysis"));
@@ -695,7 +751,7 @@ class PlanAgentServiceTest {
 
     @Test
     @MockitoSettings(strictness = Strictness.LENIENT)
-    void projectSummaryWithInheritedEvidenceDoesNotRerunWhenVerifierRejectsCoverage() throws Exception {
+    void projectSummaryWithInheritedEvidenceTriggersOneBoundedReflectionWhenVerifierRejectsCoverage() throws Exception {
         String hash = "d".repeat(64);
         String projectVersion = "f".repeat(64);
         ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
@@ -724,9 +780,9 @@ class PlanAgentServiceTest {
         assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
         assertThat(summary.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
         assertThat(summary.getAttemptCount()).isEqualTo(1);
-        assertThat(summary.getResult()).isEqualTo("usable dependency summary");
+        assertThat(summary.getResult()).contains("usable dependency summary", "[Degraded warning]");
         verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
-        verify(planner, org.mockito.Mockito.never()).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -751,7 +807,7 @@ class PlanAgentServiceTest {
         service.executePlan(USER_ID, PLAN_ID);
 
         ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
-        verify(agentRuntimeService, times(2)).run(request.capture());
+        verify(agentRuntimeService).run(request.capture());
         assertThat(request.getAllValues()).allSatisfy(value -> assertThat(value.toolPolicy().allowedTools())
                 .containsExactly("project_latex_outline"));
         ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
@@ -986,7 +1042,7 @@ class PlanAgentServiceTest {
         service.executePlan(USER_ID, PLAN_ID);
 
         ArgumentCaptor<AgentRuntimeRequest> request = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
-        verify(agentRuntimeService, times(2)).run(request.capture());
+        verify(agentRuntimeService).run(request.capture());
         assertThat(request.getAllValues()).allSatisfy(value -> {
             assertThat(value.maxSteps()).isEqualTo(20);
             assertThat(value.toolPolicy().maxToolCalls()).isEqualTo(12);
@@ -1377,7 +1433,7 @@ class PlanAgentServiceTest {
     }
 
     @Test
-    void executePlanRetriesWhenVerificationRejectsCandidateResult() {
+    void executePlanReflectsWithoutRepeatingAConclusiveVerifierFailure() {
         AgentPlanStep step = newStep("step_1", 1, List.of());
         when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
@@ -1390,25 +1446,21 @@ class PlanAgentServiceTest {
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
 
         assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
-        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
-        assertThat(step.getAttemptCount()).isEqualTo(2);
-        assertThat(step.getResult()).isEqualTo("complete evidence-backed result");
+        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
+        assertThat(step.getAttemptCount()).isEqualTo(1);
+        assertThat(step.getResult()).contains("too vague", "[Degraded warning]");
 
         ArgumentCaptor<AgentRuntimeRequest> requestCaptor = ArgumentCaptor.forClass(AgentRuntimeRequest.class);
-        verify(agentRuntimeService, times(2)).run(requestCaptor.capture());
-        assertThat(requestCaptor.getAllValues().get(1).history().get(0).content())
-                .contains("Previous attempt error")
-                .contains("Step result did not satisfy success criteria")
-                .contains("missing reusable evidence")
-                .contains("Reusable observations from earlier attempts")
-                .contains("project_manifest")
-                .contains("Do not repeat successful calls");
-        verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
+        verify(agentRuntimeService).run(requestCaptor.capture());
+        verify(stepVerifier).verify(any(PlanStepVerifier.VerificationRequest.class));
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
-        verify(events, times(7)).save(eventCaptor.capture());
+        verify(events, atLeast(1)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
-                .contains("step_tool_observation", "step_verification_failed", "step_retry", "step_completed", "plan_completed");
+                .contains("step_tool_observation", "step_verification_failed", "plan_reflection_triggered",
+                        "step_degraded", "plan_completed")
+                .doesNotContain("step_retry");
     }
 
     @Test
@@ -1425,12 +1477,13 @@ class PlanAgentServiceTest {
         assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
         assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.DEGRADED.name());
         assertThat(step.getAttemptCount()).isEqualTo(1);
-        assertThat(step.getResult()).isEqualTo("usable result");
+        assertThat(step.getResult()).contains("usable result", "[Degraded warning]");
         verify(agentRuntimeService).run(any(AgentRuntimeRequest.class));
         verify(stepVerifier).verify(any(PlanStepVerifier.VerificationRequest.class));
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
-        verify(events, times(5)).save(eventCaptor.capture());
+        verify(events, atLeast(5)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_verification_inconclusive", "step_completed_unverified", "plan_completed");
     }
@@ -1629,12 +1682,10 @@ class PlanAgentServiceTest {
                 ));
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
                 .thenReturn(success("vague first answer"))
-                .thenReturn(success("vague second answer"))
                 .thenReturn(success("verified recovery"))
                 .thenReturn(success("downstream result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("missing concrete evidence"))
-                .thenReturn(PlanStepVerifier.VerificationResult.failed("still missing concrete evidence"))
                 .thenReturn(PlanStepVerifier.VerificationResult.passed("recovery is concrete"))
                 .thenReturn(PlanStepVerifier.VerificationResult.passed("downstream is complete"));
 
@@ -1656,12 +1707,133 @@ class PlanAgentServiceTest {
                         AgentPlanStepStatus.COMPLETED.name(),
                         AgentPlanStepStatus.COMPLETED.name()
                 );
-        assertThat(first.getErrorMessage()).contains("Superseded by recovery step").contains("still missing concrete evidence");
+        assertThat(first.getErrorMessage()).contains("Superseded by recovery step").contains("missing concrete evidence");
         assertThat(repairStep.result()).isEqualTo("verified recovery");
         assertThat(downstreamStep.dependencies()).containsExactly(repairStep.stepKey());
         verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
-        verify(agentRuntimeService, times(4)).run(any(AgentRuntimeRequest.class));
-        verify(stepVerifier, times(4)).verify(any(PlanStepVerifier.VerificationRequest.class));
+        verify(agentRuntimeService, times(3)).run(any(AgentRuntimeRequest.class));
+        verify(stepVerifier, times(3)).verify(any(PlanStepVerifier.VerificationRequest.class));
+    }
+
+    @Test
+    void reflectionKeepsCompletedFactsImmutableAndSupersedesOnlyNamedPendingWork() {
+        AgentPlanStep completed = newStep("completed", 1, List.of());
+        completed.markCompleted("immutable evidence");
+        AgentPlanStep failed = newStep("failed", 2, List.of("completed"));
+        failed.markFailed("INSUFFICIENT_EVIDENCE: comparison is incomplete", "bounded partial comparison");
+        AgentPlanStep obsolete = newStep("obsolete", 3, List.of("failed"));
+        List<AgentPlanStep> orderedSteps = new ArrayList<>(List.of(completed, failed, obsolete));
+        AtomicLong generatedIds = new AtomicLong(500);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenAnswer(invocation -> orderedSteps.stream()
+                .sorted(Comparator.comparing(AgentPlanStep::getSortOrder)).toList());
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> {
+            AgentPlanStep saved = invocation.getArgument(0);
+            if (saved.getId() == null) ReflectionTestUtils.setField(saved, "id", generatedIds.getAndIncrement());
+            if (!orderedSteps.contains(saved)) orderedSteps.add(saved);
+            return saved;
+        });
+        when(planner.createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PlanningAgentPlanner.PlanSpec(
+                        "Replace stale remaining comparison",
+                        List.of(new PlanningAgentPlanner.StepSpec(
+                                "replacement", "Finish from immutable evidence",
+                                "Use the completed evidence and partial comparison to produce the bounded final result.",
+                                "ANALYSIS", List.of("completed"), List.of(),
+                                "The final result states resolved and unresolved items.",
+                                new PlanningAgentPlanner.StepBudget(0, 3))),
+                        "{}", List.of("obsolete")));
+        when(agentRuntimeService.run(any())).thenReturn(success("reflected final result"));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(completed.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
+        assertThat(completed.getResult()).isEqualTo("immutable evidence");
+        assertThat(failed.getStatus()).isEqualTo(AgentPlanStepStatus.SUPERSEDED.name());
+        assertThat(obsolete.getStatus()).isEqualTo(AgentPlanStepStatus.SUPERSEDED.name());
+        assertThat(response.finalAnswer()).isEqualTo("reflected final result");
+        verify(agentRuntimeService).run(any());
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).extracting(AgentPlanEvent::getEventType)
+                .contains("plan_reflection_triggered", "step_superseded", "plan_reflection_applied")
+                .doesNotContain("plan_reflection_suppressed");
+    }
+
+    @Test
+    void failedReplacementCannotTriggerASecondGlobalReflection() {
+        AgentPlanStep failed = newStep("failed", 1, List.of());
+        failed.markFailed("recoverable step failure");
+        List<AgentPlanStep> orderedSteps = new ArrayList<>(List.of(failed));
+        AtomicLong generatedIds = new AtomicLong(600);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenAnswer(invocation -> orderedSteps.stream()
+                .sorted(Comparator.comparing(AgentPlanStep::getSortOrder)).toList());
+        when(steps.save(any(AgentPlanStep.class))).thenAnswer(invocation -> {
+            AgentPlanStep saved = invocation.getArgument(0);
+            if (saved.getId() == null) ReflectionTestUtils.setField(saved, "id", generatedIds.getAndIncrement());
+            if (!orderedSteps.contains(saved)) orderedSteps.add(saved);
+            return saved;
+        });
+        when(planner.createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PlanningAgentPlanner.PlanSpec("One replacement",
+                        List.of(new PlanningAgentPlanner.StepSpec("r1", "Alternate route",
+                                "Try a materially different bounded route.", "ANALYSIS", List.of(), List.of(),
+                                "A usable result exists.")), "{}"));
+        when(agentRuntimeService.run(any())).thenReturn(failure("replacement still failed"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.FAILED.name());
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(agentRuntimeService, times(2)).run(any());
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).extracting(AgentPlanEvent::getEventType)
+                .contains("plan_reflection_applied", "plan_reflection_suppressed");
+    }
+
+    @Test
+    void providerOrSandboxBlockerStopsImmediatelyWithoutReflection() {
+        AgentPlanStep step = newStep("step_1", 1, List.of());
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(agentRuntimeService.run(any())).thenReturn(failure(
+                "SANDBOX_UNAVAILABLE: configured Provider is unavailable"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.FAILED.name());
+        assertThat(step.getAttemptCount()).isEqualTo(1);
+        verify(agentRuntimeService).run(any());
+        verify(planner, never()).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).extracting(AgentPlanEvent::getEventType)
+                .contains("step_reflection_not_triggered")
+                .doesNotContain("plan_reflection_triggered");
+    }
+
+    @Test
+    void equivalentReflectionPlanTerminatesAsNoProgressWithoutExecutingIt() {
+        AgentPlanStep failed = newStep("failed", 1, List.of());
+        failed.markFailed("recoverable failure");
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(failed));
+        when(planner.createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PlanningAgentPlanner.PlanSpec("Equivalent",
+                        List.of(new PlanningAgentPlanner.StepSpec("same", failed.getTitle(), failed.getDescription(),
+                                failed.getType(), List.of(), List.of(), failed.getSuccessCriteria())), "{}"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.FAILED.name());
+        verify(agentRuntimeService, never()).run(any());
+        verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(event.capture());
+        assertThat(event.getAllValues()).extracting(AgentPlanEvent::getEventType)
+                .contains("plan_reflection_no_progress")
+                .doesNotContain("plan_reflection_applied");
     }
 
     @Test
@@ -1674,11 +1846,9 @@ class PlanAgentServiceTest {
                 .thenReturn(null);
         when(agentRuntimeService.run(any(AgentRuntimeRequest.class)))
                 .thenReturn(success("partial first answer"))
-                .thenReturn(success("better but incomplete first answer"))
                 .thenReturn(success("downstream result"));
         when(stepVerifier.verify(any()))
                 .thenReturn(PlanStepVerifier.VerificationResult.failed("missing architecture details"))
-                .thenReturn(PlanStepVerifier.VerificationResult.failed("still missing architecture details"))
                 .thenReturn(PlanStepVerifier.VerificationResult.passed("downstream is complete"));
 
         AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
@@ -1687,18 +1857,18 @@ class PlanAgentServiceTest {
         assertThat(response.steps()).extracting(AgentPlanStepResponse::status)
                 .containsExactly(AgentPlanStepStatus.DEGRADED.name(), AgentPlanStepStatus.DEGRADED.name());
         assertThat(first.getResult())
-                .contains("better but incomplete first answer")
+                .contains("partial first answer")
                 .contains("[Degraded warning]")
-                .contains("still missing architecture details");
+                .contains("missing architecture details");
         assertThat(first.getErrorMessage()).contains("Degraded after verification failure");
         assertThat(second.getResult()).isEqualTo("downstream result");
         assertThat(second.getErrorMessage()).contains("DEPENDENCY_PARTIAL", "step_1");
         verify(planner).createRecoveryPlan(any(), any(), any(), any(), any(), any(), any(), any());
-        verify(agentRuntimeService, times(3)).run(any(AgentRuntimeRequest.class));
-        verify(stepVerifier, times(3)).verify(any(PlanStepVerifier.VerificationRequest.class));
+        verify(agentRuntimeService, times(2)).run(any(AgentRuntimeRequest.class));
+        verify(stepVerifier, times(2)).verify(any(PlanStepVerifier.VerificationRequest.class));
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
-        verify(events, times(12)).save(eventCaptor.capture());
+        verify(events, atLeast(9)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_repair_started", "step_repair_unavailable", "step_degraded", "plan_completed");
     }
@@ -1730,7 +1900,7 @@ class PlanAgentServiceTest {
         verify(agentRuntimeService, times(2)).run(any(AgentRuntimeRequest.class));
 
         ArgumentCaptor<AgentPlanEvent> eventCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
-        verify(events, times(9)).save(eventCaptor.capture());
+        verify(events, atLeast(9)).save(eventCaptor.capture());
         assertThat(eventCaptor.getAllValues()).extracting(AgentPlanEvent::getEventType)
                 .contains("step_failed", "step_repair_started", "step_repair_unavailable", "step_skipped", "plan_failed");
     }

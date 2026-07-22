@@ -29,6 +29,8 @@ public class PlanningAgentPlanner {
     private static final int COMPACT_RETRY_MAX_STEPS = 4;
     private static final int RECOVERY_PLANNER_MAX_TOKENS = 1024;
     private static final int MAX_FAILURE_DIAGNOSTIC_LENGTH = 500;
+    private static final int MAX_PLANNED_TOOL_CALLS_PER_STEP = 12;
+    private static final int MAX_PLANNED_RUNTIME_STEPS_PER_STEP = 20;
     private final ChatModelProvider modelProvider;
     private final ObjectMapper objectMapper;
 
@@ -231,6 +233,7 @@ public class PlanningAgentPlanner {
                       "type": "ANALYSIS",
                       "dependencies": [],
                       "allowedTools": [],
+                      "budget": {"maxToolCalls": 0, "maxRuntimeSteps": 4},
                       "successCriteria": "observable completion criteria"
                     }
                   ]
@@ -262,6 +265,9 @@ public class PlanningAgentPlanner {
                     patch, Candidate, or code change. A read, comparison, summary, matrix, report, or conclusion task is
                     read-only: use FILE_READ plus ANALYSIS/VERIFICATION and finish by answering the original requested
                     deliverable. Never invent a Candidate or code-generation step for a read-only task.
+                14. Every step must include a budget. maxToolCalls is 0 for a tool-free step and 1-12 for a
+                    tool-using step. maxRuntimeSteps is 1-20. These are per-step ceilings only; the Runtime will
+                    intersect them with the existing authoritative Plan, tool, time, confirmation and sandbox budgets.
 
                 Tools exposed to this plan:
                 """)
@@ -296,11 +302,13 @@ public class PlanningAgentPlanner {
                 You are repairing a failed plan generation. Return exactly one compact JSON object and nothing else.
                 Do not quote or repair the previous fragment; generate a fresh replacement from the user goal.
                 Use only this shape:
-                {"summary":"...","steps":[{"id":"s1","type":"ANALYSIS","title":"...","description":"...","deps":[],"tools":[],"success":"..."}]}
+                {"summary":"...","steps":[{"id":"s1","type":"ANALYSIS","title":"...","description":"...","deps":[],"tools":[],"budget":{"maxToolCalls":0,"maxRuntimeSteps":4},"success":"..."}]}
                 Use 1-4 short steps. Each string must be one short sentence: summary <=80, title <=40,
                 description <=120, success <=80 characters. Do not emit any other keys, Markdown, commentary,
                 or repeated goal/tool documentation. deps contains prior step ids; tools must be selected only
                 from the exact resolved allowlist below. Never add write/command tools to a Project read-only plan.
+                Every step must include budget. Use maxToolCalls=0 when tools is empty; otherwise use 1-12.
+                Use maxRuntimeSteps=1-20. Runtime authority may only reduce these ceilings.
                 Never add project_propose_candidate unless the original user goal explicitly requests a modification,
                 patch, Candidate, or code change; read/comparison/report goals must end with an ANALYSIS synthesis step.
                 Resolved allowlist: """);
@@ -329,13 +337,16 @@ public class PlanningAgentPlanner {
 
     private String buildRecoveryPlannerSystemPrompt(String skillPrompt, List<String> skillAllowedTools) {
         StringBuilder sb = new StringBuilder();
-        sb.append("You are the recovery planner for a Plan-and-Execute research agent.\n")
+        sb.append("You are the event-triggered Reflection planner for a Plan-and-Execute research agent.\n")
                 .append("Create 1-").append(DEFAULT_MAX_RECOVERY_STEPS)
-                .append(" executable recovery steps that can replace a failed step and let downstream work continue.\n")
+                .append(" executable replacement steps for the remaining work after a failed or insufficient step.\n")
                 .append("Return one JSON object only. Do not include Markdown or explanations.\n")
-                .append("Use the same JSON schema as the main planner: summary and steps[].\n")
+                .append("Use the same JSON schema as the main planner: summary and steps[], plus a root ")
+                .append("supersededStepIds array naming only pending steps made obsolete by this replacement.\n")
                 .append("Each recovery step must be specific, tool-aware, and focused on producing a reusable result.\n")
-                .append("Do not depend on the failed step itself; the runtime will attach completed prerequisite dependencies.\n")
+                .append("Treat completed results and Evidence as immutable facts. Do not replace, rerun, or supersede completed steps.\n")
+                .append("Do not depend on the failed or superseded steps; depend only on completed step ids or earlier replacement steps.\n")
+                .append("Include a per-step budget using maxToolCalls 0-12 and maxRuntimeSteps 1-20; it can only narrow existing authority.\n")
                 .append("Never add project_propose_candidate unless the original user goal explicitly requests a modification, patch, Candidate, or code change.\n")
                 .append("Tools exposed to this recovery plan:\n")
                 .append(String.join(", ", skillAllowedTools == null ? List.of() : skillAllowedTools))
@@ -399,7 +410,6 @@ public class PlanningAgentPlanner {
         List<StepSpec> steps = new ArrayList<>();
         Set<String> registeredTools = exposedToolNames == null ? Set.of() : Set.copyOf(exposedToolNames);
         boolean candidateChangeAllowed = ProjectCandidateChangeIntent.requiresCandidateChange(goal);
-        boolean candidateStepSanitized = false;
         for (int i = 0; i < limit; i++) {
             JsonNode node = stepsNode.get(i);
             if (node == null || !node.isObject()) {
@@ -430,7 +440,6 @@ public class PlanningAgentPlanner {
                             textOrDefault(node.path("success"), "The step goal is completed with a verifiable result."))
             ), 160);
             if (prohibitedCandidateStep) {
-                candidateStepSanitized = true;
                 title = "Synthesize requested analysis";
                 description = "Using completed dependency results, answer the original user request with its requested comparison, matrix or report, and conclusion. Do not propose or create code changes.";
                 type = "ANALYSIS";
@@ -439,7 +448,9 @@ public class PlanningAgentPlanner {
                         .toList();
                 successCriteria = "The original read-only request is answered without proposing or creating a Candidate.";
             }
-            steps.add(new StepSpec(stepId, title, description, type, dependencies, allowedTools, successCriteria));
+            StepBudget budget = parseStepBudget(node.path("budget"), allowedTools);
+            steps.add(new StepSpec(stepId, title, description, type, dependencies, allowedTools, successCriteria,
+                    budget));
         }
         boolean candidateToolExposed = registeredTools.contains(ProjectCandidateProposalToolExecutor.TOOL_NAME);
         boolean candidateStepPlanned = steps.stream().anyMatch(step ->
@@ -456,10 +467,43 @@ public class PlanningAgentPlanner {
             throw new PlannerFailureException(PlannerFailureCode.INVALID_PLAN,
                     "Explicit Project code execution plan omitted the required sandbox_execute step.");
         }
-        String persistedPlanJson = candidateStepSanitized
-                ? objectMapper.writeValueAsString(Map.of("summary", summary, "steps", steps))
-                : cleaned;
-        return new PlanSpec(summary, steps, persistedPlanJson);
+        List<String> supersededStepIds = recoverySupersededStepIds(root, rejectUnsupportedTools);
+        String persistedPlanJson = objectMapper.writeValueAsString(Map.of(
+                "summary", summary,
+                "steps", steps,
+                "supersededStepIds", supersededStepIds
+        ));
+        return new PlanSpec(summary, steps, persistedPlanJson, supersededStepIds);
+    }
+
+    private StepBudget parseStepBudget(JsonNode node, List<String> allowedTools) {
+        boolean toolFree = allowedTools == null || allowedTools.isEmpty();
+        if (node == null || !node.isObject()) {
+            return toolFree ? new StepBudget(0, MAX_PLANNED_RUNTIME_STEPS_PER_STEP) : StepBudget.unbounded();
+        }
+        int requestedToolCalls = node.path("maxToolCalls").canConvertToInt()
+                ? node.path("maxToolCalls").intValue() : MAX_PLANNED_TOOL_CALLS_PER_STEP;
+        int requestedRuntimeSteps = node.path("maxRuntimeSteps").canConvertToInt()
+                ? node.path("maxRuntimeSteps").intValue() : MAX_PLANNED_RUNTIME_STEPS_PER_STEP;
+        int toolCalls = toolFree ? 0 : Math.max(1,
+                Math.min(MAX_PLANNED_TOOL_CALLS_PER_STEP, requestedToolCalls));
+        int runtimeSteps = Math.max(1,
+                Math.min(MAX_PLANNED_RUNTIME_STEPS_PER_STEP, requestedRuntimeSteps));
+        return new StepBudget(toolCalls, runtimeSteps);
+    }
+
+    private List<String> recoverySupersededStepIds(JsonNode root, boolean recovery) {
+        if (!recovery || root == null) return List.of();
+        JsonNode values = root.has("supersededStepIds")
+                ? root.path("supersededStepIds") : root.path("obsoleteStepIds");
+        if (!values.isArray()) return List.of();
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        for (JsonNode value : values) {
+            if (value != null && value.isTextual() && StringUtils.hasText(value.asText())) {
+                result.add(abbreviate(value.asText(), 64));
+            }
+        }
+        return List.copyOf(result);
     }
 
     private List<String> goalBoundTools(String goal, List<String> exposedTools) {
@@ -594,17 +638,24 @@ public class PlanningAgentPlanner {
     }
 
     public record PlanSpec(String summary, List<StepSpec> steps, String rawJson,
+                           List<String> supersededStepIds,
                            PlannerFailureCode failureCode, String failureMessage) {
         public PlanSpec(String summary, List<StepSpec> steps, String rawJson) {
-            this(summary, steps, rawJson, null, null);
+            this(summary, steps, rawJson, List.of(), null, null);
+        }
+
+        public PlanSpec(String summary, List<StepSpec> steps, String rawJson,
+                        List<String> supersededStepIds) {
+            this(summary, steps, rawJson, supersededStepIds, null, null);
         }
 
         public PlanSpec {
             steps = steps == null ? List.of() : List.copyOf(steps);
+            supersededStepIds = supersededStepIds == null ? List.of() : List.copyOf(supersededStepIds);
         }
 
         public static PlanSpec failure(PlannerFailureCode code, String message) {
-            return new PlanSpec(null, List.of(), null, code, message);
+            return new PlanSpec(null, List.of(), null, List.of(), code, message);
         }
 
         public boolean executable() {
@@ -619,8 +670,29 @@ public class PlanningAgentPlanner {
             String type,
             List<String> dependencies,
             List<String> allowedTools,
-            String successCriteria
+            String successCriteria,
+            StepBudget budget
     ) {
+        public StepSpec(String id, String title, String description, String type,
+                        List<String> dependencies, List<String> allowedTools, String successCriteria) {
+            this(id, title, description, type, dependencies, allowedTools, successCriteria,
+                    StepBudget.unbounded());
+        }
+
+        public StepSpec {
+            budget = budget == null ? StepBudget.unbounded() : budget;
+        }
+    }
+
+    public record StepBudget(int maxToolCalls, int maxRuntimeSteps) {
+        public StepBudget {
+            maxToolCalls = Math.max(0, Math.min(MAX_PLANNED_TOOL_CALLS_PER_STEP, maxToolCalls));
+            maxRuntimeSteps = Math.max(1, Math.min(MAX_PLANNED_RUNTIME_STEPS_PER_STEP, maxRuntimeSteps));
+        }
+
+        static StepBudget unbounded() {
+            return new StepBudget(MAX_PLANNED_TOOL_CALLS_PER_STEP, MAX_PLANNED_RUNTIME_STEPS_PER_STEP);
+        }
     }
 
     private record PlannerAttempt(PlanSpec spec) {

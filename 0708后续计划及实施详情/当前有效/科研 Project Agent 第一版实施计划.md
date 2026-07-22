@@ -398,7 +398,7 @@ Plan：
 
 ### 阶段 11：Plan-and-Execute、步骤内 ReAct 与事件触发 Reflection
 
-状态：`READY_TO_START`
+状态：`COMPLETED`
 
 - Planner 生成目标、依赖步骤、成功条件和预算；每个可执行步骤内部使用受预算约束的 ReAct 获取真实结果。
 - 仅在步骤失败、结果不足、结果冲突或确定性验证不通过时触发 Reflection；不得每一步固定反思。
@@ -406,7 +406,9 @@ Plan：
 - 设置总工具预算、最大步骤数、最大重规划次数和无进展终止条件；权限拒绝、用户取消、Provider 不可用等外部阻断不触发模型反思循环。
 - 本阶段开始前必须根据阶段 8 至阶段 10 的真实运行数据重新审查方案，不提前冻结复杂实现细节。
 
-退出条件：中间结果不足时能够调整剩余计划；无关步骤可被取消；已完成步骤不重复；失败不会形成 Reflection 循环；复杂任务仍只发布一个 canonical answer。
+完成记录：Worker 19 保持 Project 顶层仅 `DIRECT / PLAN_EXECUTE`，在 Plan 步骤内部复用现有有界 ReAct，并将 Planner 的步骤目标、依赖、成功条件和预算持久化。Reflection 仅由步骤失败、Evidence 不足/冲突或确定性 verifier 失败触发，全局最多一次；已完成事实不可变，过时 pending 步骤可被明确 supersede，相同失败和等价剩余计划均有确定终止。真实用户旅程覆盖 DIRECT、步骤内参数修复、一次 Reflection/replan、无进展停止、沙箱确认与失败回执；主审发现并关闭了“沙箱真实失败被静态 Reflection 升格为成功”的 P1，最终失败回执保持 Plan `FAILED`、Reflection 为零且只更新同一 assistant。
+
+退出条件：已满足。中间结果不足时能够调整剩余计划；无关步骤可被取消；已完成步骤不重复；失败不会形成 Reflection 循环；复杂任务仍只发布一个 canonical answer；沙箱权威失败不会被静态分析覆盖或升级为成功。
 
 ## 14. 串行 Worker 开发协议
 
@@ -425,7 +427,7 @@ stopConditions
 current baseline:
 
 ```text
-78a6d0b
+Worker 19 frozen baseline: 4a808c3
 ```
 
 任何前序 Worker 的变更必须先完成主对话复审并提交，才能成为下一 Worker 的基线。
@@ -682,11 +684,12 @@ Worker 开发
 
 ### Worker 19：Plan-and-Execute、步骤内 ReAct 与事件触发 Reflection
 
-状态：`READY_TO_START`
+状态：`COMPLETED`
 
 - 对应阶段 11。只能在 Worker 16 至 Worker 18 验收并取得真实运行数据后启动，启动前由主对话重新冻结设计和预算。
 - Planner 负责目标、依赖和成功条件；步骤内部使用 ReAct；Reflection 只由失败、结果不足、冲突或验证不通过触发。
 - 必须有最大重规划次数、总预算、无进展检测和明确停止条件，不能宣称该范式保证所有任务成功。
+- 验收完成：步骤预算与权限取交集，步骤内 ReAct 复用既有 Runtime；Reflection 仅事件触发且最多一次，只替换未执行工作。DIRECT、RepairContext、Reflection、no-progress、沙箱确认/失败和重启恢复均完成自动测试与真实旅程；沙箱失败保持 `FAILED`，不会被 Reflection 升格为成功。
 
 ## 16. 审查与停止条件
 
@@ -707,7 +710,7 @@ Worker 开发
 
 1. 能上传并版本化完整文件夹。
 2. 能结构化理解论文、代码、实验和文献。
-3. 能由 LLM Router 在 DIRECT、REACT 与 PLAN_EXECUTE 中提出合适策略，并由 Runtime 在现有权限和预算内校验执行。
+3. Project 由 LLM Router 在 `DIRECT / PLAN_EXECUTE` 中提出合适策略，Plan 步骤内部可使用有界 ReAct；普通非 Project Chat 保留兼容 ReAct，并统一由 Runtime 在现有权限和预算内校验执行。
 4. 结论均带可追溯证据和文件版本。
 5. 能生成论文与代码 Candidate ChangeSet。
 6. 候选修改在沙箱中通过必要验证。
@@ -716,4 +719,4 @@ Worker 开发
 9. 长任务能够暂停、恢复、取消和明确失败。
 10. 不发生越权读取、未授权写入、虚假实验或虚假完成。
 
-阶段 8 至阶段 10 完成后，第一版进入体验与可靠性收口；阶段 11 通过单独验收后，才能规划 Pro 模式的自主研究循环。
+阶段 8 至阶段 11 已完成体验与可靠性收口。Pro 模式的自主研究循环仍不属于本版，必须另行规划、冻结权限和验收矩阵后才能启动。

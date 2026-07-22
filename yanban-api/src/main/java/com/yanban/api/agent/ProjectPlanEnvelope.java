@@ -159,6 +159,18 @@ final class ProjectPlanEnvelope {
         } catch (Exception ex) { throw new IllegalStateException("Invalid Project Plan presentation policy", ex); }
     }
 
+    /** Returns the normalized planner payload after validating the server-owned wrapper. */
+    static String restorePlannerRawJson(ObjectMapper json, String raw, Long userId) {
+        restore(json, raw, userId);
+        if (raw == null) return null;
+        try {
+            JsonNode root = json.readTree(raw);
+            String plannerRawJson = root.path("plannerRawJson").asText(null);
+            return plannerRawJson == null || plannerRawJson.isBlank() ? null : plannerRawJson;
+        } catch (IllegalStateException ex) { throw ex;
+        } catch (Exception ex) { throw new IllegalStateException("Invalid Project Plan planner payload", ex); }
+    }
+
     private static String write(ObjectMapper json, ObjectNode root) {
         try { return json.writeValueAsString(root); }
         catch (Exception ex) { throw new IllegalStateException("Cannot persist Project plan envelope", ex); }

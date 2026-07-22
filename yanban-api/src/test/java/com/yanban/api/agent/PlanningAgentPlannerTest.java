@@ -64,6 +64,8 @@ class PlanningAgentPlannerTest {
         assertThat(plan.summary()).isEqualTo("Study RAG");
         assertThat(plan.steps()).hasSize(1);
         assertThat(plan.steps().get(0).id()).isEqualTo("step_1");
+        assertThat(plan.steps().get(0).budget())
+                .isEqualTo(new PlanningAgentPlanner.StepBudget(0, 20));
 
         ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
         verify(modelProvider).chat(requestCaptor.capture());
@@ -79,7 +81,55 @@ class PlanningAgentPlannerTest {
                 .contains("use [] when the step must not receive any tool")
                 .contains("Tools exposed to this plan:\n")
                 .contains("at most 6 for complex tasks")
-                .contains("description <= 240");
+                .contains("description <= 240")
+                .contains("Every step must include a budget");
+    }
+
+    @Test
+    void plannerPersistsAndClampsPerStepBudgetWithoutExpandingRuntimeAuthority() {
+        when(modelProvider.chat(any())).thenReturn(new ChatResponse(ChatMessage.assistant("""
+                {"summary":"Inspect source","steps":[
+                  {"id":"read","title":"Read source","description":"Read the requested source", "type":"FILE_READ",
+                   "dependencies":[],"allowedTools":["project_read_file"],
+                   "budget":{"maxToolCalls":99,"maxRuntimeSteps":99},
+                   "successCriteria":"Current source evidence is available"}
+                ]}
+                """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                "Read the current Project source", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+
+        assertThat(plan.steps()).singleElement().satisfies(step -> {
+            assertThat(step.budget().maxToolCalls()).isEqualTo(12);
+            assertThat(step.budget().maxRuntimeSteps()).isEqualTo(20);
+        });
+        assertThat(plan.rawJson()).contains("maxToolCalls", "maxRuntimeSteps", "step_1");
+    }
+
+    @Test
+    void recoveryPlannerReturnsOnlyExplicitPendingSupersessionsAndStepBudgets() {
+        when(modelProvider.chat(any())).thenReturn(new ChatResponse(ChatMessage.assistant("""
+                {"summary":"Replace stale remaining work","supersededStepIds":["step_3","step_3","done_step"],
+                 "steps":[{"id":"replacement","title":"Re-check conflict","description":"Use completed evidence to resolve the conflict",
+                 "type":"VERIFICATION","dependencies":[],"allowedTools":[],
+                 "budget":{"maxToolCalls":0,"maxRuntimeSteps":3},
+                 "successCriteria":"The conflict is resolved or explicitly remains unresolved"}]}
+                """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createRecoveryPlan(
+                "Compare materials", "failed and pending context", "deepseek", "model", "key", null,
+                null, List.of("project_read_file"));
+
+        assertThat(plan.supersededStepIds()).containsExactly("step_3", "done_step");
+        assertThat(plan.steps()).singleElement().satisfies(step ->
+                assertThat(step.budget()).isEqualTo(new PlanningAgentPlanner.StepBudget(0, 3)));
+        ArgumentCaptor<ChatRequest> request = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider).chat(request.capture());
+        assertThat(request.getValue().messages().get(0).content())
+                .contains("event-triggered Reflection planner")
+                .contains("supersededStepIds")
+                .contains("immutable facts");
     }
 
     @Test

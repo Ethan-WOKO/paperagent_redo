@@ -42,4 +42,30 @@ class TimeoutStatusSemanticsTest {
                 "trace-19", "TIMED_OUT: Plan execution budget exceeded.");
         assertThat(event).containsEntry("status", "FAILED").containsEntry("outcome", "TIMED_OUT");
     }
+
+    @Test
+    void failedSandboxReceiptCannotBeUpgradedToPartialByEarlierCompletedWork() {
+        AgentPlanStepResponse completedRead = new AgentPlanStepResponse(
+                1L, "step_1", 1, "Read", "Read source", "FILE_READ",
+                List.of(), List.of("project_read_file"), "Source read", "COMPLETED", 1,
+                "trusted source", null, null, null);
+        AgentPlanStepResponse failedSandbox = new AgentPlanStepResponse(
+                2L, "step_2", 2, "Run", "Run in sandbox", "SANDBOX_EXECUTE",
+                List.of("step_1"), List.of("sandbox_execute"), "Return receipt", "FAILED", 1,
+                "authoritative failed receipt", "SANDBOX_FAILED", null, null);
+        AgentPlanStepResponse skippedSynthesis = new AgentPlanStepResponse(
+                3L, "step_3", 3, "Summarize", "Summarize output", "ANALYSIS",
+                List.of("step_2"), List.of(), "Report output", "SKIPPED", 0,
+                null, "Dependency step failed: step_2", null, null);
+
+        AgentPlanResponse plan = new AgentPlanResponse(
+                20L, 12L, "Run", "Run in sandbox", "FAILED", true,
+                null, "Step step_2 failed: SANDBOX_FAILED", null, null, null, null,
+                List.of(completedRead, failedSandbox, skippedSynthesis));
+
+        assertThat(plan.executionOutcome()).isEqualTo("FAILED");
+        assertThat(AgentService.terminalPlanAssistantContent(plan))
+                .startsWith("Plan execution failed.")
+                .doesNotContain("completed successfully");
+    }
 }

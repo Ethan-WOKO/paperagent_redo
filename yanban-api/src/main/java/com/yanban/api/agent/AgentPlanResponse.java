@@ -83,12 +83,21 @@ public record AgentPlanResponse(
         if ("FAILED".equals(lifecycleStatus)) {
             if (hasTerminalCode(steps, "TIMED_OUT")) return "TIMED_OUT";
             if (hasTerminalCode(steps, "CANCELLED")) return "CANCELLED";
+            if (hasFailedSandboxExecution(steps)) return "FAILED";
             boolean preservedResult = steps != null && steps.stream().anyMatch(step -> step != null
                     && ("COMPLETED".equals(step.status()) || "DEGRADED".equals(step.status()))
                     && step.result() != null && !step.result().isBlank());
             return partial && preservedResult ? "PARTIAL" : "FAILED";
         }
         return lifecycleStatus;
+    }
+
+    private static boolean hasFailedSandboxExecution(List<AgentPlanStepResponse> steps) {
+        return steps != null && steps.stream().filter(java.util.Objects::nonNull).anyMatch(step ->
+                "SANDBOX_EXECUTE".equals(step.type())
+                        && "FAILED".equals(step.status())
+                        && step.errorMessage() != null
+                        && step.errorMessage().startsWith("SANDBOX_"));
     }
 
     private static boolean hasTerminalCode(List<AgentPlanStepResponse> steps, String code) {
@@ -105,6 +114,7 @@ public record AgentPlanResponse(
         if (steps == null || steps.isEmpty()) return null;
         AgentPlanStepResponse terminalStep = steps.stream()
                 .filter(step -> step != null && step.sortOrder() != null)
+                .filter(step -> !"SUPERSEDED".equals(step.status()))
                 .max(Comparator.comparing(AgentPlanStepResponse::sortOrder))
                 .orElse(null);
         if (terminalStep == null

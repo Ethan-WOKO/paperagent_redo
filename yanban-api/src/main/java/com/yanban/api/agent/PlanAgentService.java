@@ -450,6 +450,7 @@ public class PlanAgentService {
         recordEvent(plan.getId(), null, "plan_created", Map.of(
                 "summary", plan.getSummary(),
                 "stepCount", savedSteps.size(),
+                "stepBudgets", plannedStepBudgets(spec.steps()),
                 "projectId", projectContext == null ? "" : projectContext.projectId(),
                 "capability", projectContext == null ? "" : "PROJECT_READ"
         ));
@@ -875,6 +876,7 @@ public class PlanAgentService {
                 AgentPlanStep failedStep = firstFailedStep(allSteps);
                 if (failedStep != null) {
                     boolean unknownCompletion = unknownCompletionFailure(failedStep);
+                    boolean terminalSandboxFailure = terminalSandboxExecutionFailure(failedStep);
                     if (!unknownCompletion && controlledParentRequest == null
                             && recoverFailedStep(plan, session, allSteps, failedStep, skill, projectContext,
                             checkpointCeiling)) {
@@ -887,7 +889,7 @@ public class PlanAgentService {
                     persistStep(failedStep);
                     markBlockedSteps(allSteps, failedStep);
                     allSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
-                    if (!unknownCompletion) {
+                    if (!unknownCompletion && !terminalSandboxFailure) {
                         preserveBoundedFailureSynthesis(plan, allSteps, failedStep);
                         allSteps = steps.findByPlanIdOrderBySortOrderAsc(plan.getId());
                     }
@@ -1055,6 +1057,25 @@ public class PlanAgentService {
                                       ProjectRuntimeContext projectContext,
                                       AgentPlanCheckpointService.BudgetCeiling checkpointCeiling) {
         if (unknownCompletionFailure(failedStep)) return false;
+        if (terminalSandboxExecutionFailure(failedStep)) {
+            recordEvent(plan.getId(), failedStep.getId(), "step_reflection_not_triggered", Map.of(
+                    "stepKey", failedStep.getStepKey(),
+                    "reason", "TERMINAL_SANDBOX_RECEIPT",
+                    "error", abbreviate(blankToDefault(failedStep.getErrorMessage(), "Sandbox execution failed."),
+                            1200)));
+            return false;
+        }
+        PlanReflectionTrigger trigger = reflectionTrigger(plan, failedStep);
+        if (trigger == null) {
+            return false;
+        }
+        if (reflectionAlreadyAttempted(plan.getId(), allSteps)) {
+            recordEvent(plan.getId(), failedStep.getId(), "plan_reflection_suppressed", Map.of(
+                    "stepKey", failedStep.getStepKey(),
+                    "reason", "GLOBAL_REFLECTION_LIMIT_REACHED",
+                    "trigger", trigger.name()));
+            return tryDegradeFailedStep(plan, failedStep, failedStep.getErrorMessage());
+        }
         if (currentExecutionLease() != null && checkpointCeiling != null
                 && remainingDurableToolCalls(checkpointCeiling) == 0) {
             recordEvent(plan.getId(), failedStep.getId(), "step_repair_rejected", Map.of(
@@ -1063,6 +1084,10 @@ public class PlanAgentService {
             return false;
         }
         String failedError = failedStep.getErrorMessage();
+        recordEvent(plan.getId(), failedStep.getId(), "plan_reflection_triggered", Map.of(
+                "stepKey", failedStep.getStepKey(),
+                "trigger", trigger.name(),
+                "error", abbreviate(blankToDefault(failedError, "Step failed."), 1200)));
         failedStep.markRepairing(failedError);
         persistStep(failedStep);
         recordEvent(plan.getId(), failedStep.getId(), "step_repair_started", Map.of(
@@ -1075,9 +1100,59 @@ public class PlanAgentService {
         return tryDegradeFailedStep(plan, failedStep, failedError);
     }
 
+    private PlanReflectionTrigger reflectionTrigger(AgentPlan plan, AgentPlanStep failedStep) {
+        if (failedStep == null || reflectionExplicitlyBlocked(plan == null ? null : plan.getId(), failedStep.getId())
+                || isExternalReflectionBlocker(null, null, failedStep.getErrorMessage())) {
+            return null;
+        }
+        String error = blankToDefault(failedStep.getErrorMessage(), "").toUpperCase(Locale.ROOT);
+        if (error.startsWith("VERIFIER_") || isVerificationFailure(failedStep.getErrorMessage())) {
+            return PlanReflectionTrigger.VERIFIER_FAILED;
+        }
+        if (error.contains("INSUFFICIENT_EVIDENCE") || error.contains("INSUFFICIENT EVIDENCE")) {
+            return PlanReflectionTrigger.EVIDENCE_INSUFFICIENT;
+        }
+        if (error.contains("CONFLICT")) {
+            return PlanReflectionTrigger.RESULT_CONFLICT;
+        }
+        return PlanReflectionTrigger.STEP_FAILED;
+    }
+
+    private boolean reflectionExplicitlyBlocked(Long planId, Long stepId) {
+        if (planId == null || stepId == null) return false;
+        List<AgentPlanEvent> persisted = events.findByPlanIdOrderByCreatedAtAsc(planId);
+        return persisted != null && persisted.stream().anyMatch(event -> stepId.equals(event.getStepId())
+                && "step_reflection_not_triggered".equals(event.getEventType()));
+    }
+
+    private boolean reflectionAlreadyAttempted(Long planId, List<AgentPlanStep> allSteps) {
+        if (allSteps != null && allSteps.stream().anyMatch(step -> step != null
+                && step.getStepKey().startsWith(REPAIR_STEP_PREFIX))) return true;
+        List<AgentPlanEvent> persisted = planId == null ? null : events.findByPlanIdOrderByCreatedAtAsc(planId);
+        return persisted != null && persisted.stream().anyMatch(event ->
+                "plan_reflection_triggered".equals(event.getEventType())
+                        || "plan_reflection_applied".equals(event.getEventType())
+                        || "plan_reflection_no_progress".equals(event.getEventType()));
+    }
+
+    private enum PlanReflectionTrigger {
+        STEP_FAILED,
+        EVIDENCE_INSUFFICIENT,
+        RESULT_CONFLICT,
+        VERIFIER_FAILED
+    }
+
     private boolean unknownCompletionFailure(AgentPlanStep step) {
         return step != null && StringUtils.hasText(step.getErrorMessage())
                 && step.getErrorMessage().startsWith("UNKNOWN_COMPLETION:");
+    }
+
+    private boolean terminalSandboxExecutionFailure(AgentPlanStep step) {
+        return step != null
+                && "SANDBOX_EXECUTE".equals(step.getType())
+                && AgentPlanStepStatus.FAILED.name().equals(step.getStatus())
+                && StringUtils.hasText(step.getErrorMessage())
+                && step.getErrorMessage().startsWith("SANDBOX_");
     }
 
     private void executeStep(AgentPlan plan,
@@ -1098,6 +1173,7 @@ public class PlanAgentService {
                 "traceId", traceId
         ));
         String previousError = step.getErrorMessage();
+        RepairContext previousRepairContext = null;
         String executionStateSummary = sharedExecutionState.getOrDefault(step.getStepKey(), "");
         if (preserveMissingMaterialDependencySynthesis(plan, allSteps, step)) {
             return;
@@ -1153,6 +1229,8 @@ public class PlanAgentService {
             ResolvedToolPolicy runtimeToolPolicy = constrainDurableToolPolicy(
                     plan, step, authorityPolicy, checkpointCeiling, traceId);
             if (runtimeToolPolicy == null) return;
+            PlanningAgentPlanner.StepBudget stepBudget = persistedStepBudget(plan, step);
+            runtimeToolPolicy = constrainToStepBudget(runtimeToolPolicy, stepBudget);
             step.markRunning();
             persistStep(step);
             UserSettingsService.ModelEndpoint endpoint = userSettingsService.resolveModelEndpoint(
@@ -1169,7 +1247,7 @@ public class PlanAgentService {
                     endpoint.modelName(),
                     null,
                     null,
-                    maxRuntimeStepsForPlanStep(session, runtimeToolPolicy, projectContext != null),
+                    maxRuntimeStepsForPlanStep(session, runtimeToolPolicy, projectContext != null, stepBudget),
                     Boolean.TRUE.equals(plan.getRagDisabled()),
                     skill == null ? null : skill.id(),
                     endpoint.apiKey(),
@@ -1194,6 +1272,9 @@ public class PlanAgentService {
                         .withProjectContext(currentProjectContext)
                         .withInheritedTrustedEvidence(currentDependencyEvidence);
             }
+            if (previousRepairContext != null) {
+                runtimeRequest = runtimeRequest.withRepairContext(previousRepairContext.withRemainingAttempts(1));
+            }
             AgentRuntimeResult result;
             try {
                 result = agentRuntimeService.run(runtimeRequest);
@@ -1216,6 +1297,7 @@ public class PlanAgentService {
                 );
             }
             recordToolObservations(plan, step, result, projectContext, traceId, attempt + 1);
+            RepairContext currentRepairContext = RepairContext.fromFallbacks(objectMapper, result.fallbacks());
             executionStateSummary = mergeExecutionState(executionStateSummary, result);
             sharedExecutionState.put(step.getStepKey(), executionStateSummary);
             String missingTarget = missingTargetProjectFile(result, requiredMaterialPaths);
@@ -1252,13 +1334,10 @@ public class PlanAgentService {
                         && stepCanCallTools && !hasDependencyEvidence && !hasGovernedCandidateProposal) {
                     String error = "INSUFFICIENT_EVIDENCE: Project step completed without a current authorized file observation.";
                     previousError = error;
-                    if (attempt + 1 >= MAX_STEP_ATTEMPTS) {
-                        step.markFailed(error, content);
-                        recordEvent(plan.getId(), step.getId(), "step_evidence_insufficient", Map.of(
-                                "stepKey", step.getStepKey(), "projectId", projectContext.projectId(), "traceId", traceId));
-                        return;
-                    }
-                    continue;
+                    step.markFailed(error, content);
+                    recordEvent(plan.getId(), step.getId(), "step_evidence_insufficient", Map.of(
+                            "stepKey", step.getStepKey(), "projectId", projectContext.projectId(), "traceId", traceId));
+                    return;
                 }
                 if (hasGovernedCandidateProposal) {
                     recordEvent(plan.getId(), step.getId(), "step_governed_candidate_proposed", Map.of(
@@ -1315,20 +1394,25 @@ public class PlanAgentService {
                     verification = PlanStepVerifier.VerificationResult.inconclusive("Verifier returned no decision.");
                 }
                 if (!verification.conclusive()) {
+                    String error = "VERIFIER_INCONCLUSIVE: "
+                            + blankToDefault(verification.reason(), "Verifier could not make a reliable decision.");
+                    previousError = error;
                     recordEvent(plan.getId(), step.getId(), "step_verification_inconclusive", Map.of(
                             "stepKey", step.getStepKey(),
                             "reason", blankToDefault(verification.reason(), "Verifier could not make a reliable decision."),
                             "candidateResult", abbreviate(content, 1200),
                             "traceId", traceId
                     ));
-                    step.markDegraded(content, "VERIFIER_INCONCLUSIVE: "
-                            + blankToDefault(verification.reason(), "Verifier could not make a reliable decision."));
-                    recordEvent(plan.getId(), step.getId(), "step_completed_unverified", Map.of(
-                            "stepKey", step.getStepKey(),
-                            "result", abbreviate(content, 1200),
-                            "reason", blankToDefault(verification.reason(), "Verifier could not make a reliable decision."),
-                            "traceId", traceId
-                    ));
+                    if (controlledPartial) {
+                        step.markDegraded(content, "VERIFICATION_PARTIAL: " + abbreviate(error, 1200));
+                        recordEvent(plan.getId(), step.getId(), "step_completed_unverified", Map.of(
+                                "stepKey", step.getStepKey(), "result", abbreviate(content, 1200),
+                                "reason", abbreviate(error, 1200), "traceId", traceId));
+                        return;
+                    }
+                    step.markFailed(error, content);
+                    recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
+                            "stepKey", step.getStepKey(), "error", error, "traceId", traceId));
                     return;
                 }
                 if (!verification.passed()) {
@@ -1340,9 +1424,7 @@ public class PlanAgentService {
                             "candidateResult", abbreviate(content, 1200),
                             "traceId", traceId
                     ));
-                    boolean hasTrustedProjectEvidence = projectContext != null
-                            && (hasDependencyEvidence || !typedEvidence.isEmpty());
-                    if (controlledPartial || hasTrustedProjectEvidence) {
+                    if (controlledPartial) {
                         step.markDegraded(content, "VERIFICATION_PARTIAL: " + abbreviate(error, 1200));
                         recordEvent(plan.getId(), step.getId(), "step_completed_unverified", Map.of(
                                 "stepKey", step.getStepKey(),
@@ -1352,22 +1434,13 @@ public class PlanAgentService {
                         ));
                         return;
                     }
-                    if (attempt + 1 >= MAX_STEP_ATTEMPTS) {
-                        step.markFailed(error, content);
-                        recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
-                                "stepKey", step.getStepKey(),
-                                "error", error,
-                                "traceId", traceId
-                        ));
-                        return;
-                    }
-                    recordEvent(plan.getId(), step.getId(), "step_retry", Map.of(
+                    step.markFailed(error, content);
+                    recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
                             "stepKey", step.getStepKey(),
-                            "attempt", step.getAttemptCount(),
                             "error", error,
                             "traceId", traceId
                     ));
-                    continue;
+                    return;
                 }
                 if (controlledPartial) {
                     step.markDegraded(content, "RUNTIME_PARTIAL: " + abbreviate(controlledLimitation, 1200));
@@ -1410,7 +1483,16 @@ public class PlanAgentService {
             String error = StringUtils.hasText(result.errorMessage()) ? result.errorMessage() : "Step execution failed.";
             previousError = error;
             recordRuntimeGuardrailEvent(plan, step, error, traceId);
-            if (attempt + 1 >= MAX_STEP_ATTEMPTS) {
+            boolean externalBlocker = isExternalReflectionBlocker(result, currentRepairContext, error);
+            if (externalBlocker) {
+                recordEvent(plan.getId(), step.getId(), "step_reflection_not_triggered", Map.of(
+                        "stepKey", step.getStepKey(),
+                        "reason", "EXTERNAL_OR_NON_RETRYABLE_BLOCKER",
+                        "error", abbreviate(error, 1200),
+                        "traceId", traceId
+                ));
+            }
+            if (externalBlocker || attempt + 1 >= MAX_STEP_ATTEMPTS) {
                 step.markFailed(error);
                 recordEvent(plan.getId(), step.getId(), "step_failed", Map.of(
                         "stepKey", step.getStepKey(),
@@ -1419,6 +1501,8 @@ public class PlanAgentService {
                 ));
                 return;
             }
+            previousRepairContext = currentRepairContext != null && currentRepairContext.retryable()
+                    ? currentRepairContext : null;
             recordEvent(plan.getId(), step.getId(), "step_retry", Map.of(
                     "stepKey", step.getStepKey(),
                     "attempt", step.getAttemptCount(),
@@ -1678,16 +1762,41 @@ public class PlanAgentService {
 
     private int maxRuntimeStepsForPlanStep(AgentSession session,
                                            ResolvedToolPolicy runtimeToolPolicy,
-                                           boolean projectStep) {
+                                           boolean projectStep,
+                                           PlanningAgentPlanner.StepBudget stepBudget) {
         int configured = session.getMaxSteps() == null
                 ? UserSettingsService.DEFAULT_MAX_STEPS : session.getMaxSteps();
-        int effective = Math.max(1, configured);
+        int planned = stepBudget == null ? configured : stepBudget.maxRuntimeSteps();
+        int effective = Math.max(1, Math.min(configured, planned));
         if (projectStep && runtimeToolPolicy != null) {
             log.info("Project Plan step runtime budget configuredSteps={} effectiveSteps={} "
                             + "maxToolCalls={} synthesisReserve={}",
                     configured, effective, runtimeToolPolicy.maxToolCalls(), 1);
         }
         return effective;
+    }
+
+    private boolean isExternalReflectionBlocker(AgentRuntimeResult result,
+                                                 RepairContext repairContext,
+                                                 String error) {
+        if (result != null && (result.runtimeStopSignal() != AgentRuntimeStopSignal.NONE
+                || (result.stopReason() != null && Set.of(AgentStopReason.POLICY_REJECTED, AgentStopReason.CANCELLED,
+                AgentStopReason.TIMED_OUT, AgentStopReason.TOOL_CALL_BUDGET_EXHAUSTED,
+                AgentStopReason.MAX_STEPS_BUDGET_EXHAUSTED).contains(result.stopReason())))) {
+            return true;
+        }
+        if (repairContext != null && !repairContext.retryable()) {
+            return true;
+        }
+        String normalized = blankToDefault(error, "").toUpperCase(Locale.ROOT);
+        return containsAny(normalized,
+                "PERMISSION_DENIED", "POLICY_REJECTED", "UNAUTHORIZED", "FORBIDDEN",
+                "CANCELLED", "CANCELED", "TIMED_OUT", "TIMEOUT",
+                "BUDGET_EXCEEDED", "BUDGET EXCEEDED", "BUDGET EXHAUSTED",
+                "PROVIDER_UNAVAILABLE", "PROVIDER UNAVAILABLE",
+                "SANDBOX_DISABLED", "SANDBOX_UNAVAILABLE", "SANDBOX_CONFIRMATION_REQUIRED",
+                "WAITING_FOR_USER", "WAITING_CONFIRMATION", "RECOVERY_REJECTED",
+                "PROJECTVERSION", "PROJECT VERSION", "VERSION_CONFLICT", "STALE");
     }
 
     private String buildVerificationFailureMessage(PlanStepVerifier.VerificationResult verification) {
@@ -1746,10 +1855,25 @@ public class PlanAgentService {
         if (repairSteps.isEmpty()) {
             return false;
         }
+        String reflectionSignature = reflectionSignature(repairSteps);
+        if (equivalentRemainingPlan(allSteps, failedStep, repairSteps)) {
+            recordEvent(plan.getId(), failedStep.getId(), "plan_reflection_no_progress", Map.of(
+                    "stepKey", failedStep.getStepKey(),
+                    "reason", "EQUIVALENT_REMAINING_PLAN",
+                    "reflectionSignature", reflectionSignature));
+            return false;
+        }
         shiftSortOrdersAfterFailedStep(allSteps, failedStep, repairSteps.size());
 
         Set<String> existingKeys = allStepKeys(allSteps);
-        List<String> failedDependencies = readStringList(failedStep.getDependenciesJson());
+        Set<String> completedKeys = allSteps.stream()
+                .filter(step -> AgentPlanStepStatus.COMPLETED.name().equals(step.getStatus())
+                        || AgentPlanStepStatus.DEGRADED.name().equals(step.getStatus()))
+                .map(AgentPlanStep::getStepKey)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<String> failedDependencies = readStringList(failedStep.getDependenciesJson()).stream()
+                .filter(completedKeys::contains)
+                .toList();
         Map<String, String> repairKeyMapping = new LinkedHashMap<>();
         List<AgentPlanStep> appendedSteps = new ArrayList<>();
         int nextOrder = failedStep.getSortOrder() + 1;
@@ -1763,7 +1887,7 @@ public class PlanAgentService {
                     repairKeyMapping,
                     failedDependencies,
                     previousRepairKey,
-                    existingKeys,
+                    completedKeys,
                     failedStep.getStepKey()
             );
             AgentPlanStep saved = persistStep(new AgentPlanStep(
@@ -1790,7 +1914,10 @@ public class PlanAgentService {
         }
 
         String finalRepairKey = appendedSteps.get(appendedSteps.size() - 1).getStepKey();
+        List<String> supersededStepKeys = supersedePendingSteps(
+                plan, allSteps, failedStep, repairSpec.supersededStepIds(), finalRepairKey);
         redirectDependents(allSteps, failedStep.getStepKey(), finalRepairKey);
+        supersededStepKeys.forEach(stepKey -> redirectDependents(allSteps, stepKey, finalRepairKey));
         failedStep.markSuperseded("Superseded by recovery step " + finalRepairKey + ": " + failedStep.getErrorMessage());
         persistStep(failedStep);
         steps.flush();
@@ -1799,12 +1926,95 @@ public class PlanAgentService {
                 "replacementStepKey", finalRepairKey,
                 "addedStepCount", appendedSteps.size()
         ));
+        recordEvent(plan.getId(), failedStep.getId(), "plan_reflection_applied", Map.of(
+                "failedStepKey", failedStep.getStepKey(),
+                "replacementStepKey", finalRepairKey,
+                "addedStepCount", appendedSteps.size(),
+                "supersededStepKeys", supersededStepKeys,
+                "reflectionSignature", reflectionSignature,
+                "stepBudgets", reflectionStepBudgets(appendedSteps, repairSteps)
+        ));
         return true;
+    }
+
+    private List<String> supersedePendingSteps(AgentPlan plan,
+                                               List<AgentPlanStep> allSteps,
+                                               AgentPlanStep failedStep,
+                                               List<String> requestedStepKeys,
+                                               String replacementStepKey) {
+        if (requestedStepKeys == null || requestedStepKeys.isEmpty()) return List.of();
+        Set<String> requested = new LinkedHashSet<>(requestedStepKeys);
+        List<String> superseded = new ArrayList<>();
+        for (AgentPlanStep step : allSteps) {
+            if (step == null || step == failedStep || !requested.contains(step.getStepKey())
+                    || !AgentPlanStepStatus.PENDING.name().equals(step.getStatus())) continue;
+            step.markSuperseded("Superseded by event-triggered Reflection replacement " + replacementStepKey + ".");
+            persistStep(step);
+            superseded.add(step.getStepKey());
+            recordEvent(plan.getId(), step.getId(), "step_superseded", Map.of(
+                    "stepKey", step.getStepKey(),
+                    "replacementStepKey", replacementStepKey,
+                    "reason", step.getErrorMessage()));
+        }
+        return List.copyOf(superseded);
+    }
+
+    private Map<String, Object> reflectionStepBudgets(List<AgentPlanStep> persistedSteps,
+                                                      List<PlanningAgentPlanner.StepSpec> specs) {
+        Map<String, Object> budgets = new LinkedHashMap<>();
+        int limit = Math.min(persistedSteps.size(), specs.size());
+        for (int index = 0; index < limit; index++) {
+            PlanningAgentPlanner.StepBudget budget = specs.get(index).budget() == null
+                    ? PlanningAgentPlanner.StepBudget.unbounded() : specs.get(index).budget();
+            budgets.put(persistedSteps.get(index).getStepKey(), Map.of(
+                    "maxToolCalls", budget.maxToolCalls(),
+                    "maxRuntimeSteps", budget.maxRuntimeSteps()));
+        }
+        return budgets;
+    }
+
+    private boolean equivalentRemainingPlan(List<AgentPlanStep> allSteps,
+                                            AgentPlanStep failedStep,
+                                            List<PlanningAgentPlanner.StepSpec> replacement) {
+        String replacementSignature = reflectionSignature(replacement);
+        List<AgentPlanStep> failedOnly = List.of(failedStep);
+        if (replacementSignature.equals(existingPlanSignature(failedOnly))) return true;
+        List<AgentPlanStep> remaining = allSteps.stream()
+                .filter(step -> step == failedStep || AgentPlanStepStatus.PENDING.name().equals(step.getStatus()))
+                .sorted(Comparator.comparing(AgentPlanStep::getSortOrder))
+                .toList();
+        return replacementSignature.equals(existingPlanSignature(remaining));
+    }
+
+    private String reflectionSignature(List<PlanningAgentPlanner.StepSpec> plannedSteps) {
+        return plannedSteps.stream().map(step -> canonicalReflectionPart(
+                        step.type(), step.description(), step.allowedTools(), step.successCriteria()))
+                .collect(java.util.stream.Collectors.joining("||"));
+    }
+
+    private String existingPlanSignature(List<AgentPlanStep> planSteps) {
+        return planSteps.stream().map(step -> canonicalReflectionPart(
+                        step.getType(), step.getDescription(), readStringList(step.getAllowedToolsJson()),
+                        step.getSuccessCriteria()))
+                .collect(java.util.stream.Collectors.joining("||"));
+    }
+
+    private String canonicalReflectionPart(String type, String description,
+                                           List<String> allowedTools, String successCriteria) {
+        List<String> tools = allowedTools == null ? List.of() : allowedTools.stream().sorted().toList();
+        return String.join("|",
+                blankToDefault(type, "").trim().toUpperCase(Locale.ROOT),
+                blankToDefault(description, "").trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT),
+                String.join(",", tools),
+                blankToDefault(successCriteria, "").trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT));
     }
 
     private boolean tryDegradeFailedStep(AgentPlan plan, AgentPlanStep failedStep, String failedError) {
         if ("SANDBOX_EXECUTE".equals(failedStep.getType())) return false;
-        if (!isVerificationFailure(failedError) || !StringUtils.hasText(failedStep.getResult())) {
+        boolean verifierInconclusive = StringUtils.hasText(failedError)
+                && failedError.startsWith("VERIFIER_INCONCLUSIVE:");
+        if ((!isVerificationFailure(failedError) && !verifierInconclusive)
+                || !StringUtils.hasText(failedStep.getResult())) {
             return false;
         }
         String warning = "Degraded after verification failure: "
@@ -1820,6 +2030,12 @@ public class PlanAgentService {
                 "warning", abbreviate(warning, 1200),
                 "result", abbreviate(degradedResult, 1200)
         ));
+        if (verifierInconclusive) {
+            recordEvent(plan.getId(), failedStep.getId(), "step_completed_unverified", Map.of(
+                    "stepKey", failedStep.getStepKey(),
+                    "result", abbreviate(degradedResult, 1200),
+                    "reason", abbreviate(failedError, 1200)));
+        }
         return true;
     }
 
@@ -1862,6 +2078,21 @@ public class PlanAgentService {
         if (!hasCompletedResult) {
             sb.append("None.\n");
         }
+        sb.append("\nCurrent pending remaining steps (list a step id in supersededStepIds only if your replacement makes it obsolete):\n");
+        boolean hasPending = false;
+        for (AgentPlanStep step : allSteps) {
+            if (!AgentPlanStepStatus.PENDING.name().equals(step.getStatus())) continue;
+            hasPending = true;
+            sb.append("- ").append(step.getStepKey())
+                    .append(" | ").append(blankToDefault(step.getTitle(), ""))
+                    .append(" | depends on ").append(readStringList(step.getDependenciesJson()))
+                    .append(" | success: ").append(blankToDefault(step.getSuccessCriteria(), ""))
+                    .append("\n");
+        }
+        if (!hasPending) sb.append("None.\n");
+        sb.append("Completed/degraded steps and their results are immutable. Replace only the remaining work, ")
+                .append("never rerun a completed step, and do not enlarge tools, identity, ProjectVersion, sandbox, ")
+                .append("network, Candidate authority, confirmation scope, or total budget.\n");
         return sb.toString();
     }
 
@@ -2260,8 +2491,10 @@ public class PlanAgentService {
 
     private boolean containsAny(String value, String... candidates) {
         if (!StringUtils.hasText(value) || candidates == null) return false;
+        String normalized = value.toLowerCase(Locale.ROOT);
         for (String candidate : candidates) {
-            if (StringUtils.hasText(candidate) && value.contains(candidate.toLowerCase(Locale.ROOT))) return true;
+            if (StringUtils.hasText(candidate)
+                    && normalized.contains(candidate.toLowerCase(Locale.ROOT))) return true;
         }
         return false;
     }
@@ -2386,6 +2619,69 @@ public class PlanAgentService {
                     "plan_step_persisted_allowlist");
         }
         return inheritedPolicy;
+    }
+
+    private ResolvedToolPolicy constrainToStepBudget(ResolvedToolPolicy policy,
+                                                      PlanningAgentPlanner.StepBudget budget) {
+        if (policy == null || budget == null) return policy;
+        int maxToolCalls = Math.min(policy.maxToolCalls(), budget.maxToolCalls());
+        if (maxToolCalls == policy.maxToolCalls()) return policy;
+        return new ResolvedToolPolicy(policy.allowedTools(), maxToolCalls,
+                policy.maxDuplicateToolCalls(), policy.reason() + "+planner_step_budget");
+    }
+
+    private PlanningAgentPlanner.StepBudget persistedStepBudget(AgentPlan plan, AgentPlanStep step) {
+        PlanningAgentPlanner.StepBudget fallback = PlanningAgentPlanner.StepBudget.unbounded();
+        if (plan == null || step == null) return fallback;
+        try {
+            String plannerJson = ProjectPlanEnvelope.restorePlannerRawJson(
+                    objectMapper, plan.getRawPlanJson(), plan.getUserId());
+            JsonNode root = StringUtils.hasText(plannerJson) ? objectMapper.readTree(plannerJson) : null;
+            JsonNode plannedSteps = root == null ? null : root.path("steps");
+            if (plannedSteps != null && plannedSteps.isArray()) {
+                for (JsonNode value : plannedSteps) {
+                    if (step.getStepKey().equals(value.path("id").asText())) {
+                        JsonNode budget = value.path("budget");
+                        if (budget.isObject()) {
+                            return new PlanningAgentPlanner.StepBudget(
+                                    budget.path("maxToolCalls").asInt(fallback.maxToolCalls()),
+                                    budget.path("maxRuntimeSteps").asInt(fallback.maxRuntimeSteps()));
+                        }
+                    }
+                }
+            }
+            List<AgentPlanEvent> persisted = events.findByPlanIdOrderByCreatedAtAsc(plan.getId());
+            if (persisted != null) {
+                for (AgentPlanEvent event : persisted) {
+                    if (!"plan_reflection_applied".equals(event.getEventType())) continue;
+                    JsonNode budget = objectMapper.readTree(event.getPayloadJson())
+                            .path("stepBudgets").path(step.getStepKey());
+                    if (budget.isObject()) {
+                        return new PlanningAgentPlanner.StepBudget(
+                                budget.path("maxToolCalls").asInt(fallback.maxToolCalls()),
+                                budget.path("maxRuntimeSteps").asInt(fallback.maxRuntimeSteps()));
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Ignoring invalid persisted step budget planId={} stepKey={}",
+                    plan.getId(), step.getStepKey(), ex);
+        }
+        return fallback;
+    }
+
+    private Map<String, Object> plannedStepBudgets(List<PlanningAgentPlanner.StepSpec> plannedSteps) {
+        Map<String, Object> budgets = new LinkedHashMap<>();
+        if (plannedSteps == null) return budgets;
+        for (PlanningAgentPlanner.StepSpec step : plannedSteps) {
+            if (step == null || !StringUtils.hasText(step.id())) continue;
+            PlanningAgentPlanner.StepBudget budget = step.budget() == null
+                    ? PlanningAgentPlanner.StepBudget.unbounded() : step.budget();
+            budgets.put(step.id(), Map.of(
+                    "maxToolCalls", budget.maxToolCalls(),
+                    "maxRuntimeSteps", budget.maxRuntimeSteps()));
+        }
+        return budgets;
     }
 
     private boolean sandboxEnabled(){return sandboxProperties!=null&&sandboxProperties.isEnabled();}
