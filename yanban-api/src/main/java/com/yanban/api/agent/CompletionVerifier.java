@@ -98,6 +98,7 @@ public class CompletionVerifier {
         }
         if (request.projectContext() != null && !isVerifiedRouterDirectKnowledgeRequest(request)
                 && requiresProjectFileEvidence(request.userMessage())
+                && !FinalSynthesisInputProjector.hasVerifiedExecutionMaterial(result.finalSynthesisInput())
                 && !hasCurrentProjectFileEvidence(ledger, request.projectContext().projectId(),
                 request.controlledWorkerDispatch() != null)) {
             reasons.add("no current authorized Project file evidence for projectId=" + request.projectContext().projectId());
@@ -154,10 +155,11 @@ public class CompletionVerifier {
             AgentRuntimeResult waiting = result.withCanonicalAssistantContent(
                     AgentService.PLAN_CONFIRMATION_HANDOFF,
                     request.history().size());
-            return waiting.asControlledPartial().withCompletionVerification(verification)
+            AgentRuntimeResult projectedWaiting = waiting.asControlledPartial().withCompletionVerification(verification)
                     .withCandidateArtifact(candidate)
                     .withCoordination(result.selectedStrategy(), AgentStopReason.WAITING_FOR_USER,
                             "PARTIAL", false, result.degradedFrom());
+            return projectedWaiting.withFinalSynthesisInput(FinalSynthesisInputProjector.fromRuntime(projectedWaiting));
         }
         AgentRuntimeResult applied = switch (verification.status()) {
             case VERIFIED -> result.withCompletionVerification(verification).withCandidateArtifact(candidate)
@@ -173,7 +175,8 @@ public class CompletionVerifier {
                     AgentStopReason.PLAN_PARTIAL, "INSUFFICIENT_EVIDENCE", candidate);
             case FAILED -> failure(result, verification, terminalStopReason(result), terminalFailureOutcome(result), candidate);
         };
-        return projectCanonicalCompletion(request, applied, verification);
+        AgentRuntimeResult canonical = projectCanonicalCompletion(request, applied, verification);
+        return canonical.withFinalSynthesisInput(FinalSynthesisInputProjector.fromRuntime(canonical));
     }
 
     /**

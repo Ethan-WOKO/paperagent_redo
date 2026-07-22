@@ -109,13 +109,14 @@ public class SandboxReceiptProjectionService {
         leases.saveOwnedStep(lease,step);
         String key="sandbox-receipt:"+value.executionId();
         AgentPlanEvent event=new AgentPlanEvent(value.planId(),value.stepId(),receipt.status()==SandboxExecutionStatus.SUCCEEDED?"step_project_evidence":"sandbox_execution_failed",
-                write(receipt.status()==SandboxExecutionStatus.SUCCEEDED?sandboxEvidence(value,receipt,request):sandboxFailureFacts(value,receipt)),key);
+                write(receipt.status()==SandboxExecutionStatus.SUCCEEDED?sandboxEvidence(value,receipt,request):sandboxFailureFacts(value,receipt,request)),key);
         leases.saveOwnedEvent(lease,event);
     }
-    private Map<String,Object> sandboxFailureFacts(SandboxOutboxExecution value,SandboxReceipt receipt){
+    private Map<String,Object> sandboxFailureFacts(SandboxOutboxExecution value,SandboxReceipt receipt,SandboxDispatch request){
         Map<String,Object> facts=new LinkedHashMap<>();facts.put("executionId",value.executionId());facts.put("status",receipt.status().name());
         facts.put("exitCode",receipt.exitCode());facts.put("timedOut",receipt.status()==SandboxExecutionStatus.TIMED_OUT);
-        facts.put("provider",receipt.provider());facts.put("candidateApplicationStatus","NOT_APPLIED");return facts;
+        facts.put("provider",receipt.provider());facts.put("command",request.argv());
+        facts.put("candidateApplicationStatus","NOT_APPLIED");return facts;
     }
     private void scheduleOutputAnalysisAfterCommit(String executionId){
         if(outputAnalysisProjection==null)return;
@@ -132,6 +133,7 @@ public class SandboxReceiptProjectionService {
         result.put("executionId",value.executionId());result.put("requestDigest",value.requestDigest());result.put("receiptDigest",value.receiptDigest());
         result.put("provider",receipt.provider());result.put("status",receipt.status().name());result.put("exitCode",receipt.exitCode());
         result.put("timedOut",receipt.status()==SandboxExecutionStatus.TIMED_OUT);result.put("commandProfile",request.argv().isEmpty()?"":request.argv().get(0));
+        result.put("command",request.argv());
         result.put("artifacts",receipt.artifacts());result.put("candidateApplicationStatus","NOT_APPLIED");result.put("evidence",evidence);
         return result;
     }

@@ -1057,6 +1057,43 @@ class CompletionVerifierTest {
     }
 
     @Test
+    void successfulGovernedCodeExecutionUsesSnapshotRequestAndReceiptWithoutExperimentConfigGate() {
+        ResearchMaterialRequirement code = new ResearchMaterialRequirement(ResearchMaterialKind.CODE,
+                List.of(ResearchToolContracts.PROJECT_CODE_SYMBOLS, "project_read_file"),
+                List.of("project_read_file"), true);
+        AgentOrchestrationRequirements execution = new AgentOrchestrationRequirements(
+                List.of(AgentStrategySignal.PROJECT_SCOPE, AgentStrategySignal.MATERIAL_CODE,
+                        AgentStrategySignal.SANDBOX_EXECUTION_REQUIRED),
+                List.of(AgentStrategyReasonCode.SANDBOX_EXECUTION_REQUIRES_PLAN), List.of(code),
+                AgentStrategySelectionOrigin.SERVER_AUTO);
+        FinalSynthesisInput input = new FinalSynthesisInput("SUCCESS", "SUCCESS", EvidenceStatus.SUPPORTED,
+                List.of(
+                        new SynthesisEvidence("execution:20", EvidenceCategory.EXECUTION_FACT,
+                                EvidenceStatus.VERIFIED, "receipt", List.of(), null, null, null,
+                                null, null, "SANDBOX_RECEIPT", ExternalSourceAccess.UNKNOWN,
+                                new ExecutionFact("e2b", "SUCCEEDED", 0, false,
+                                        List.of("java", "Main.java"), "ok", "")),
+                        new SynthesisEvidence("snapshot:20", EvidenceCategory.VERIFIED_PROJECT_EVIDENCE,
+                                EvidenceStatus.VERIFIED, "snapshot", List.of(), PROJECT_VERSION,
+                                "src/Main.java", FILE_HASH, 1, 1, "PROJECT",
+                                ExternalSourceAccess.UNKNOWN, null)), VerificationScope.standard());
+        AgentRuntimeRequest request = projectRequest(AgentStrategy.PLAN_EXECUTE, "运行 src/Main.java 并返回结果 JSON")
+                .withOrchestrationRequirements(execution);
+
+        AgentRuntimeResult result = verifier.verify(request, success("stdout was ok", List.of())
+                .withCoordination(AgentStrategy.PLAN_EXECUTE, AgentStopReason.COMPLETED, "SUCCESS", false, null)
+                .withFinalSynthesisInput(input));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.completionVerification().status()).isEqualTo(CompletionStatus.VERIFIED);
+        assertThat(result.finalSynthesisInput().executionOutcome()).isEqualTo("SUCCESS");
+        assertThat(result.finalSynthesisInput().taskOutcome()).isEqualTo("SUCCESS");
+        assertThat(result.finalSynthesisInput().answerStatus()).isEqualTo(EvidenceStatus.SUPPORTED);
+        assertThat(execution.materialRequirements()).extracting(ResearchMaterialRequirement::material)
+                .containsExactly(ResearchMaterialKind.CODE);
+    }
+
+    @Test
     void newlyCreatedPlanIsOnlyPartialWhenItsOutcomeIsPlanCreated() {
         AgentRuntimeRequest request = new AgentRuntimeRequest(AgentStrategy.PLAN_EXECUTE, 1L, List.of(), 7L,
                 "analyze the available material", "test", "model", null, null, 2, true, null, null, null, null,

@@ -302,6 +302,22 @@ class AgentStrategySelectorTest {
     }
 
     @Test
+    void ordinaryCodeExecutionDoesNotTreatOutputJsonOrDataWordsAsExperimentMaterial() {
+        for (String task : List.of(
+                "运行 Main.java 并把结果输出为 JSON。",
+                "Run Main.java and return the result data.")) {
+            AgentStrategySelection decision = selector.decide(AgentCoordinationRequest.projectRead(projectRequest(
+                    AgentStrategy.AUTO, task, RESEARCH_TOOLS, 8, 12)));
+
+            assertThat(decision.selectedStrategy()).isEqualTo(AgentStrategy.PLAN_EXECUTE);
+            assertThat(decision.orchestration().materialRequirements())
+                    .extracting(ResearchMaterialRequirement::material)
+                    .containsExactly(ResearchMaterialKind.CODE)
+                    .doesNotContain(ResearchMaterialKind.EXPERIMENT_CONFIG);
+        }
+    }
+
+    @Test
     void explicitExperimentResultCsvStillRequiresExperimentConfigMaterial() {
         AgentStrategySelection decision = selector.decide(AgentCoordinationRequest.projectRead(projectRequest(
                 AgentStrategy.AUTO, "请总结实验结果 CSV 并解释指标。", RESEARCH_TOOLS, 8, 12)));

@@ -157,6 +157,48 @@ export interface SendMessageResponse {
   completionStatus: 'VERIFIED' | 'PARTIAL' | 'INSUFFICIENT_EVIDENCE' | 'FAILED' | null;
   stopReason: string | null;
   outcome: string | null;
+  executionOutcome?: string;
+  taskOutcome?: string;
+  answerStatus?: EvidenceStatus;
+  finalSynthesisInput?: FinalSynthesisInput | null;
+}
+
+export type EvidenceStatus = 'VERIFIED' | 'SUPPORTED' | 'INFERRED' | 'UNVERIFIED' | 'CONFLICTING' | 'STALE';
+export type EvidenceCategory = 'EXECUTION_FACT' | 'VERIFIED_PROJECT_EVIDENCE' | 'EXTERNAL_SOURCE' | 'INFERENCE' | 'UNVERIFIED_INPUT';
+export type ExternalSourceAccess = 'OPENED' | 'SEARCH_SUMMARY' | 'UNKNOWN';
+
+export interface ExecutionFact {
+  provider: string | null;
+  status: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  command: string[];
+  stdout: string | null;
+  stderr: string | null;
+}
+
+export interface SynthesisEvidence {
+  id: string;
+  category: EvidenceCategory;
+  status: EvidenceStatus;
+  statement: string | null;
+  basisRefs: string[];
+  projectVersion: string | null;
+  path: string | null;
+  hash: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  sourceType: string | null;
+  externalAccess: ExternalSourceAccess;
+  executionFact: ExecutionFact | null;
+}
+
+export interface FinalSynthesisInput {
+  executionOutcome: string;
+  taskOutcome: string;
+  answerStatus: EvidenceStatus;
+  evidence: SynthesisEvidence[];
+  verificationScope: { verifies: string[]; limitations: string[] };
 }
 
 export function sendMessage(sessionId: number, payload: SendMessageRequestPayload) {
@@ -196,7 +238,10 @@ export interface AgentPlanResponse {
   finishedAt: string | null;
   steps: AgentPlanStepResponse[];
   executionOutcome: string;
+  taskOutcome?: string;
+  answerStatus?: EvidenceStatus;
   finalAnswer: string | null;
+  finalSynthesisInput?: FinalSynthesisInput | null;
 }
 
 export interface AgentPlanEventResponse {

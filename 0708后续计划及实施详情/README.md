@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-22
 >
-> 当前工程基线：GitHub `origin/main` 最新提交（Worker 17 已验收；Worker 18 随本次发布进入主线）
+> 当前工程基线：GitHub `origin/main` 最新提交（Worker 19 已验收；Worker 20 随本次发布进入主线）
 >
 > 规则：先读“当前有效”，需要追溯证据时再读“历史归档”。历史文档不得覆盖当前权威设计和执行计划。
 
@@ -11,7 +11,7 @@
 1. [通用 Agent Runtime 设计](./当前有效/通用%20Agent%20Runtime%20设计.md)
    - 长期架构、统一 Runtime、安全边界和第一版原则的权威来源。
 2. [科研 Project Agent 第一版实施计划](./当前有效/科研%20Project%20Agent%20第一版实施计划.md)
-   - 当前阶段、串行任务队列、基线、退出条件和下一步工作的唯一执行来源；阶段 8 至阶段 11 是当前后续路线。
+   - 当前阶段、串行任务队列、基线、退出条件和下一步工作的唯一执行来源；阶段 12 至阶段 15 是当前后续路线。
 3. [科研工具与结构化索引契约](./当前有效/科研工具与结构化索引契约.md)
    - 五个第一批只读科研工具、结构化索引、Evidence 和预算的冻结契约。
 4. [Agent 对比分析与后续改造建议](./当前有效/架构决策/Agent%20对比分析与后续改造建议.md)
@@ -31,11 +31,11 @@
 
 ## 当前下一步
 
-Worker 16 至 Worker 19 已完成：Project 单输入入口、`DIRECT / PLAN_EXECUTE` LLM Router、长期记忆贯通、Project 页面与执行过程整理、Evidence 分层、工具参数自修复、终态语义统一，以及 Plan-and-Execute、步骤内 ReAct 与事件触发 Reflection 均已通过真实用户旅程验收。普通非 Project Chat 保留现有 ReAct；Project 顶层不开放第三种 ReAct 策略。
+Worker 16 至 Worker 19 已完成第一轮体验与可靠性收口。Worker 20 已完成第二轮的结果语义和证据底座：执行结果、任务结果、回答依据状态分离；执行事实、当前 Project 证据、外部来源、推理和未验证输入分层；搜索摘要不会被当作已打开来源；Provider receipt 不能被模型推理覆盖。
 
-> 当前四阶段已全部完成。下一步是用户侧整体体验复验、部署观察与问题收集，不自动启动自由多 Agent 或 Pro 模式。
+> 当前第二轮按 Worker 20 至 Worker 23 串行推进。Worker 21 实现受控 Final Synthesis，Worker 22 整理结果展示，Worker 23 完成编码闭环与固定真实验收集；不自动启动自由多 Agent 或 Pro 模式。
 
-Worker 19 已按阶段 8 至阶段 10 的真实运行数据冻结并验收：Reflection 全局最多一次，只调整未执行工作；沙箱权威失败保持失败，不允许静态分析将其升格为成功。
+Worker 20 的真实 API -> Broker -> E2B 旅程已覆盖 Java 成功、非零失败、取消和 DIRECT；Windows Broker 只额外继承经探针证明必要的 `SystemRoot`，不继承 PATH 或业务敏感环境。
 
 执行原则：Project 的 LLM Router 提出 `DIRECT / PLAN_EXECUTE`，Runtime 只校验 capability、权限、工具、沙箱确认与预算并执行；普通非 Project Chat 暂时保留 ReAct。每个阶段串行开发、独立审查、真实用户旅程验收后再进入下一阶段。
 

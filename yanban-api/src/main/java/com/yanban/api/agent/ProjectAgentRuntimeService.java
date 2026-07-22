@@ -109,7 +109,8 @@ public class ProjectAgentRuntimeService {
                 .toList();
         return new SendMessageResponse(response.success(), response.assistantContent(), response.steps(), response.errorMessage(),
                 response.navigationUrl(), response.messages(), response.debug(), current,
-                response.completionStatus(), response.stopReason(), response.outcome(), response.candidateArtifact());
+                response.completionStatus(), response.stopReason(), response.outcome(), response.candidateArtifact())
+                .withFinalSynthesisInput(response.finalSynthesisInput());
     }
 
     private boolean isSafeRelativePath(String value) {

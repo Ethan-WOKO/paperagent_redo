@@ -410,6 +410,43 @@ Plan：
 
 退出条件：已满足。中间结果不足时能够调整剩余计划；无关步骤可被取消；已完成步骤不重复；失败不会形成 Reflection 循环；复杂任务仍只发布一个 canonical answer；沙箱权威失败不会被静态分析覆盖或升级为成功。
 
+### 阶段 12：结果语义与证据分层底座
+
+状态：`COMPLETED`
+
+- 分离 `executionOutcome`、`taskOutcome` 和 `answerStatus`，避免执行成功、任务完成和回答可信度被一个状态混用。
+- 证据采用类型与状态两个维度：执行事实、当前 Project 证据、外部来源、推理和未验证输入；状态限定为 `VERIFIED / SUPPORTED / INFERRED / UNVERIFIED / CONFLICTING / STALE`。
+- receipt 只证明执行事实；stdout/stderr 只证明本次输出字节；Project hash 只证明当前版本内容。任何推理和自由文本都不能覆盖 Provider 状态、退出码、超时或取消。
+- 搜索摘要和未知外部来源保持 `UNVERIFIED`；只有明确已打开的外部来源可成为 `SUPPORTED`，且不能升级为 `VERIFIED`。
+
+完成记录：Worker 20 以无 migration 的 `FinalSynthesisInput` 投影稳定输出三层结果、分层证据和验证范围，并保持旧 Plan/API JSON 兼容。普通代码执行使用代码快照、命令与 receipt/output 的最小材料，不再要求无关 `EXPERIMENT_CONFIG`。真实旅程覆盖 E2B Java 成功、受控非零失败、取消和 DIRECT；Windows Broker 仅继承 Python 初始化所需的 `SystemRoot`，敏感业务环境不继承。
+
+退出条件：已满足。成功 receipt 不被后续语义校验降级为执行失败；失败、超时和取消不被模型推理升级；搜索摘要不会进入受支持依据；DIRECT 和 Project 顶层 `DIRECT / PLAN_EXECUTE` 边界不回归。
+
+### 阶段 13：受控 Final Synthesis
+
+状态：`PENDING`
+
+- 在 Plan 终态后由无工具、无写权限、无网络的只读总结阶段综合用户问题、受信代码/步骤结果、receipt、原始 stdout/stderr、限制和受治理语言偏好。
+- 最终回答必须直接回答用户问题，并明确区分已验证事实、受支持结论、推理和未验证限制；模型不可用时使用可读的确定性回退。
+- 只能原地形成一个 assistant 和一个 canonical answer，不能触发 Project/Plan/Evidence 写入、Candidate 应用或后续执行。
+
+### 阶段 14：结果展示与状态降噪
+
+状态：`PENDING`
+
+- 聊天区展示最终答案；Plan 卡默认折叠展示状态、进度、耗时和确认，内部 reason code、hash、receipt 细节进入执行详情。
+- 将执行结果、任务结果、回答依据和限制转换为一致的用户文案；Evidence 数量与分类含义可解释。
+- 保持项目、会话、文件三区域高度算法和单输入入口不变，完成桌面与窄屏真实浏览器验收。
+
+### 阶段 15：编码任务闭环与固定验收集
+
+状态：`PENDING`
+
+- 固化解释代码、编译运行、参数修复、编译失败定位、Candidate 验证、显式应用、重新测试、超时/取消/恢复等真实任务。
+- 每条旅程检查任务结果质量、证据等级、单 assistant、单 canonical answer、Candidate `NOT_APPLIED` 和 ProjectVersion 恰好一次写入。
+- 只对真实旅程暴露的问题做最小修复，不扩展自由多 Agent、Pro 自主循环或新的顶层策略。
+
 ## 14. 串行 Worker 开发协议
 
 每个 Worker 启动前记录：
@@ -427,7 +464,7 @@ stopConditions
 current baseline:
 
 ```text
-Worker 19 frozen baseline: 4a808c3
+Worker 20 frozen baseline: 64f872b
 ```
 
 任何前序 Worker 的变更必须先完成主对话复审并提交，才能成为下一 Worker 的基线。
@@ -690,6 +727,32 @@ Worker 开发
 - Planner 负责目标、依赖和成功条件；步骤内部使用 ReAct；Reflection 只由失败、结果不足、冲突或验证不通过触发。
 - 必须有最大重规划次数、总预算、无进展检测和明确停止条件，不能宣称该范式保证所有任务成功。
 - 验收完成：步骤预算与权限取交集，步骤内 ReAct 复用既有 Runtime；Reflection 仅事件触发且最多一次，只替换未执行工作。DIRECT、RepairContext、Reflection、no-progress、沙箱确认/失败和重启恢复均完成自动测试与真实旅程；沙箱失败保持 `FAILED`，不会被 Reflection 升格为成功。
+
+### Worker 20：结果语义与证据分层底座
+
+状态：`COMPLETED`
+
+- 对应阶段 12。提供 `FinalSynthesisInput` 事实与证据底座，不提前实现总结 LLM 或 UI。
+- 验收完成：三层结果、证据类别/状态、Project 版本失效、外部来源访问层级、最小代码执行材料和旧数据兼容均通过自动测试；真实 API -> Broker -> E2B Java 成功/失败/取消和 DIRECT 通过。
+- 主审关闭了搜索摘要被错误标为 `SUPPORTED` 的 P1；最终只有显式 `OPENED` 来源为 `SUPPORTED`，`SEARCH_SUMMARY / UNKNOWN` 均为 `UNVERIFIED`。
+
+### Worker 21：受控 Final Synthesis
+
+状态：`PENDING`
+
+- 对应阶段 13。服务端只读组装用户原始问题、必要步骤/代码内容、长期语言偏好与 Worker 20 的事实证据底座，输出唯一最终回答。
+
+### Worker 22：结果展示与状态降噪
+
+状态：`PENDING`
+
+- 对应阶段 14。只整理最终答复、Plan 卡和执行详情的用户展示，不改变三区域布局算法或后端权限。
+
+### Worker 23：编码任务闭环与固定验收集
+
+状态：`PENDING`
+
+- 对应阶段 15。建立可重复的真实编码任务集，并在现有权限和状态边界内关闭最后的闭环缺陷。
 
 ## 16. 审查与停止条件
 

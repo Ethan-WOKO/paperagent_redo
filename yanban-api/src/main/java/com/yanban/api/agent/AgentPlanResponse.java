@@ -21,8 +21,23 @@ public record AgentPlanResponse(
         List<AgentPlanStepResponse> steps,
         String executionOutcome,
         String finalAnswer,
-        String persistenceLevel
+        String persistenceLevel,
+        String taskOutcome,
+        EvidenceStatus answerStatus,
+        FinalSynthesisInput finalSynthesisInput
 ) {
+    /** Source-compatible bridge for callers created before the result contract was projected. */
+    public AgentPlanResponse(
+            Long id, Long sessionId, String goal, String summary, String status, Boolean ragDisabled,
+            String skillId, String errorMessage, LocalDateTime createdAt, LocalDateTime updatedAt,
+            LocalDateTime startedAt, LocalDateTime finishedAt, List<AgentPlanStepResponse> steps,
+            String executionOutcome, String finalAnswer, String persistenceLevel
+    ) {
+        this(id, sessionId, goal, summary, status, ragDisabled, skillId, errorMessage, createdAt, updatedAt,
+                startedAt, finishedAt, steps, executionOutcome, finalAnswer, persistenceLevel,
+                executionOutcome, null, null);
+    }
+
     /** Source-compatible bridge for callers created before persistence level was projected. */
     public AgentPlanResponse(
             Long id, Long sessionId, String goal, String summary, String status, Boolean ragDisabled,
@@ -73,6 +88,13 @@ public record AgentPlanResponse(
                 plan.getCanonicalAnswer() == null ? finalAnswer(steps) : plan.getCanonicalAnswer(),
                 plan.getPersistenceLevel()
         );
+    }
+
+    public AgentPlanResponse withFinalSynthesisInput(FinalSynthesisInput input) {
+        if (input == null) return this;
+        return new AgentPlanResponse(id, sessionId, goal, summary, status, ragDisabled, skillId, errorMessage,
+                createdAt, updatedAt, startedAt, finishedAt, steps, input.executionOutcome(), finalAnswer,
+                persistenceLevel, input.taskOutcome(), input.answerStatus(), input);
     }
 
     private static String executionOutcome(String lifecycleStatus, List<AgentPlanStepResponse> steps) {

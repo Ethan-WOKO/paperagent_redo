@@ -109,6 +109,7 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
                 .withRuntimeStopSignal(terminal.stopSignal())
                 .withPlanId(plan.id())
                 .withPlanPersistenceLevel(plan.persistenceLevel())
+                .withFinalSynthesisInput(plan.finalSynthesisInput())
                 .withTrustedEvidenceLedger(execution.evidenceLedger())
                 .withDomainRuntimeFacts(execution.domainRuntimeFacts());
     }
@@ -181,21 +182,28 @@ public class PlanRuntimeAdapter implements RuntimeAdapter {
                     ? "PARTIAL" : "BUDGET_STOP";
             return new PlanTerminal(false, true, reason, outcome, stopSignal);
         }
-        if ("PARTIAL".equals(plan.executionOutcome())) {
+        if ("CANCELLED".equals(plan.executionOutcome()) || "CANCELLED".equals(plan.taskOutcome())) {
+            return new PlanTerminal(false, false, AgentStopReason.CANCELLED,
+                    "CANCELLED", AgentRuntimeStopSignal.NONE);
+        }
+        if ("TIMED_OUT".equals(plan.executionOutcome()) || "TIMED_OUT".equals(plan.taskOutcome())) {
+            return new PlanTerminal(false, false, AgentStopReason.TIMED_OUT,
+                    "TIMED_OUT", AgentRuntimeStopSignal.NONE);
+        }
+        boolean governedExecution = plan.steps() != null && plan.steps().stream()
+                .anyMatch(step -> step != null && "SANDBOX_EXECUTE".equals(step.type()));
+        if (governedExecution
+                && ("FAILED".equals(plan.executionOutcome()) || "UNAVAILABLE".equals(plan.executionOutcome()))) {
+            return new PlanTerminal(false, false, AgentStopReason.RUNTIME_FAILED,
+                    "FAILED", AgentRuntimeStopSignal.NONE);
+        }
+        if ("PARTIAL".equals(plan.taskOutcome())) {
             return new PlanTerminal(false, true, AgentStopReason.PLAN_PARTIAL,
                     "PARTIAL", AgentRuntimeStopSignal.NONE);
         }
         if ("COMPLETED".equals(plan.status())) {
             return new PlanTerminal(true, false, AgentStopReason.COMPLETED,
                     "SUCCESS", AgentRuntimeStopSignal.NONE);
-        }
-        if ("CANCELLED".equals(plan.executionOutcome())) {
-            return new PlanTerminal(false, false, AgentStopReason.CANCELLED,
-                    "CANCELLED", AgentRuntimeStopSignal.NONE);
-        }
-        if ("TIMED_OUT".equals(plan.executionOutcome())) {
-            return new PlanTerminal(false, false, AgentStopReason.TIMED_OUT,
-                    "TIMED_OUT", AgentRuntimeStopSignal.NONE);
         }
         return switch (plan.status()) {
             case "PAUSED" -> new PlanTerminal(false, false, AgentStopReason.PAUSED,

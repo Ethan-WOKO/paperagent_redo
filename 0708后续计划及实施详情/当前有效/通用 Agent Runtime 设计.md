@@ -636,7 +636,7 @@ ContextPackage
 
 ### 7.7 长期记忆
 
-长期记忆只读接入经过确认的内容，不自动记住全部会话。当前普通 Chat 已接入受治理长期记忆，但 Plan 的 Planner、步骤与最终总结尚未完整复用同一上下文，这是下一阶段必须消除的不一致。
+长期记忆只读接入经过确认的内容，不自动记住全部会话。当前 DIRECT、Planner 和 Plan 步骤已复用受治理上下文；受控 Final Synthesis 必须继续消费同一上下文，不能另建绕过记忆治理的提示链。
 
 长期记忆条目需要：
 
@@ -677,6 +677,15 @@ DIRECT、REACT、Planner、Plan 步骤和最终总结必须消费同一受信 Co
 ```text
 claim -> file/chunk/tool result -> version -> verification state
 ```
+
+当前证据底座同时保留类别与状态，不使用单一数字可信度：
+
+```text
+category: EXECUTION_FACT | VERIFIED_PROJECT_EVIDENCE | EXTERNAL_SOURCE | INFERENCE | UNVERIFIED_INPUT
+status:   VERIFIED | SUPPORTED | INFERRED | UNVERIFIED | CONFLICTING | STALE
+```
+
+结果语义分为三层：`executionOutcome` 记录 Provider/工具执行事实，`taskOutcome` 记录用户任务是否完成，`answerStatus` 记录最终回答的依据状态。receipt、stdout/stderr、Project hash 各自只在明确范围内提供证明；搜索摘要、模型推理和自由文本不能覆盖执行事实。
 
 它是防止虚假完成和无来源论文建议的基础。
 

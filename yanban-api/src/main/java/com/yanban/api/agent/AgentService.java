@@ -609,7 +609,7 @@ public class AgentService {
                         result.stopReason(),
                         result.outcome(),
                         result.candidateArtifact()
-                );
+                ).withFinalSynthesisInput(FinalSynthesisInputProjector.fromRuntime(result));
             }
 
             // A Plan may have a useful, persisted reflection while still being PARTIAL,
@@ -626,7 +626,8 @@ public class AgentService {
                 return new SendMessageResponse(
                         false, result.assistantContent(), result.steps(), result.errorMessage(), null,
                         sendResponseMessages(saved), debugPayload, projectEvidence(result),
-                        completionStatus(result), result.stopReason(), result.outcome(), result.candidateArtifact());
+                        completionStatus(result), result.stopReason(), result.outcome(), result.candidateArtifact())
+                        .withFinalSynthesisInput(FinalSynthesisInputProjector.fromRuntime(result));
             }
 
             return failTurn(
@@ -1099,7 +1100,7 @@ public class AgentService {
                 latencyMs,
                 modelSource
         );
-        return new SendMessageResponse(
+        SendMessageResponse response = new SendMessageResponse(
                 false,
                 assistantMessage.getContent(),
                 steps,
@@ -1108,6 +1109,8 @@ public class AgentService {
                 sendResponseMessages(saved),
                 debugPayload
         );
+        return runtimeResult == null ? response
+                : response.withFinalSynthesisInput(FinalSynthesisInputProjector.fromRuntime(runtimeResult));
     }
 
     private AgentDebugPayload finalizeDebugPayload(Long userId,

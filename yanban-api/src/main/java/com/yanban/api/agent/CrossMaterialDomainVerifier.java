@@ -42,6 +42,16 @@ public class CrossMaterialDomainVerifier {
                 ? List.of() : requirements.materialRequirements();
         DomainRuntimeFacts facts = result.domainRuntimeFacts();
         boolean hasPlanFacts = facts != null && !facts.planStepOutcomes().isEmpty();
+        boolean governedCodeExecution = requirements != null
+                && requirements.signals().contains(AgentStrategySignal.SANDBOX_EXECUTION_REQUIRED)
+                && !requirements.crossMaterial()
+                && requested.stream().allMatch(item -> item.material() == ResearchMaterialKind.CODE)
+                && FinalSynthesisInputProjector.hasVerifiedExecutionMaterial(result.finalSynthesisInput());
+        if (governedCodeExecution) {
+            // A bound code snapshot + request + successful provider receipt is complete for execution-fact
+            // verification. It does not claim broader code correctness or require unrelated research material.
+            return DomainVerification.notApplicable();
+        }
         if (requested.isEmpty() && !hasPlanFacts) {
             return DomainVerification.notApplicable();
         }

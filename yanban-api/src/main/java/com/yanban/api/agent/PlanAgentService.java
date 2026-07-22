@@ -3899,13 +3899,37 @@ public class PlanAgentService {
     }
 
     private AgentPlanResponse toResponse(AgentPlan plan, List<AgentPlanStep> planSteps) {
-        return AgentPlanResponse.from(plan, planSteps.stream()
+        AgentPlanResponse response = AgentPlanResponse.from(plan, planSteps.stream()
                 .map(step -> AgentPlanStepResponse.from(
                         step,
                         readStringList(step.getDependenciesJson()),
                         readStringList(step.getAllowedToolsJson())
                 ))
                 .toList());
+        String currentProjectVersion = null;
+        Map<String, String> currentHashes = Map.of();
+        try {
+            ProjectRuntimeContext context = ProjectPlanEnvelope.restore(
+                    objectMapper, plan.getRawPlanJson(), plan.getUserId());
+            if (context != null && projectService != null) {
+                ProjectManifestResponse manifest = projectService.manifest(plan.getUserId(), context.projectId());
+                if (manifest != null) {
+                    currentProjectVersion = manifest.version();
+                    currentHashes = manifest.files().stream().collect(java.util.stream.Collectors.toMap(
+                            com.yanban.api.project.ProjectFileEntry::path,
+                            com.yanban.api.project.ProjectFileEntry::sha256,
+                            (left, right) -> left,
+                            LinkedHashMap::new));
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Response projection cannot grant authority; unavailable currentness remains explicit in stored refs.
+        }
+        List<AgentPlanEvent> persistedEvents = events.findByPlanIdOrderByCreatedAtAsc(plan.getId());
+        FinalSynthesisInput synthesisInput = FinalSynthesisInputProjector.fromPlan(
+                objectMapper, plan.getStatus(), response.steps(), response.finalAnswer(), persistedEvents,
+                currentProjectVersion, currentHashes);
+        return response.withFinalSynthesisInput(synthesisInput);
     }
 
     private void recordEvent(Long planId, Long stepId, String type, Map<String, ?> payload) {
