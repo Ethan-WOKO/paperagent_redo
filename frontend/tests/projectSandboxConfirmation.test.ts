@@ -49,6 +49,12 @@ describe('Project sandbox confirmation', () => {
     expect(requiresSandboxConfirmation(plan('REVIEWING', 'SANDBOX_EXECUTE', 'COMPLETED'))).toBe(false);
   });
 
+  it('recognizes the persisted user-action placeholder without showing fixed English chat copy', () => {
+    expect(isSandboxConfirmationRequiredText(
+      'Plan execution is waiting for your confirmation or another required action.',
+    )).toBe(true);
+  });
+
   it('keeps the actionable confirmation card free of red internal failure strings', () => {
     const waiting = plan('REVIEWING');
     waiting.errorMessage = 'SANDBOX_CONFIRMATION_REQUIRED: DOMAIN_SANDBOX_POLICY: confirmation required';

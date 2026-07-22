@@ -437,11 +437,15 @@ Plan：
 
 ### 阶段 14：结果展示与状态降噪
 
-状态：`PENDING`
+状态：`COMPLETED`
 
 - 聊天区展示最终答案；Plan 卡默认折叠展示状态、进度、耗时和确认，内部 reason code、hash、receipt 细节进入执行详情。
 - 将执行结果、任务结果、回答依据和限制转换为一致的用户文案；Evidence 数量与分类含义可解释。
 - 保持项目、会话、文件三区域高度算法和单输入入口不变，完成桌面与窄屏真实浏览器验收。
+
+完成记录：Worker 22 保持唯一 canonical assistant 答复，将 Plan 终态整理为默认折叠的执行卡，并把 `executionOutcome / taskOutcome / answerStatus` 分别映射为执行结果、用户任务结果和回答依据。Evidence 按执行事实、当前 Project、已打开外部来源、搜索摘要/未知来源、推理、未验证、冲突和过期分组；reason code、hash、receipt、完整 stdout/stderr 与步骤原始记录进入可展开详情。真实浏览器覆盖 DIRECT、E2B Java 成功、非零失败、等待确认、取消、刷新/API 重启及桌面/390px 窄屏；三区保持 `25% / 25% / 50%`，单输入、单 Plan、单 assistant 和四个唯一检查器入口不变。主审另关闭了“正常答案只因出现 `DOMAIN_*` / `SANDBOX_*` 术语便被误删”的过度降噪 P1。
+
+退出条件：已满足。成功 receipt + `SUPPORTED` 不再显示为未通过；失败、超时和取消不会冒充成功；确认态保持可操作且不显示红色内部错误串；原始输出和证据限制仍可追溯；普通术语说明、代码块和日志不会被错误折叠。
 
 ### 阶段 15：编码任务闭环与固定验收集
 
@@ -749,9 +753,10 @@ Worker 开发
 
 ### Worker 22：结果展示与状态降噪
 
-状态：`PENDING`
+状态：`COMPLETED`
 
 - 对应阶段 14。只整理最终答复、Plan 卡和执行详情的用户展示，不改变三区域布局算法或后端权限。
+- 验收完成：74 个 TypeScript Vitest、11 个 memory 测试、6 个 markdown 测试、`vue-tsc`、生产构建和 `git diff --check` 通过；真实桌面/窄屏旅程覆盖成功、失败、确认、取消、刷新和重启恢复。主审关闭一项过宽内部错误识别 P1，最终仅结构化失败 envelope 会被折叠。
 
 ### Worker 23：编码任务闭环与固定验收集
 

@@ -665,6 +665,12 @@ Plan 终态只允许一次只读 Final Synthesis。服务端先固定 `execution
 
 模型返回空文本、工具调用、超时、异常或与权威执行事实冲突时，Runtime 使用确定性回退。正常终态可以调用模型一次；GET/list、刷新和重启缺口只复用已持久化 canonical answer，缺失时生成确定性回退，不再次调用模型。所有路径都原地更新同一个 `plan-handoff:<planId>` assistant，禁止第二条最终回答和旧 `/plan` 会话写入。
 
+### 7.7.2 结果展示契约
+
+聊天区只展示唯一 canonical assistant 的用户答案。Plan 卡是过程与状态入口，终态默认折叠，等待沙箱确认时自动展开并保留确认/拒绝操作。展示层必须分别表达 `executionOutcome`、`taskOutcome` 和 `answerStatus`，不能用回答依据状态覆盖执行事实，也不能把成功 receipt + `SUPPORTED` 写成“未通过最终校验”。
+
+Evidence 仅按既有类别与状态分组，不引入数字评分。内部 reason code、hash、receipt id、步骤原始记录与完整 stdout/stderr 放入可展开执行详情；失败、超时、取消和等待确认使用简洁用户文案。降噪只识别结构化内部失败 envelope，不能因为正常答案、代码或日志中出现 `DOMAIN_*`、`SANDBOX_*` 等术语便删除用户答案。展示层不得新增第二答案、第二状态源、重复检查器入口或 Chat/Plan 双输入。
+
 ### 7.8 任务工作区和证据账本
 
 每个任务维护独立工作区逻辑视图：

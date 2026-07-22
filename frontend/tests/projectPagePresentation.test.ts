@@ -18,7 +18,9 @@ describe('Project page presentation contract', () => {
     expect(source).toContain("import { ChevronRightIcon } from 'naive-ui/es/_internal/icons';");
     expect(source.match(/<ChevronRightIcon \/>/g)?.length).toBeGreaterThanOrEqual(7);
     expect(source).toContain('class="project-chevron-button"');
-    expect(source).toContain(':aria-label="sidebarSections.projects ? \'Expand Projects\' : \'Collapse Projects\'"');
+    expect(source).toContain(":aria-label=\"sidebarSections.projects ? t('project.page.expandProjects') : t('project.page.collapseProjects')\"");
+    expect(source).toContain(":aria-label=\"sidebarSections.conversations ? t('project.page.expandConversations') : t('project.page.collapseConversations')\"");
+    expect(source).toContain(":aria-label=\"sidebarSections.files ? t('project.page.expandFiles') : t('project.page.collapseFiles')\"");
     expect(source).not.toMatch(/sidebarSections\.[a-z]+ \? '>' : 'v'/);
     expect(source).not.toContain('&gt;</span>');
   });
@@ -34,10 +36,10 @@ describe('Project page presentation contract', () => {
   it('renders Plans as collapsed execution cards without a second final answer', () => {
     expect(source).toContain('class="project-execution-card__details"');
     expect(source).not.toContain('class="project-execution-card__details" open');
-    expect(source).toContain('Execution details');
+    expect(source).toContain("t('project.result.details')");
     expect(source).toContain('planProgressLabel(item.plan)');
-    expect(source).toContain('planFailureReason(item.plan)');
-    expect(source).toContain('Confirm and run in sandbox');
+    expect(source).toContain('planUserStatus(item.plan)');
+    expect(source).toContain("t('project.result.confirm')");
     expect(source).not.toContain('Final step synthesis');
     expect(source).not.toContain('projectPlanFinalAnswer');
   });

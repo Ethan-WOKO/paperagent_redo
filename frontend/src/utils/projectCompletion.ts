@@ -37,7 +37,58 @@ export function withoutInternalRuntimeCodes(content?: string | null) {
 }
 
 export function isSandboxConfirmationRequiredText(content?: string | null) {
-  return Boolean(content && /\bSANDBOX_CONFIRMATION_REQUIRED\b/i.test(content));
+  return Boolean(content && (/\bSANDBOX_CONFIRMATION_REQUIRED\b/i.test(content)
+    || /Plan execution is waiting for your confirmation or another required action\.?/i.test(content)));
+}
+
+export function isInternalRuntimeFailureText(content?: string | null) {
+  if (!content) return false;
+  const value = content.trim();
+  const internalCode = '(?:DOMAIN|SANDBOX|UNKNOWN_COMPLETION|DEPENDENCY)_[A-Z0-9_]+';
+  const plannerFailure = /^(?:Project Plan creation failed\s*\[traceId=[^\]]+\]\s*:\s*)?Planner failed\s*\[[A-Z0-9_]+\]\s*:/i;
+  const internalCodeOnly = new RegExp(`^${internalCode}$`, 'i');
+  const codeAndTraceEnvelope = new RegExp(`^(?:code\\s*[:=]\\s*)?${internalCode}\\s*(?:[:;|])[^\\r\\n]*\\btraceId\\s*=\\s*\\S+\\s*$`, 'i');
+  const failureAndTraceEnvelope = /^(?:Project Plan creation failed|Request failed|Internal (?:server )?error|Unexpected runtime failure)\b[^\r\n]*\btraceId\s*=\s*\S+\s*$/i;
+  const traceOnly = /^traceId\s*=\s*\S+\s*$/i;
+  return plannerFailure.test(value)
+    || internalCodeOnly.test(value)
+    || codeAndTraceEnvelope.test(value)
+    || failureAndTraceEnvelope.test(value)
+    || traceOnly.test(value);
+}
+
+export function projectAssistantPresentation(content: string, requestFailedCopy: string) {
+  const markers = [
+    '\n\n受支持的解释与推理：\n',
+    '\n\nSupported interpretation and inference:\n',
+    '\n\n结果摘要：\n',
+    '\n\nResult summary:\n',
+  ];
+  const limitations = ['\n\n限制与适用范围：\n', '\n\nLimitations and scope:\n'];
+  const mainMarker = markers
+    .map((marker) => ({ marker, index: content.indexOf(marker) }))
+    .filter((item) => item.index >= 0)
+    .sort((left, right) => left.index - right.index)[0];
+
+  if (mainMarker) {
+    const bodyStart = mainMarker.index + mainMarker.marker.length;
+    const limitation = limitations
+      .map((marker) => ({ marker, index: content.indexOf(marker, bodyStart) }))
+      .filter((item) => item.index >= 0)
+      .sort((left, right) => left.index - right.index)[0];
+    const bodyEnd = limitation?.index ?? content.length;
+    const body = content.slice(bodyStart, bodyEnd).trim();
+    const technical = [
+      content.slice(0, mainMarker.index).trim(),
+      limitation ? content.slice(limitation.index + limitation.marker.length).trim() : '',
+    ].filter(Boolean).join('\n\n');
+    return { content: body || requestFailedCopy, technicalContent: technical || undefined };
+  }
+
+  if (isInternalRuntimeFailureText(content)) {
+    return { content: requestFailedCopy, technicalContent: content };
+  }
+  return { content, technicalContent: undefined };
 }
 
 export function projectPlanFailureReason(plan: AgentPlanResponse) {

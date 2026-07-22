@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-22
 >
-> 当前工程基线：GitHub `origin/main` 最新提交（Worker 20 已进入主线；Worker 21 随本次发布进入主线）
+> 当前工程基线：GitHub `origin/main` 最新提交（Worker 20 至 Worker 22 已进入主线）
 >
 > 规则：先读“当前有效”，需要追溯证据时再读“历史归档”。历史文档不得覆盖当前权威设计和执行计划。
 
@@ -31,13 +31,15 @@
 
 ## 当前下一步
 
-Worker 16 至 Worker 19 已完成第一轮体验与可靠性收口。Worker 20 已完成第二轮的结果语义和证据底座；Worker 21 已完成受控 Final Synthesis：Plan 终态会基于用户问题、受信代码/步骤结果、长期偏好和权威 receipt 生成唯一最终回答，模型不可用或恢复缺口使用可读的确定性回退。
+Worker 16 至 Worker 19 已完成第一轮体验与可靠性收口。Worker 20 已完成第二轮的结果语义和证据底座；Worker 21 已完成受控 Final Synthesis；Worker 22 已完成结果展示与状态降噪：聊天区保留唯一最终回答，Plan 卡默认折叠，三层结果与 Evidence 分类可解释，内部记录和原始输出在详情中按需展开。
 
-> 当前第二轮按 Worker 20 至 Worker 23 串行推进。Worker 20、Worker 21 已完成，下一步由 Worker 22 整理结果展示，再由 Worker 23 完成编码闭环与固定真实验收集；不自动启动自由多 Agent 或 Pro 模式。
+> 当前第二轮按 Worker 20 至 Worker 23 串行推进。Worker 20、Worker 21、Worker 22 已完成，下一步由 Worker 23 完成编码闭环与固定真实验收集；不自动启动自由多 Agent 或 Pro 模式。
 
 Worker 20 的真实 API -> Broker -> E2B 旅程已覆盖 Java 成功、非零失败、取消和 DIRECT；Windows Broker 只额外继承经探针证明必要的 `SystemRoot`，不继承 PATH 或业务敏感环境。
 
 Worker 21 的真实 API -> Broker -> E2B 旅程已覆盖 Java 成功、非零失败、中文偏好、恶意 stdout 数据边界、刷新与 API 重启恢复。最终答复只保留一个 assistant 和一个 canonical answer；读取恢复不调用模型，并发发布在数据库锁内收敛到首个权威结果。
+
+Worker 22 的真实浏览器旅程已覆盖 DIRECT、E2B Java 成功、非零失败、等待确认、取消、Evidence 多状态、刷新与 API 重启恢复。执行结果、用户任务结果与回答依据分别展示；Plan 终态默认折叠，完整 stdout/stderr 和技术记录仍可展开；桌面和 390px 窄屏无横向溢出，三区高度算法与单输入入口不变。
 
 执行原则：Project 的 LLM Router 提出 `DIRECT / PLAN_EXECUTE`，Runtime 只校验 capability、权限、工具、沙箱确认与预算并执行；普通非 Project Chat 暂时保留 ReAct。每个阶段串行开发、独立审查、真实用户旅程验收后再进入下一阶段。
 

@@ -3,18 +3,18 @@
     <main class="project-workspace">
       <div class="project-workspace__header-shell" :class="{ 'project-workspace__header-shell--collapsed': projectHeaderCollapsed }">
         <header class="project-workspace__header" :class="{ 'project-workspace__header--collapsed': projectHeaderCollapsed }">
-          <h1>{{ activeProject?.name || 'Projects' }}</h1>
+          <h1>{{ activeProject?.name || t('project.page.projects') }}</h1>
           <NSpace :size="8" wrap>
-            <NTag v-if="activeProject" size="small" type="success">READ_ONLY</NTag>
-            <NButton size="small" secondary :loading="loading.projects" @click="loadProjects">Refresh</NButton>
-            <NButton v-if="activeProject" size="small" secondary type="error" :disabled="loading.send" @click="deleteModalOpen = true">Delete Project</NButton>
-            <NButton size="small" type="primary" @click="openCreateProjectModal">New Project</NButton>
+            <NTag v-if="activeProject" size="small" type="success">{{ t('project.page.readOnly') }}</NTag>
+            <NButton size="small" secondary :loading="loading.projects" @click="loadProjects">{{ t('project.page.refresh') }}</NButton>
+            <NButton v-if="activeProject" size="small" secondary type="error" :disabled="loading.send" @click="deleteModalOpen = true">{{ t('project.page.deleteProject') }}</NButton>
+            <NButton size="small" type="primary" @click="openCreateProjectModal">{{ t('project.page.newProject') }}</NButton>
           </NSpace>
-          <button type="button" class="workspace-hero__collapse" title="Collapse Project header" aria-label="Collapse Project header" @click="setProjectHeaderCollapsed(true)">
+          <button type="button" class="workspace-hero__collapse" :title="t('project.page.collapseHeader')" :aria-label="t('project.page.collapseHeader')" @click="setProjectHeaderCollapsed(true)">
             <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
           </button>
         </header>
-        <button v-if="projectHeaderCollapsed" type="button" class="workspace-hero__restore" title="Expand Project header" aria-label="Expand Project header" @click="setProjectHeaderCollapsed(false)">
+        <button v-if="projectHeaderCollapsed" type="button" class="workspace-hero__restore" :title="t('project.page.expandHeader')" :aria-label="t('project.page.expandHeader')" @click="setProjectHeaderCollapsed(false)">
           <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
         </button>
       </div>
@@ -23,10 +23,10 @@
 
       <section v-if="loading.projects" class="project-workspace__state">
         <NSpin size="small" />
-        Loading Projects...
+        {{ t('project.page.loadingProjects') }}
       </section>
       <section v-else-if="projects.length === 0" class="project-workspace__state">
-        <NEmpty description="No Projects yet. Bind an existing read-only Project folder." />
+        <NEmpty :description="t('project.page.noProjects')" />
       </section>
 
       <section v-else class="project-workspace__grid">
@@ -34,10 +34,10 @@
           <section class="project-sidebar-section project-sidebar-section--projects" :class="{ 'project-sidebar-section--collapsed': sidebarSections.projects }">
             <div class="project-sidebar-section__toggle">
               <span>
-                <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.projects }" :aria-expanded="!sidebarSections.projects" :aria-label="sidebarSections.projects ? 'Expand Projects' : 'Collapse Projects'" :title="sidebarSections.projects ? 'Expand Projects' : 'Collapse Projects'" @click="toggleSidebarSection('projects')">
+                <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.projects }" :aria-expanded="!sidebarSections.projects" :aria-label="sidebarSections.projects ? t('project.page.expandProjects') : t('project.page.collapseProjects')" :title="sidebarSections.projects ? t('project.page.expandProjects') : t('project.page.collapseProjects')" @click="toggleSidebarSection('projects')">
                   <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
                 </button>
-                <strong>Projects</strong>
+                <strong>{{ t('project.page.projects') }}</strong>
               </span>
               <span class="project-panel__count">{{ projects.length }}</span>
             </div>
@@ -52,14 +52,14 @@
           <section class="project-sidebar-section project-sidebar-section--chats" :class="{ 'project-sidebar-section--collapsed': sidebarSections.conversations }">
             <div class="project-sidebar-section__toggle">
               <span>
-                <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.conversations }" :aria-expanded="!sidebarSections.conversations" :aria-label="sidebarSections.conversations ? 'Expand Conversations' : 'Collapse Conversations'" :title="sidebarSections.conversations ? 'Expand Conversations' : 'Collapse Conversations'" @click="toggleSidebarSection('conversations')">
+                <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.conversations }" :aria-expanded="!sidebarSections.conversations" :aria-label="sidebarSections.conversations ? t('project.page.expandConversations') : t('project.page.collapseConversations')" :title="sidebarSections.conversations ? t('project.page.expandConversations') : t('project.page.collapseConversations')" @click="toggleSidebarSection('conversations')">
                   <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
                 </button>
-                <strong>Conversations</strong>
+                <strong>{{ t('project.page.conversations') }}</strong>
               </span>
               <span class="project-panel__count">{{ projectSessions.length }}</span>
             </div>
-            <div v-show="!sidebarSections.conversations" class="project-conversation-history project-conversation-history--sidebar" aria-label="Project conversation history">
+            <div v-show="!sidebarSections.conversations" class="project-conversation-history project-conversation-history--sidebar" :aria-label="t('project.page.conversationHistory')">
               <div
                 v-for="session in projectSessions"
                 :key="session.id"
@@ -73,10 +73,10 @@
               >
                 <span>{{ session.title || `Conversation #${session.id}` }}</span>
                 <NDropdown trigger="click" :options="sessionMenuOptions" @select="(key) => handleSessionMenuSelect(key, session)">
-                  <button type="button" class="project-conversation-item__more" aria-label="Conversation actions" @click.stop>...</button>
+                  <button type="button" class="project-conversation-item__more" :aria-label="t('project.page.conversationActions')" @click.stop>...</button>
                 </NDropdown>
               </div>
-              <small v-if="loading.sessions">Loading...</small>
+              <small v-if="loading.sessions">{{ t('project.page.loading') }}</small>
             </div>
           </section>
 
@@ -84,17 +84,17 @@
             <div class="project-sidebar-section__header">
               <div class="project-sidebar-section__toggle">
                 <span>
-                  <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.files }" :aria-expanded="!sidebarSections.files" :aria-label="sidebarSections.files ? 'Expand Files' : 'Collapse Files'" :title="sidebarSections.files ? 'Expand Files' : 'Collapse Files'" @click="toggleSidebarSection('files')">
+                  <button type="button" class="project-chevron-button" :class="{ 'project-chevron-button--expanded': !sidebarSections.files }" :aria-expanded="!sidebarSections.files" :aria-label="sidebarSections.files ? t('project.page.expandFiles') : t('project.page.collapseFiles')" :title="sidebarSections.files ? t('project.page.expandFiles') : t('project.page.collapseFiles')" @click="toggleSidebarSection('files')">
                     <NIcon aria-hidden="true"><ChevronRightIcon /></NIcon>
                   </button>
-                  <strong>Files</strong>
+                  <strong>{{ t('project.page.files') }}</strong>
                 </span>
               </div>
               <NSpace class="project-panel__title-actions" :size="4" align="center">
                 <span class="project-panel__count">{{ manifest?.files.length || 0 }}</span>
                 <template v-if="!sidebarSections.files">
-                  <NButton size="tiny" quaternary :disabled="directoryPaths.length === 0" title="Expand all folders" @click="expandAllDirectories">Expand</NButton>
-                  <NButton size="tiny" quaternary :disabled="directoryPaths.length === 0" title="Collapse all folders" @click="collapseAllDirectories">Collapse</NButton>
+                  <NButton size="tiny" quaternary :disabled="directoryPaths.length === 0" :title="t('project.page.expandAllFolders')" @click="expandAllDirectories">{{ t('project.page.expand') }}</NButton>
+                  <NButton size="tiny" quaternary :disabled="directoryPaths.length === 0" :title="t('project.page.collapseAllFolders')" @click="collapseAllDirectories">{{ t('project.page.collapse') }}</NButton>
                 </template>
               </NSpace>
             </div>
@@ -118,12 +118,12 @@
                 </span>
                 <small v-if="!node.directory">{{ shortHash(node.sha256) }}</small>
               </button>
-              <NEmpty v-if="manifest && manifest.files.length === 0" size="small" description="No readable files" />
+              <NEmpty v-if="manifest && manifest.files.length === 0" size="small" :description="t('project.page.noReadableFiles')" />
             </div>
 
             <div v-show="!sidebarSections.files" class="project-search">
-              <NInput v-model:value="searchQuery" size="small" placeholder="Search Project" @keyup.enter="runSearch" />
-              <NButton size="small" secondary :loading="loading.search" :disabled="!activeProject" @click="runSearch">Search</NButton>
+              <NInput v-model:value="searchQuery" size="small" :placeholder="t('project.page.searchProject')" @keyup.enter="runSearch" />
+              <NButton size="small" secondary :loading="loading.search" :disabled="!activeProject" @click="runSearch">{{ t('project.page.search') }}</NButton>
             </div>
 
             <div v-if="!sidebarSections.files && searchResults.length" class="project-search-results">
@@ -137,20 +137,20 @@
 
         <section class="project-panel project-panel--main">
           <div class="project-tabs">
-            <strong class="project-tabs__title">Conversation</strong>
+            <strong class="project-tabs__title">{{ t('project.page.conversation') }}</strong>
             <div class="project-tabs__actions">
-              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'preview' }" @click="toggleInspector('preview')">Preview</button>
-              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'evidence' }" @click="toggleInspector('evidence')">Evidence <span>{{ evidence.length }}</span></button>
-              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'changes' }" @click="toggleInspector('changes')">Changes <span>{{ candidates.length }}</span></button>
-              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'versions' }" @click="toggleInspector('versions')">Versions <span>{{ revisions.length }}</span></button>
-              <NButton size="tiny" quaternary :disabled="loading.send" @click="startNewConversation">New conversation</NButton>
+              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'preview' }" @click="toggleInspector('preview')">{{ t('project.page.preview') }}</button>
+              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'evidence' }" @click="toggleInspector('evidence')">{{ t('project.page.evidence') }} <span>{{ evidence.length }}</span></button>
+              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'changes' }" @click="toggleInspector('changes')">{{ t('project.page.changes') }} <span>{{ candidates.length }}</span></button>
+              <button class="project-utility-chip" :class="{ active: inspectorOpen && inspectorTab === 'versions' }" @click="toggleInspector('versions')">{{ t('project.page.versions') }} <span>{{ revisions.length }}</span></button>
+              <NButton size="tiny" quaternary :disabled="loading.send" @click="startNewConversation">{{ t('project.page.newConversation') }}</NButton>
             </div>
           </div>
 
           <section v-if="inspectorOpen" class="project-inspector">
             <div class="project-inspector__tabs">
-              <strong>Inspector</strong>
-              <button type="button" class="project-inspector__close" @click="inspectorOpen = false">Hide</button>
+              <strong>{{ t('project.page.inspector') }}</strong>
+              <button type="button" class="project-inspector__close" @click="inspectorOpen = false">{{ t('project.page.hideInspector') }}</button>
             </div>
 
             <div class="project-inspector__body">
@@ -393,6 +393,10 @@
                   <div v-else class="project-message" :class="`project-message--${item.message.role}`">
                     <small>{{ item.message.role === 'user' ? 'You' : 'Project Agent' }}</small>
                     <MarkdownMessage :content="item.message.content || (item.message.pending ? 'Thinking...' : '')" :variant="item.message.role === 'assistant' ? 'project' : 'default'" />
+                    <details v-if="item.message.technicalContent" class="project-message-technical">
+                      <summary>{{ t('project.result.technicalDetails') }}</summary>
+                      <pre>{{ item.message.technicalContent }}</pre>
+                    </details>
                   </div>
                 </div>
 
@@ -402,31 +406,107 @@
                   class="project-message-row project-message-row--process"
                 >
                   <article class="project-execution-card" :class="{ 'project-execution-card--selected': selectedPlan?.id === item.plan.id }">
-                    <details class="project-execution-card__details">
-                      <summary title="Toggle execution details" @click="selectPlan(item.plan)">
+                    <details class="project-execution-card__details" :open="requiresSandboxConfirmation(item.plan) || undefined">
+                      <summary :title="t('project.result.details')" @click="selectPlan(item.plan)">
                         <NIcon class="project-execution-card__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
                         <span class="project-execution-card__heading">
-                          <strong>Execution plan</strong>
+                          <strong>{{ t('project.result.plan') }}</strong>
                           <span>{{ item.plan.summary || abbreviateText(item.plan.goal, 100) }}</span>
                         </span>
                         <span class="project-execution-card__meta">
-                          <NTag size="tiny" :type="planTagType(projectPlanExecutionOutcome(item.plan))">{{ planDisplayStatus(item.plan) }}</NTag>
+                          <NTag size="tiny" :type="planUserStatus(item.plan).tone">{{ t(planUserStatus(item.plan).key) }}</NTag>
                           <span>{{ planProgressLabel(item.plan) }}</span>
-                          <span>{{ formatPlanElapsed(planElapsedMs(item.plan)) || '0s' }}</span>
+                          <span>{{ t('project.result.duration', { duration: formatPlanElapsed(planElapsedMs(item.plan)) }) }}</span>
                         </span>
                       </summary>
 
                       <div class="project-execution-card__body">
-                        <div class="project-execution-card__details-title">Execution details</div>
+                        <div class="project-execution-card__details-title">{{ t('project.result.details') }}</div>
                         <p v-if="item.plan.summary" class="project-execution-card__summary-copy">{{ item.plan.summary }}</p>
+
+                        <dl class="project-result-layers">
+                          <div>
+                            <dt>{{ t('project.result.execution') }}</dt>
+                            <dd><NTag size="tiny" :type="planExecutionResult(item.plan).tone">{{ t(planExecutionResult(item.plan).key) }}</NTag></dd>
+                          </div>
+                          <div>
+                            <dt>{{ t('project.result.task') }}</dt>
+                            <dd><NTag size="tiny" :type="planTaskResult(item.plan).tone">{{ t(planTaskResult(item.plan).key) }}</NTag></dd>
+                          </div>
+                          <div>
+                            <dt>{{ t('project.result.answerBasis') }}</dt>
+                            <dd><NTag size="tiny" :type="planAnswerResult(item.plan).tone">{{ t(planAnswerResult(item.plan).key) }}</NTag></dd>
+                          </div>
+                        </dl>
+
+                        <details v-if="item.plan.finalSynthesisInput" class="project-result-evidence">
+                          <summary>
+                            <NIcon class="project-result-evidence__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
+                            <strong>{{ t('project.result.evidenceTitle') }}</strong>
+                            <span>{{ t('project.result.evidenceCount', { count: item.plan.finalSynthesisInput.evidence.length }) }}</span>
+                          </summary>
+                          <div class="project-result-evidence__body">
+                            <p v-if="planEvidenceGroups(item.plan).length === 0" class="project-panel__hint">{{ t('project.result.evidence.empty') }}</p>
+                            <details v-for="group in planEvidenceGroups(item.plan)" :key="group.group" class="project-result-evidence-group">
+                              <summary>
+                                <NIcon class="project-result-evidence__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
+                                <span>{{ t(group.key) }}</span>
+                                <NTag size="tiny" :type="group.tone">{{ group.evidence.length }}</NTag>
+                              </summary>
+                              <div class="project-result-evidence-group__body">
+                                <section v-for="entry in group.evidence" :key="entry.id" class="project-result-evidence-entry">
+                                  <header>
+                                    <span>{{ entry.statement || t('project.result.statementMissing') }}</span>
+                                    <NTag size="tiny" :type="answerStatusResult(entry.status).tone">{{ t(answerStatusResult(entry.status).key) }}</NTag>
+                                  </header>
+
+                                  <details v-if="hasTechnicalEvidenceFields(entry)" class="project-result-technical">
+                                    <summary>{{ t('project.result.technicalDetails') }}</summary>
+                                    <dl>
+                                      <template v-if="entry.id"><dt>{{ t('project.result.field.evidenceId') }}</dt><dd>{{ entry.id }}</dd></template>
+                                      <template v-if="entry.sourceType"><dt>{{ t('project.result.field.source') }}</dt><dd>{{ entry.sourceType }}</dd></template>
+                                      <template v-if="entry.path"><dt>{{ t('project.result.field.path') }}</dt><dd>{{ entry.path }}</dd></template>
+                                      <template v-if="entry.projectVersion"><dt>{{ t('project.result.field.projectVersion') }}</dt><dd>{{ entry.projectVersion }}</dd></template>
+                                      <template v-if="entry.hash"><dt>{{ t('project.result.field.hash') }}</dt><dd>{{ entry.hash }}</dd></template>
+                                      <template v-if="entry.basisRefs.length"><dt>{{ t('project.result.field.basisRefs') }}</dt><dd>{{ entry.basisRefs.join(', ') }}</dd></template>
+                                      <template v-if="entry.executionFact?.provider"><dt>{{ t('project.result.field.provider') }}</dt><dd>{{ entry.executionFact.provider }}</dd></template>
+                                      <template v-if="entry.executionFact?.status"><dt>{{ t('project.result.field.status') }}</dt><dd>{{ entry.executionFact.status }}</dd></template>
+                                      <template v-if="entry.executionFact?.exitCode != null"><dt>{{ t('project.result.field.exitCode') }}</dt><dd>{{ entry.executionFact.exitCode }}</dd></template>
+                                      <template v-if="entry.executionFact?.command.length"><dt>{{ t('project.result.field.command') }}</dt><dd>{{ entry.executionFact.command.join(' ') }}</dd></template>
+                                    </dl>
+                                  </details>
+
+                                  <details v-if="entry.executionFact" class="project-result-raw-output">
+                                    <summary>{{ t('project.result.rawStdout') }}</summary>
+                                    <pre>{{ entry.executionFact.stdout ?? t('project.result.emptyOutput') }}</pre>
+                                  </details>
+                                  <details v-if="entry.executionFact" class="project-result-raw-output">
+                                    <summary>{{ t('project.result.rawStderr') }}</summary>
+                                    <pre>{{ entry.executionFact.stderr ?? t('project.result.emptyOutput') }}</pre>
+                                  </details>
+                                </section>
+                              </div>
+                            </details>
+
+                            <details class="project-result-verification">
+                              <summary>{{ t('project.result.verificationScope') }}</summary>
+                              <dl>
+                                <dt>{{ t('project.result.verifiedItems') }}</dt>
+                                <dd>{{ item.plan.finalSynthesisInput.verificationScope.verifies.join('；') || t('project.result.noItems') }}</dd>
+                                <dt>{{ t('project.result.limitations') }}</dt>
+                                <dd>{{ item.plan.finalSynthesisInput.verificationScope.limitations.join('；') || t('project.result.noItems') }}</dd>
+                              </dl>
+                            </details>
+                          </div>
+                        </details>
 
                         <details v-for="step in item.plan.steps" :key="`${item.plan.id}-${step.id}`" class="project-plan-step-details">
                           <summary @click="selectPlan(item.plan)">
                             <NIcon class="project-plan-step-details__chevron" aria-hidden="true"><ChevronRightIcon /></NIcon>
                             <span class="project-plan-step-message__copy">
                               <small>
-                                Step {{ step.sortOrder }}
-                                <NTag size="tiny" :type="planTagType(step.status)">{{ step.status }}</NTag>
+                                {{ t('project.result.step', { number: step.sortOrder }) }}
+                                <NTag size="tiny" :type="planTagType(step.status)">{{ planStepStatusLabel(step.status) }}</NTag>
                               </small>
                               <strong class="project-plan-step-message__title">{{ step.title || step.stepKey }}</strong>
                               <span class="project-plan-step-message__preview">{{ planStepPreviewLine(step) }}</span>
@@ -434,6 +514,11 @@
                           </summary>
                           <div class="project-plan-step-details__body">
                             <MarkdownMessage :content="planStepMessageContent(step)" variant="project" />
+                            <details v-if="step.result || step.errorMessage" class="project-plan-step-record">
+                              <summary>{{ t('project.result.stepRecord') }}</summary>
+                              <pre v-if="step.result">{{ step.result }}</pre>
+                              <pre v-if="step.errorMessage">{{ step.errorMessage }}</pre>
+                            </details>
                           </div>
                         </details>
 
@@ -446,7 +531,7 @@
                           :disabled="cancellingPlanId !== null"
                           @click.stop="cancelProjectPlan(item.plan)"
                         >
-                          Cancel running plan
+                          {{ t('project.result.cancelRunning') }}
                         </NButton>
                       </div>
                     </details>
@@ -455,10 +540,10 @@
                       v-if="requiresSandboxConfirmation(item.plan)"
                       class="project-sandbox-confirmation"
                       type="warning"
-                      title="Sandbox execution requires confirmation"
+                      :title="t('project.result.confirmTitle')"
                     >
                       <p>
-                        Paused before {{ sandboxConfirmationStepCount(item.plan) }} code-execution step(s). Network is disabled by default; only approved commands and Project-relative files are available.
+                        {{ t('project.result.confirmCopy', { count: sandboxConfirmationStepCount(item.plan) }) }}
                       </p>
                       <NButton
                         type="warning"
@@ -467,7 +552,7 @@
                         :disabled="executingSandboxPlanId !== null"
                         @click.stop="confirmSandboxExecution(item.plan)"
                       >
-                        Confirm and run in sandbox
+                        {{ t('project.result.confirm') }}
                       </NButton>
                       <NButton
                         class="project-sandbox-cancel"
@@ -476,14 +561,9 @@
                         :disabled="cancellingPlanId !== null || executingSandboxPlanId !== null"
                         @click.stop="cancelProjectPlan(item.plan)"
                       >
-                        Reject and cancel plan
+                        {{ t('project.result.reject') }}
                       </NButton>
                     </NAlert>
-
-                    <p v-if="planFailureReason(item.plan)" class="project-execution-card__failure">
-                      <strong>Failure reason</strong>
-                      <span>{{ planFailureReason(item.plan) }}</span>
-                    </p>
                   </article>
                 </div>
               </template>
@@ -633,14 +713,22 @@ import { useAuthStore } from '@/stores/auth';
 import { useI18n } from '@/composables/useI18n';
 import {
   isControlledProjectPartial,
+  isInternalRuntimeFailureText,
   isSandboxConfirmationRequiredText,
-  projectPlanDisplayStatus,
-  projectPlanExecutionOutcome,
-  projectPlanFailureReason,
+  projectAssistantPresentation,
   withoutInternalRuntimeCodes,
   withoutInternalProjectEvidenceRefs,
 } from '@/utils/projectCompletion';
 import { requiresSandboxConfirmation, sandboxConfirmationStepCount } from '@/utils/projectSandboxConfirmation';
+import {
+  answerStatusPresentation,
+  effectivePlanResult,
+  executionOutcomePresentation,
+  groupSynthesisEvidence,
+  hasTechnicalEvidenceFields,
+  planUserStatusPresentation,
+  taskOutcomePresentation,
+} from '@/utils/projectResultPresentation';
 import { candidateValidationCanApply } from '@/utils/candidateValidationCanApply';
 
 type ProjectChatRole = 'user' | 'assistant' | 'process';
@@ -655,6 +743,7 @@ interface ProjectChatMessage {
   processDone?: boolean;
   processStartedAt?: number;
   processElapsedMs?: number;
+  technicalContent?: string;
   createdAt?: string;
 }
 
@@ -688,7 +777,7 @@ interface CandidateReviewItem {
 }
 
 const authStore = useAuthStore();
-const { isEnglish } = useI18n();
+const { isEnglish, t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const projects = ref<ProjectSummaryResponse[]>([]);
@@ -942,6 +1031,9 @@ function apiError(value: unknown) {
   }
   const code = item.response?.data?.code;
   const traceId = item.response?.headers?.['x-trace-id'];
+  if (isInternalRuntimeFailureText([message, code, traceId ? `traceId=${traceId}` : ''].filter(Boolean).join(' '))) {
+    return t('project.result.requestFailed');
+  }
   const details = [code, traceId ? `traceId=${traceId}` : null].filter(Boolean).join(', ');
   return `${message || 'Request failed.'}${details ? ` (${details})` : ''}`;
 }
@@ -993,10 +1085,6 @@ function handleProjectFolderChange(event: Event) {
 function resetProjectFolderSelection() {
   projectFolderFiles.value = [];
   if (directoryInput.value) directoryInput.value.value = '';
-}
-
-function planDisplayStatus(plan: AgentPlanResponse) {
-  return projectPlanDisplayStatus(plan, isEnglish.value);
 }
 
 function planTagType(status: string): 'default' | 'success' | 'warning' | 'error' | 'info' {
@@ -1096,28 +1184,59 @@ function parseTimestamp(value?: string | null) {
 }
 
 function formatPlanElapsed(value: number | null) {
-  if (value == null) return '';
+  if (value == null) return t('project.result.duration.seconds', { seconds: 0 });
   const totalSeconds = Math.max(0, Math.round(value / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  if (minutes <= 0) return `${seconds}s`;
-  return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+  if (minutes <= 0) return t('project.result.duration.seconds', { seconds });
+  return t('project.result.duration.minutes', { minutes, seconds });
 }
 
 function planProgressLabel(plan: AgentPlanResponse) {
   const completed = plan.steps.filter((step) => ['COMPLETED', 'SKIPPED'].includes(step.status.toUpperCase())).length;
-  return `${completed}/${plan.steps.length} steps`;
+  return t('project.result.progress', { completed, total: plan.steps.length });
 }
 
-const planFailureReason = projectPlanFailureReason;
+function planUserStatus(plan: AgentPlanResponse) {
+  return planUserStatusPresentation(plan, requiresSandboxConfirmation(plan));
+}
+
+function planExecutionResult(plan: AgentPlanResponse) {
+  return executionOutcomePresentation(effectivePlanResult(plan).executionOutcome);
+}
+
+function planTaskResult(plan: AgentPlanResponse) {
+  return taskOutcomePresentation(effectivePlanResult(plan).taskOutcome);
+}
+
+function planAnswerResult(plan: AgentPlanResponse) {
+  return answerStatusPresentation(effectivePlanResult(plan).answerStatus);
+}
+
+function answerStatusResult(status: AgentPlanResponse['answerStatus']) {
+  return answerStatusPresentation(status);
+}
+
+function planEvidenceGroups(plan: AgentPlanResponse) {
+  return groupSynthesisEvidence(plan.finalSynthesisInput?.evidence || []);
+}
+
+function planStepStatusLabel(value: string) {
+  const status = value.toUpperCase();
+  if (status === 'PENDING') return t('project.result.step.queued');
+  if (status === 'RUNNING' || status === 'REVIEWING') return t('project.result.step.running');
+  if (status === 'COMPLETED') return t('project.result.step.completed');
+  if (status === 'PARTIAL' || status === 'DEGRADED') return t('project.result.step.partial');
+  if (status === 'FAILED' || status === 'TIMED_OUT') return t('project.result.step.failed');
+  if (status === 'SKIPPED') return t('project.result.step.skipped');
+  if (status === 'CANCELLED') return t('project.result.step.cancelled');
+  return t('project.result.step.unknown');
+}
 
 function planStepPreviewLine(step: AgentPlanResponse['steps'][number]) {
-  const source = withoutInternalRuntimeCodes(step.errorMessage || step.result || step.description || '');
+  const source = withoutInternalRuntimeCodes(step.description || step.title || '');
   if (source.trim()) return abbreviateText(source, 140);
-  const status = step.status.toUpperCase();
-  if (status === 'RUNNING') return 'Running now.';
-  if (status === 'PENDING') return 'Queued.';
-  return 'No detailed result yet.';
+  return planStepStatusLabel(step.status);
 }
 
 function planStepMessageContent(step: AgentPlanResponse['steps'][number]) {
@@ -1125,19 +1244,7 @@ function planStepMessageContent(step: AgentPlanResponse['steps'][number]) {
   if (step.description && step.description !== step.title) {
     lines.push(withoutInternalProjectEvidenceRefs(step.description));
   }
-  const status = step.status.toUpperCase();
-  if (step.errorMessage) {
-    lines.push(`Error: ${withoutInternalRuntimeCodes(step.errorMessage)}`);
-  }
-  if (step.result) {
-    lines.push(withoutInternalProjectEvidenceRefs(step.result));
-  } else if (!step.errorMessage && status === 'RUNNING') {
-    lines.push('This step is running now.');
-  } else if (status === 'PENDING') {
-    lines.push('This step is queued.');
-  } else {
-    lines.push('No detailed result yet.');
-  }
+  lines.push(planStepStatusLabel(step.status));
   return lines.join('\n\n');
 }
 
@@ -1501,7 +1608,9 @@ function appendAssistantChunk(content: string) {
 
 function replaceAssistantContent(content: string) {
   updateChatMessage(currentAssistantMessageId, (message) => {
-    message.content = content;
+    const presentation = projectAssistantPresentation(content, t('project.result.requestFailed'));
+    message.content = presentation.content;
+    message.technicalContent = presentation.technicalContent;
     message.pending = false;
   });
   void scrollMessagesToBottom();
@@ -1613,7 +1722,17 @@ function buildProjectMessages(serverMessages: AgentMessageResponse[]) {
     if (role === 'user' || role === 'assistant') {
       flushProcess();
       if (role === 'assistant' && isSandboxConfirmationRequiredText(item.content)) continue;
-      result.push({ localId: `server-${item.id}`, role, content: item.content || '', createdAt: item.createdAt });
+      const rawContent = item.content || '';
+      const presentation = role === 'assistant'
+        ? projectAssistantPresentation(rawContent, t('project.result.requestFailed'))
+        : { content: rawContent, technicalContent: undefined };
+      result.push({
+        localId: `server-${item.id}`,
+        role,
+        content: presentation.content,
+        technicalContent: presentation.technicalContent,
+        createdAt: item.createdAt,
+      });
     }
   }
 
@@ -2509,6 +2628,9 @@ onUnmounted(() => {
 .project-message--assistant :deep(.message-markdown h3) { font-size: 15px; }
 .project-message--assistant :deep(.message-markdown p) { margin-bottom: 9px; }
 .project-message small { display: block; margin-bottom: 4px; text-transform: uppercase; font-size: 9px; letter-spacing: .08em; color: var(--yb-text-muted); }
+.project-message-technical { margin-top: 8px; border-top: 1px solid var(--yb-border); }
+.project-message-technical summary { padding: 6px 0 2px; color: var(--yb-text-muted); font-size: 9px; font-weight: 650; cursor: pointer; }
+.project-message-technical pre { box-sizing: border-box; max-height: 220px; margin: 5px 0 0; padding: 8px; overflow: auto; border-radius: 6px; background: var(--yb-bg-muted); white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 
 .project-process-card { width: min(92%, 620px); border: 1px solid var(--yb-border); border-radius: 10px; background: var(--yb-bg-muted); font-size: 11px; color: var(--yb-text-secondary); }
 .project-process-card summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none; font-weight: 600; }
@@ -2530,8 +2652,34 @@ onUnmounted(() => {
 .project-execution-card__body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--yb-border); background: color-mix(in srgb, var(--yb-bg-elevated) 72%, transparent); }
 .project-execution-card__details-title { color: var(--yb-text); font-size: 11px; font-weight: 700; }
 .project-execution-card__summary-copy { margin: 0; overflow-wrap: anywhere; color: var(--yb-text-secondary); font-size: 11px; line-height: 1.5; }
-.project-execution-card__failure { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; margin: 0; padding: 8px 12px; border-top: 1px solid color-mix(in srgb, #dc2626 28%, var(--yb-border)); background: color-mix(in srgb, #dc2626 7%, transparent); color: #b91c1c; font-size: 10px; line-height: 1.45; }
-.project-execution-card__failure span { min-width: 0; overflow-wrap: anywhere; }
+.project-result-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0; }
+.project-result-layers > div { min-width: 0; padding: 7px 8px; border-left: 2px solid var(--yb-border); background: color-mix(in srgb, var(--yb-bg-muted) 68%, transparent); }
+.project-result-layers dt { margin-bottom: 5px; color: var(--yb-text-muted); font-size: 9px; }
+.project-result-layers dd { min-width: 0; margin: 0; }
+.project-result-layers :deep(.n-tag) { max-width: 100%; height: auto; min-height: 20px; white-space: normal; }
+.project-result-layers :deep(.n-tag__content) { min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
+
+.project-result-evidence { border-block: 1px solid var(--yb-border); }
+.project-result-evidence > summary, .project-result-evidence-group > summary { min-width: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 8px 0; list-style: none; cursor: pointer; }
+.project-result-evidence summary::-webkit-details-marker { display: none; }
+.project-result-evidence > summary strong, .project-result-evidence-group > summary span { min-width: 0; overflow-wrap: anywhere; color: var(--yb-text-secondary); font-size: 10px; }
+.project-result-evidence > summary > span { color: var(--yb-text-muted); font-size: 9px; white-space: nowrap; }
+.project-result-evidence__chevron { width: 13px; height: 13px; color: var(--yb-text-muted); font-size: 13px; transition: transform 160ms ease; }
+.project-result-evidence[open] > summary .project-result-evidence__chevron, .project-result-evidence-group[open] > summary .project-result-evidence__chevron { transform: rotate(90deg); }
+.project-result-evidence__body { min-width: 0; padding: 0 0 8px 21px; }
+.project-result-evidence-group { border-top: 1px dashed var(--yb-border); }
+.project-result-evidence-group__body { min-width: 0; padding: 0 0 5px 21px; }
+.project-result-evidence-entry { min-width: 0; padding: 7px 0; }
+.project-result-evidence-entry + .project-result-evidence-entry { border-top: 1px solid var(--yb-border); }
+.project-result-evidence-entry > header { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.project-result-evidence-entry > header > span { min-width: 0; overflow-wrap: anywhere; color: var(--yb-text-secondary); font-size: 10px; line-height: 1.5; }
+.project-result-evidence-entry > header :deep(.n-tag) { flex: 0 0 auto; }
+.project-result-technical, .project-result-raw-output, .project-result-verification, .project-plan-step-record { margin-top: 6px; }
+.project-result-technical > summary, .project-result-raw-output > summary, .project-result-verification > summary, .project-plan-step-record > summary { padding: 4px 0; color: var(--yb-text-muted); font-size: 9px; font-weight: 650; cursor: pointer; }
+.project-result-technical dl, .project-result-verification dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; margin: 5px 0; font: 9px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.project-result-technical dt, .project-result-verification dt { color: var(--yb-text-muted); }
+.project-result-technical dd, .project-result-verification dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.project-result-raw-output pre, .project-plan-step-record pre { box-sizing: border-box; width: 100%; max-height: 260px; margin: 4px 0 0; padding: 8px; overflow: auto; border-radius: 6px; background: var(--yb-bg-muted); white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .project-sandbox-confirmation { width: auto; margin: 0 10px 10px; }
 .project-sandbox-confirmation p { margin: 0 0 8px; line-height: 1.55; }
 .project-sandbox-confirmation ul { margin: 0 0 12px; padding-left: 20px; line-height: 1.6; }
@@ -2668,6 +2816,10 @@ onUnmounted(() => {
 @media (max-width: 620px) {
   .project-execution-card__details > summary { grid-template-columns: 16px minmax(0, 1fr); align-items: start; }
   .project-execution-card__meta { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
+  .project-result-layers { grid-template-columns: 1fr; }
+  .project-result-evidence__body, .project-result-evidence-group__body { padding-left: 14px; }
+  .project-result-technical dl, .project-result-verification dl { grid-template-columns: 1fr; gap: 2px; }
+  .project-result-technical dd + dt, .project-result-verification dd + dt { margin-top: 4px; }
   .project-folder-picker { grid-template-columns: 34px minmax(0, 1fr); }
   .project-folder-picker > :deep(.n-button) { grid-column: 1 / -1; width: 100%; }
   .project-create-advanced__body { grid-template-columns: 1fr; gap: 0; }

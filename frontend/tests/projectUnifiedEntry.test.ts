@@ -16,7 +16,7 @@ describe('Project unified input contract', () => {
   });
 
   it('presents Plans as execution details rather than a second submission mode', () => {
-    expect(source).toContain('Execution details');
+    expect(source).toContain("t('project.result.details')");
     expect(source).not.toContain('Create a governed Project plan');
     expect(source).not.toContain('Create plan</NButton>');
   });

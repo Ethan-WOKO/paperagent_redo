@@ -148,6 +148,6 @@ describe('Project Plan server-owned terminal projection', () => {
     expect(projectPlanDisplayStatus(plan, false)).toBe('已超时');
     expect(projectPlanDisplayStatus(plan, true)).toBe('Timed out');
     const source = readFileSync(new URL('../src/views/ProjectPreviewPage.vue', import.meta.url), 'utf8');
-    expect(source).toContain('planTagType(projectPlanExecutionOutcome(item.plan))');
+    expect(source).toContain('planExecutionResult(item.plan).tone');
   });
 });
