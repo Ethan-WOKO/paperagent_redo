@@ -10,7 +10,7 @@ import shlex
 import signal
 import sys
 
-from e2b import Sandbox, SandboxQuery
+from e2b import CommandExitException, Sandbox, SandboxQuery
 
 
 MANAGED_KEY = "yanban-managed"
@@ -121,7 +121,20 @@ def command_exec(args):
     sandbox = Sandbox.connect(item.sandbox_id)
     active_sandbox_id = item.sandbox_id
     try:
-        result = sandbox.commands.run(shlex.join(argv), cwd=REMOTE_ROOT.as_posix(), envs={}, stdin=False, timeout=0)
+        try:
+            result = sandbox.commands.run(
+                shlex.join(argv),
+                cwd=REMOTE_ROOT.as_posix(),
+                envs={},
+                stdin=False,
+                timeout=0,
+            )
+        except CommandExitException as error:
+            # A governed user command returning non-zero is an execution result,
+            # not an E2B provider failure.
+            sys.stdout.write(error.stdout or "")
+            sys.stderr.write(error.stderr or "")
+            return int(error.exit_code)
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
         return int(result.exit_code)

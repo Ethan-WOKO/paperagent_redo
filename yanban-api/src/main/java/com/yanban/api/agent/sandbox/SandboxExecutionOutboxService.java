@@ -31,9 +31,16 @@ public class SandboxExecutionOutboxService {
     public Claim claim(AgentPlanExecutionLease lease,long stepId,ResolvedToolPolicy currentPolicy,
                        AgentPlanCheckpointService.BudgetCeiling ceiling,String idempotencyKey,
                        Set<String> relativePaths,List<String> argv){
+        return claim(lease, stepId, currentPolicy, ceiling, idempotencyKey, relativePaths, argv, null);
+    }
+
+    @Transactional
+    public Claim claim(AgentPlanExecutionLease lease,long stepId,ResolvedToolPolicy currentPolicy,
+                       AgentPlanCheckpointService.BudgetCeiling ceiling,String idempotencyKey,
+                       Set<String> relativePaths,List<String> argv,CandidateArtifactResponse candidate){
         SandboxPlanAuthorityResolver.Resolution resolved=authority.resolve(lease,stepId,currentPolicy,ceiling);
         SandboxDispatch dispatch=governance.prepare(resolved,
-                new GovernedSandboxExecutionService.Request(idempotencyKey,relativePaths,argv));
+                new GovernedSandboxExecutionService.Request(idempotencyKey,relativePaths,argv),candidate);
         String executionId=UUID.randomUUID().toString();
         try{
             jdbc.update("insert into sandbox_execution_outbox(execution_id,plan_id,step_id,user_id,session_id,project_id,lease_fence,idempotency_key,request_digest,project_version,policy_digest,request_json,status,dispatch_attempts,created_at,updated_at,claim_fence,retry_phase) values(?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING',0,current_timestamp,current_timestamp,0,'DISPATCH')",

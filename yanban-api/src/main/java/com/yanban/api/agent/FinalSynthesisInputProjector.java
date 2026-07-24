@@ -52,7 +52,12 @@ final class FinalSynthesisInputProjector {
                                     payload.path("timedOut").asBoolean("TIMED_OUT".equals(receiptStatus)),
                                     strings(payload.path("command")),
                                     textOrNull(payload, "stdout") == null ? captured.stdout() : textOrNull(payload, "stdout"),
-                                    textOrNull(payload, "stderr") == null ? captured.stderr() : textOrNull(payload, "stderr"))));
+                                    textOrNull(payload, "stderr") == null ? captured.stderr() : textOrNull(payload, "stderr"),
+                                    textOrNull(payload, "failurePhase"),
+                                    textOrNull(payload, "failureType"),
+                                    textOrNull(payload, "providerErrorType"),
+                                    payload.path("providerCommandExitCode").isInt()
+                                            ? payload.path("providerCommandExitCode").intValue() : null)));
                     addTypedEvidence(json, payload.path("evidence"), evidence, currentProjectVersion, currentHashes);
                     continue;
                 }

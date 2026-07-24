@@ -473,6 +473,10 @@
                                       <template v-if="entry.executionFact?.status"><dt>{{ t('project.result.field.status') }}</dt><dd>{{ entry.executionFact.status }}</dd></template>
                                       <template v-if="entry.executionFact?.exitCode != null"><dt>{{ t('project.result.field.exitCode') }}</dt><dd>{{ entry.executionFact.exitCode }}</dd></template>
                                       <template v-if="entry.executionFact?.command.length"><dt>{{ t('project.result.field.command') }}</dt><dd>{{ entry.executionFact.command.join(' ') }}</dd></template>
+                                      <template v-if="entry.executionFact?.failurePhase"><dt>{{ t('project.result.field.failurePhase') }}</dt><dd>{{ entry.executionFact.failurePhase }}</dd></template>
+                                      <template v-if="entry.executionFact?.failureType"><dt>{{ t('project.result.field.failureType') }}</dt><dd>{{ entry.executionFact.failureType }}</dd></template>
+                                      <template v-if="entry.executionFact?.providerErrorType"><dt>{{ t('project.result.field.providerErrorType') }}</dt><dd>{{ entry.executionFact.providerErrorType }}</dd></template>
+                                      <template v-if="entry.executionFact?.providerCommandExitCode != null"><dt>{{ t('project.result.field.providerCommandExitCode') }}</dt><dd>{{ entry.executionFact.providerCommandExitCode }}</dd></template>
                                     </dl>
                                   </details>
 
@@ -585,8 +589,26 @@
               </button>
             </nav>
           </div>
+          <ProjectContextDebugPanel
+            :snapshot="contextSnapshot"
+            :loading="loading.context"
+            :error="contextError"
+            :title="t('project.context.title')"
+            :refresh-label="t('project.context.refresh')"
+            :loading-label="t('project.context.loading')"
+            :empty-label="t('project.context.empty')"
+            :current-label="t('project.context.current')"
+            :recent-label="t('project.context.recent')"
+            :summary-label="t('project.context.summary')"
+            :project-label="t('project.context.project')"
+            :evidence-label="t('project.context.evidence')"
+            :memory-label="t('project.context.memory')"
+            :sections-label="t('project.context.sections')"
+            :dropped-label="t('project.context.dropped')"
+            @refresh="loadContextDebug()"
+          />
           <div class="project-composer">
-            <NInput v-model:value="chatInput" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="Ask about this read-only Project..." @keydown.ctrl.enter.prevent="sendChat" />
+            <NInput v-model:value="chatInput" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="Ask about this read-only Project..." @keydown="handleComposerKeydown" />
             <NButton type="primary" :loading="loading.send" :disabled="!chatInput.trim() || !activeProject" @click="sendChat">Send</NButton>
           </div>
         </section>
@@ -706,9 +728,10 @@ import { NAlert, NButton, NCheckbox, NDropdown, NEmpty, NForm, NFormItem, NIcon,
 import { ChevronRightIcon } from 'naive-ui/es/_internal/icons';
 import AppLayout from '@/components/AppLayout.vue';
 import MarkdownMessage from '@/components/MarkdownMessage.vue';
-import { cancelPlan, confirmAndQueueSandboxPlan, deleteSession as deleteAgentSession, listMessages, listPlans, updateSession as updateAgentSession, type AgentMessageResponse, type AgentPlanResponse, type AgentSessionResponse } from '@/api/agent';
+import ProjectContextDebugPanel from '@/components/ProjectContextDebugPanel.vue';
+import { cancelPlan, confirmAndQueueSandboxPlan, deleteSession as deleteAgentSession, listMessages, listPlans, updateSession as updateAgentSession, type AgentContextSnapshotResponse, type AgentMessageResponse, type AgentPlanResponse, type AgentSessionResponse } from '@/api/agent';
 import { candidateReviewFailure, getCandidateChange, isCandidateArtifactV1, listArtifacts, type ArtifactResponse, type CandidateArtifactResponse, type CandidateChangeType, type CandidateEvidenceRef, type CandidateReviewState } from '@/api/artifact';
-import { applyProjectCandidate, cancelCandidateValidation, createCandidateValidation, createProjectSession, deleteProject, exportProjectRevision, filterProjectUploadFiles, getProjectManifest, listCandidateValidations, listProjectEvidence, listProjectRevisions, listProjectSessions, listProjects, readProjectFile, rejectCandidateValidation, rollbackProjectRevision, searchProject, sendProjectMessage, uploadProject, type CandidateValidationProfile, type CandidateValidationResponse, type ProjectEvidenceResponse, type ProjectFileResponse, type ProjectManifestResponse, type ProjectRevisionResponse, type ProjectSearchHit, type ProjectSummaryResponse } from '@/api/project';
+import { applyProjectCandidate, cancelCandidateValidation, createCandidateValidation, createProjectSession, deleteProject, exportProjectRevision, filterProjectUploadFiles, getProjectManifest, listCandidateValidations, listProjectContextSnapshots, listProjectEvidence, listProjectRevisions, listProjectSessions, listProjects, readProjectFile, rejectCandidateValidation, rollbackProjectRevision, searchProject, sendProjectMessage, uploadProject, type CandidateValidationProfile, type CandidateValidationResponse, type ProjectEvidenceResponse, type ProjectFileResponse, type ProjectManifestResponse, type ProjectRevisionResponse, type ProjectSearchHit, type ProjectSummaryResponse } from '@/api/project';
 import { useAuthStore } from '@/stores/auth';
 import { useI18n } from '@/composables/useI18n';
 import {
@@ -789,6 +812,8 @@ const selectedFile = ref<ProjectFileResponse | null>(null);
 const searchQuery = ref('');
 const searchResults = ref<ProjectSearchHit[]>([]);
 const messages = ref<ProjectChatMessage[]>([]);
+const contextSnapshot = ref<AgentContextSnapshotResponse | null>(null);
+const contextError = ref('');
 const plans = ref<AgentPlanResponse[]>([]);
 const selectedPlan = ref<AgentPlanResponse | null>(null);
 const executingSandboxPlanId = ref<number | null>(null);
@@ -848,6 +873,7 @@ const loading = reactive({
   file: false,
   search: false,
   messages: false,
+  context: false,
   send: false,
   plans: false,
   evidence: false,
@@ -1842,6 +1868,7 @@ async function selectProject(projectId: number) {
   selectedFile.value = null;
   searchResults.value = [];
   messages.value = [];
+  resetContextDebug();
   plans.value = [];
   evidence.value = [];
   candidates.value = [];
@@ -1938,6 +1965,36 @@ async function loadMessages(sessionId = currentSessionId(), epoch = projectEpoch
     messages.value = buildProjectMessages(value);
     await scrollMessagesToBottom();
   }
+  await loadContextDebug(sessionId, epoch);
+}
+
+async function loadContextDebug(sessionId = currentSessionId(), epoch = projectEpoch) {
+  const projectId = activeProjectId.value;
+  if (!projectId || !sessionId) {
+    resetContextDebug();
+    return;
+  }
+  loading.context = true;
+  contextError.value = '';
+  try {
+    const snapshots = (await listProjectContextSnapshots(projectId, sessionId, 1)).data;
+    if (epoch === projectEpoch && projectId === activeProjectId.value && sessionId === activeSessionId.value) {
+      contextSnapshot.value = snapshots[0] || null;
+    }
+  } catch (cause) {
+    if (epoch === projectEpoch && projectId === activeProjectId.value && sessionId === activeSessionId.value) {
+      contextSnapshot.value = null;
+      contextError.value = apiError(cause);
+    }
+  } finally {
+    if (epoch === projectEpoch && projectId === activeProjectId.value) loading.context = false;
+  }
+}
+
+function resetContextDebug() {
+  contextSnapshot.value = null;
+  contextError.value = '';
+  loading.context = false;
 }
 
 async function loadPlans(sessionId = currentSessionId(), epoch = projectEpoch) {
@@ -2079,6 +2136,12 @@ async function sendProjectWithFallback(projectId: number, sessionId: number, con
     appendProcessLine('Streaming connection unavailable; reconciling through the HTTP fallback.');
     await sendProjectHttp(projectId, sessionId, content, clientRequestId);
   }
+}
+
+function handleComposerKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  void sendChat();
 }
 
 async function sendChat() {
@@ -2278,6 +2341,7 @@ async function selectConversation(sessionId: number) {
   activeSessionId.value = sessionId;
   syncProjectLocation(activeProjectId.value, sessionId);
   messages.value = [];
+  resetContextDebug();
   plans.value = [];
   evidence.value = [];
   candidates.value = [];
@@ -2309,6 +2373,7 @@ async function startNewConversation() {
   projectEpoch++;
   sessionFlight = null;
   messages.value = [];
+  resetContextDebug();
   plans.value = [];
   evidence.value = [];
   candidates.value = [];
@@ -2385,6 +2450,7 @@ async function deleteConversation(session: AgentSessionResponse) {
     projectEpoch++;
     sessionFlight = null;
     messages.value = [];
+    resetContextDebug();
     plans.value = [];
     evidence.value = [];
     candidates.value = [];
@@ -2435,6 +2501,7 @@ async function removeActiveProject() {
     activeSessionId.value = null;
     syncProjectLocation(null, null);
     messages.value = [];
+    resetContextDebug();
     plans.value = [];
     evidence.value = [];
     candidates.value = [];

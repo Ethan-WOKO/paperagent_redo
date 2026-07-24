@@ -6,11 +6,16 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yanban.core.agent.AgentMessage;
 import com.yanban.core.agent.AgentMessageRepository;
+import com.yanban.core.agent.AgentTurn;
+import com.yanban.core.agent.AgentTurnRepository;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ToolCall;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -35,19 +40,30 @@ public class AgentContextBuilder {
     private static final int MAX_RUNTIME_IDENTITY_VALUE_CHARACTERS = 160;
 
     private final AgentMessageRepository messages;
+    private final AgentTurnRepository turns;
     private final ObjectMapper objectMapper;
 
     public AgentContextBuilder(AgentMessageRepository messages, ObjectMapper objectMapper) {
+        this(messages, null, objectMapper);
+    }
+
+    @Autowired
+    public AgentContextBuilder(AgentMessageRepository messages,
+                               AgentTurnRepository turns,
+                               ObjectMapper objectMapper) {
         this.messages = messages;
+        this.turns = turns;
         this.objectMapper = objectMapper;
     }
 
     public AgentContextPackage build(AgentContextBuildRequest request) {
-        List<ChatMessage> rawMessages = messages.findBySessionIdOrderByCreatedAtAsc(request.sessionId()).stream()
-                .map(this::toChatMessage)
-                .toList();
-        List<ChatMessage> normalizedMessages = normalizeHistoryForModel(request.sessionId(), rawMessages);
-        return build(request, rawMessages, normalizedMessages);
+        List<AgentMessage> persisted = messages.findBySessionIdOrderByCreatedAtAsc(request.sessionId());
+        List<ChatMessage> rawMessages = persisted.stream().map(this::toChatMessage).toList();
+        List<CanonicalTurn> canonicalTurns = loadCanonicalTurns(request, persisted);
+        List<ChatMessage> normalizedMessages = canonicalTurns == null
+                ? normalizeHistoryForModel(request.sessionId(), rawMessages)
+                : canonicalTurns.stream().flatMap(turn -> turn.messages().stream()).toList();
+        return build(request, rawMessages, normalizedMessages, canonicalTurns);
     }
 
     public AgentContextPackage build(AgentContextBuildRequest request, List<ChatMessage> normalizedMessagesOverride) {
@@ -57,7 +73,7 @@ public class AgentContextBuilder {
         List<ChatMessage> normalizedMessages = normalizedMessagesOverride == null
                 ? normalizeHistoryForModel(request.sessionId(), rawMessages)
                 : normalizeHistoryForModel(request.sessionId(), normalizedMessagesOverride);
-        return build(request, rawMessages, normalizedMessages);
+        return build(request, rawMessages, normalizedMessages, null);
     }
 
     public List<ChatMessage> loadNormalizedHistory(Long sessionId) {
@@ -69,20 +85,26 @@ public class AgentContextBuilder {
 
     private AgentContextPackage build(AgentContextBuildRequest request,
                                       List<ChatMessage> rawMessages,
-                                      List<ChatMessage> normalizedMessages) {
+                                      List<ChatMessage> normalizedMessages,
+                                      List<CanonicalTurn> canonicalTurns) {
         List<AgentContextSection> sections = new ArrayList<>();
         List<AgentContextDroppedItem> droppedItems = new ArrayList<>();
         List<EvidenceRef> evidenceRefs = new ArrayList<>();
-        int maxCharacters = safeMaxCharacters(request.maxContextCharacters());
+        int requestedMaxCharacters = safeMaxCharacters(request.maxContextCharacters());
         ChatMessage identityGuard = ChatMessage.system(buildRuntimeIdentityPrompt());
-        int dataBudget = Math.max(0, maxCharacters - estimateCharacters(identityGuard));
+        ChatMessage currentMessage = StringUtils.hasText(request.currentUserMessage())
+                ? ChatMessage.user(request.currentUserMessage()) : null;
+        int maxCharacters = Math.max(requestedMaxCharacters,
+                estimateCharacters(identityGuard) + estimateCharacters(currentMessage) + 512);
+        int dataBudget = Math.max(0, maxCharacters - estimateCharacters(identityGuard)
+                - estimateCharacters(currentMessage));
         ObjectNode envelope = objectMapper.createObjectNode();
         envelope.put("kind", "runtime_data");
         envelope.put("trust", "UNTRUSTED");
 
         RetentionBudget retentionBudget = addRetention(envelope, request.retention(), dataBudget);
         if (retentionBudget.included()) {
-            sections.add(section("retained_task_state", 1, 0,
+            sections.add(section("retained_task_state", 1, envelope.path("retention").toString().length(),
                     "Bounded user constraints, confirmation decision, project id and unfinished task summary."));
         }
         if (retentionBudget.truncatedFields() > 0) {
@@ -96,10 +118,20 @@ public class AgentContextBuilder {
                     "Truncated by context character budget."));
         }
 
+        AgentContextProjectState projectState = request.projectState();
+        if (projectState != null) {
+            ObjectNode project = envelope.putObject("project");
+            project.put("projectId", projectState.projectId());
+            project.put("projectVersion", projectState.projectVersion());
+            project.put("source", "authenticated_project_manifest");
+            sections.add(section("project_state", 1, project.toString().length(),
+                    "Authenticated Project id and current manifest version."));
+        }
+
         String summary = StringUtils.hasText(request.sessionSummary()) ? request.sessionSummary().trim() : EMPTY_SESSION_SUMMARY;
         String includedSummary = putTextWithinBudget(envelope, "sessionSummary", summary, MAX_SUMMARY_CHARACTERS, dataBudget);
         if (includedSummary != null) {
-            sections.add(section("session_summary", StringUtils.hasText(request.sessionSummary()) ? 1 : 0, 0,
+            sections.add(section("session_summary", StringUtils.hasText(request.sessionSummary()) ? 1 : 0, includedSummary.length(),
                     "Rolling session summary stored as untrusted runtime data."));
             if (!includedSummary.equals(summary)) {
                 droppedItems.add(new AgentContextDroppedItem("session_summary_content", 1, "Truncated by context character budget."));
@@ -113,7 +145,8 @@ public class AgentContextBuilder {
                 ? contextContent(memoryContext).trim() : EMPTY_LONG_TERM_MEMORY;
         String includedMemory = putTextWithinBudget(envelope, "longTermMemory", memory, MAX_LONG_TERM_MEMORY_CHARACTERS, dataBudget);
         if (includedMemory != null) {
-            sections.add(section("long_term_memory", memoryContext == null ? 0 : Math.max(0, memoryContext.hitCount()), 0,
+            sections.add(section("long_term_memory", memoryContext == null ? 0 : Math.max(0, memoryContext.hitCount()),
+                    includedMemory.length(),
                     memoryContext == null || !StringUtils.hasText(memoryContext.note())
                             ? "Long-term memory is currently disabled."
                             : memoryContext.note()));
@@ -140,13 +173,15 @@ public class AgentContextBuilder {
         untrustedEvidence.addAll(request.evidence());
         EvidenceBudget evidenceBudget = addEvidence(envelope, untrustedEvidence, dataBudget, evidenceRefs);
         if (legacyRag != null && evidenceBudget.contains("rag-legacy")) {
-            sections.add(section("rag_context", 1, 0, "Legacy unversioned RAG data in the untrusted envelope."));
+            sections.add(section("rag_context", 1, evidenceBudget.charactersFor("rag-legacy"),
+                    "Legacy unversioned RAG data in the untrusted envelope."));
         }
         if (legacyToolTrace != null && evidenceBudget.contains("tool-trace-legacy")) {
-            sections.add(section("tool_trace_context", 1, 0, "Legacy unversioned tool data in the untrusted envelope."));
+            sections.add(section("tool_trace_context", 1, evidenceBudget.charactersFor("tool-trace-legacy"),
+                    "Legacy unversioned tool data in the untrusted envelope."));
         }
         if (evidenceBudget.structuredIncluded() > 0) {
-            sections.add(section("evidence", evidenceBudget.structuredIncluded(), 0,
+            sections.add(section("evidence", evidenceBudget.structuredIncluded(), evidenceBudget.structuredCharacters(),
                     "Untrusted evidence with JSON-serialized provenance."));
         }
         if (evidenceBudget.dropped() > 0) {
@@ -157,16 +192,23 @@ public class AgentContextBuilder {
         }
 
         ChatMessage dataEnvelope = buildDataEnvelope(envelope);
-        int historyBudget = Math.max(0, maxCharacters - estimateCharacters(identityGuard) - estimateCharacters(dataEnvelope));
+        int historyBudget = Math.max(0, maxCharacters - estimateCharacters(identityGuard)
+                - estimateCharacters(dataEnvelope) - estimateCharacters(currentMessage));
         List<ChatMessage> contextMessages = new ArrayList<>();
         contextMessages.add(identityGuard);
         contextMessages.add(dataEnvelope);
 
-        WindowResult window = selectRecentWindow(normalizedMessages, safeRecentMessageLimit(request.maxRecentMessages()), historyBudget);
+        WindowResult window = canonicalTurns == null
+                ? selectRecentWindow(normalizedMessages, safeRecentMessageLimit(request.maxRecentMessages()), historyBudget)
+                : selectRecentTurns(canonicalTurns, safeRecentMessageLimit(request.maxRecentMessages()), historyBudget);
         contextMessages.addAll(window.messages());
         if (!window.messages().isEmpty()) {
-            sections.add(section("recent_messages", window.messages().size(), estimateCharacters(window.messages()),
-                    "Recent normalized conversation messages within the short-term memory window."));
+            sections.add(section(canonicalTurns == null ? "recent_messages" : "recent_canonical_turns",
+                    canonicalTurns == null ? window.messages().size() : window.selectedTurns().size(),
+                    estimateCharacters(window.messages()),
+                    canonicalTurns == null
+                            ? "Recent normalized conversation messages within the short-term memory window."
+                            : "Recent complete canonical user/assistant turns from this session."));
         }
         if (window.droppedByWindow() > 0) {
             droppedItems.add(new AgentContextDroppedItem("message", window.droppedByWindow(), "Dropped by recent message window."));
@@ -183,13 +225,49 @@ public class AgentContextBuilder {
                     "Truncated oversized message content to keep context under budget."));
         }
 
+        if (currentMessage != null) {
+            sections.add(section("current_user_message", 1, estimateCharacters(currentMessage),
+                    "Complete current user message supplied by the active request."));
+        }
+
         sections.add(section("runtime_identity_guard", 1, estimateCharacters(identityGuard),
                 "Prevents provider/model identity leakage in user-visible answers."));
 
-        int estimatedCharacters = estimateCharacters(contextMessages);
+        int estimatedCharacters = estimateCharacters(contextMessages) + estimateCharacters(currentMessage);
         if (estimatedCharacters > maxCharacters) {
             throw new IllegalStateException("Context package exceeded its configured character budget.");
         }
+        AgentContextDebugView debugView = new AgentContextDebugView(
+                requestedMaxCharacters,
+                maxCharacters,
+                estimatedCharacters,
+                new AgentContextDebugView.DebugText(
+                        currentMessage == null ? null : currentMessage.content(),
+                        currentMessage != null,
+                        false,
+                        "active_request"
+                ),
+                window.selectedTurns().stream().map(CanonicalTurn::debug).toList(),
+                new AgentContextDebugView.DebugText(
+                        includedSummary,
+                        StringUtils.hasText(request.sessionSummary()),
+                        includedSummary != null && !includedSummary.equals(summary),
+                        "agent_session_summaries"
+                ),
+                projectState == null ? null : new AgentContextDebugView.DebugProject(
+                        projectState.projectId(), projectState.projectVersion(), "authenticated_project_manifest"),
+                new AgentContextDebugView.DebugMemory(
+                        includedMemory,
+                        memoryContext == null ? 0 : Math.max(0, memoryContext.hitCount()),
+                        memoryContext == null ? 0 : Math.max(0, memoryContext.omittedCount()),
+                        includedMemory != null && !includedMemory.equals(memory),
+                        "governed_long_term_memory",
+                        memoryContext == null ? "Long-term memory is currently disabled." : memoryContext.note()
+                ),
+                List.copyOf(evidenceRefs),
+                List.copyOf(sections),
+                List.copyOf(droppedItems)
+        );
         return new AgentContextPackage(
                 contextMessages,
                 sections,
@@ -197,8 +275,80 @@ public class AgentContextBuilder {
                 rawMessages.size(),
                 normalizedMessages.size(),
                 estimatedCharacters,
-                new EvidenceLedger(evidenceRefs)
+                new EvidenceLedger(evidenceRefs),
+                currentMessage,
+                debugView
         );
+    }
+
+    private List<CanonicalTurn> loadCanonicalTurns(AgentContextBuildRequest request,
+                                                    List<AgentMessage> persisted) {
+        // Canonical turn pairing is a Project-only contract. Workspace chat keeps its established
+        // normalized tool-history compatibility path unchanged.
+        if (turns == null || request.projectState() == null
+                || !StringUtils.hasText(request.currentUserMessage())) {
+            return null;
+        }
+        Map<Long, AgentMessage> byId = new HashMap<>();
+        for (AgentMessage message : persisted) {
+            if (message != null && message.getId() != null) {
+                byId.put(message.getId(), message);
+            }
+        }
+        List<CanonicalTurn> result = new ArrayList<>();
+        List<AgentTurn> sessionTurns = turns.findBySessionIdAndUserIdOrderByStartedAtDescIdDesc(
+                request.sessionId(), request.userId());
+        for (int index = sessionTurns.size() - 1; index >= 0; index--) {
+            AgentTurn turn = sessionTurns.get(index);
+            if (turn == null || turn.getUserMessageId() == null || turn.getAssistantMessageId() == null
+                    || !(AgentTurn.STATUS_COMPLETED.equals(turn.getStatus())
+                    || AgentTurn.STATUS_FAILED.equals(turn.getStatus()))) {
+                continue;
+            }
+            AgentMessage user = byId.get(turn.getUserMessageId());
+            AgentMessage assistant = byId.get(turn.getAssistantMessageId());
+            if (!isCanonicalMessage(user, request, "user") || !isCanonicalMessage(assistant, request, "assistant")) {
+                continue;
+            }
+            ChatMessage userChat = ChatMessage.user(user.getContent());
+            ChatMessage assistantChat = ChatMessage.assistant(assistant.getContent());
+            result.add(new CanonicalTurn(turn.getId(), user.getId(), assistant.getId(),
+                    userChat, assistantChat));
+        }
+        return List.copyOf(result);
+    }
+
+    private boolean isCanonicalMessage(AgentMessage message, AgentContextBuildRequest request, String role) {
+        return message != null
+                && request.sessionId().equals(message.getSessionId())
+                && request.userId().equals(message.getUserId())
+                && role.equalsIgnoreCase(message.getRole())
+                && StringUtils.hasText(message.getContent());
+    }
+
+    private WindowResult selectRecentTurns(List<CanonicalTurn> turns, int maxMessages, int maxCharacters) {
+        if (turns == null || turns.isEmpty() || maxMessages < 2 || maxCharacters <= 0) {
+            return new WindowResult(List.of(), turns == null ? 0 : turns.size() * 2,
+                    0, 0, 0, List.of());
+        }
+        int maxTurns = Math.max(0, maxMessages / 2);
+        List<CanonicalTurn> selected = new ArrayList<>();
+        int used = 0;
+        int droppedByBudget = 0;
+        for (int index = turns.size() - 1; index >= 0 && selected.size() < maxTurns; index--) {
+            CanonicalTurn turn = turns.get(index);
+            int size = estimateCharacters(turn.messages());
+            if (used + size > maxCharacters) {
+                droppedByBudget = (index + 1) * 2;
+                break;
+            }
+            selected.add(turn);
+            used += size;
+        }
+        Collections.reverse(selected);
+        List<ChatMessage> selectedMessages = selected.stream().flatMap(turn -> turn.messages().stream()).toList();
+        int droppedByWindow = Math.max(0, turns.size() * 2 - selectedMessages.size() - droppedByBudget);
+        return new WindowResult(selectedMessages, droppedByWindow, droppedByBudget, 0, 0, selected);
     }
 
     private WindowResult selectRecentWindow(List<ChatMessage> messages, int maxMessages, int maxCharacters) {
@@ -340,6 +490,7 @@ public class AgentContextBuilder {
         }
         ArrayNode values = envelope.putArray("evidence");
         List<String> includedIds = new ArrayList<>();
+        Map<String, Integer> includedCharacters = new HashMap<>();
         int dropped = 0;
         int truncated = 0;
         int structuredIncluded = 0;
@@ -362,6 +513,7 @@ public class AgentContextBuilder {
             }
             ledger.add(item.ref());
             includedIds.add(item.ref().id());
+            includedCharacters.put(item.ref().id(), entry.toString().length());
             if (!item.ref().id().endsWith("-legacy")) {
                 structuredIncluded++;
             }
@@ -369,7 +521,7 @@ public class AgentContextBuilder {
         if (values.isEmpty()) {
             envelope.remove("evidence");
         }
-        return new EvidenceBudget(includedIds, dropped, truncated, structuredIncluded);
+        return new EvidenceBudget(includedIds, includedCharacters, dropped, truncated, structuredIncluded);
     }
 
     private String putTextWithinBudget(ObjectNode target, String field, String value, int fieldLimit, int dataBudget) {
@@ -624,20 +776,59 @@ public class AgentContextBuilder {
             int droppedByWindow,
             int droppedByBudget,
             int droppedByProtocol,
-            int truncatedMessages
+            int truncatedMessages,
+            List<CanonicalTurn> selectedTurns
     ) {
+        private WindowResult(List<ChatMessage> messages, int droppedByWindow, int droppedByBudget,
+                             int droppedByProtocol, int truncatedMessages) {
+            this(messages, droppedByWindow, droppedByBudget, droppedByProtocol, truncatedMessages, List.of());
+        }
+    }
+
+    private record CanonicalTurn(Long turnId, Long userMessageId, Long assistantMessageId,
+                                 ChatMessage user, ChatMessage assistant) {
+        private List<ChatMessage> messages() {
+            return List.of(user, assistant);
+        }
+
+        private AgentContextDebugView.DebugTurn debug() {
+            int characters = (user == null ? 0 : lengthOf(user))
+                    + (assistant == null ? 0 : lengthOf(assistant));
+            return new AgentContextDebugView.DebugTurn(turnId, userMessageId, assistantMessageId,
+                    user == null ? null : user.content(), assistant == null ? null : assistant.content(), characters);
+        }
+
+        private static int lengthOf(ChatMessage message) {
+            return (message.role() == null ? 0 : message.role().length())
+                    + (message.content() == null ? 0 : message.content().length());
+        }
     }
 
     private record RetentionBudget(boolean included, int truncatedFields) {
     }
 
-    private record EvidenceBudget(List<String> includedIds, int dropped, int truncated, int structuredIncluded) {
+    private record EvidenceBudget(List<String> includedIds,
+                                  Map<String, Integer> includedCharacters,
+                                  int dropped,
+                                  int truncated,
+                                  int structuredIncluded) {
         private static EvidenceBudget empty() {
-            return new EvidenceBudget(List.of(), 0, 0, 0);
+            return new EvidenceBudget(List.of(), Map.of(), 0, 0, 0);
         }
 
         private boolean contains(String evidenceId) {
             return includedIds.contains(evidenceId);
+        }
+
+        private int charactersFor(String evidenceId) {
+            return includedCharacters.getOrDefault(evidenceId, 0);
+        }
+
+        private int structuredCharacters() {
+            return includedCharacters.entrySet().stream()
+                    .filter(entry -> !entry.getKey().endsWith("-legacy"))
+                    .mapToInt(Map.Entry::getValue)
+                    .sum();
         }
     }
 }

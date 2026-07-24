@@ -39,7 +39,7 @@ class AgentContextSnapshotServiceTest {
     }
 
     @Test
-    void saveSnapshotSerializesOnlyContextMetadata() {
+    void saveSnapshotSerializesSafeContextProjectionWithoutUnprojectedMessageBodies() {
         when(snapshots.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
         AgentContextPackage contextPackage = new AgentContextPackage(
                 List.of(ChatMessage.user("secret draft text must not be persisted")),
@@ -47,7 +47,14 @@ class AgentContextSnapshotServiceTest {
                 List.of(new AgentContextDroppedItem("message", 3, "Dropped by window")),
                 10,
                 8,
-                256
+                256,
+                EvidenceLedger.empty(),
+                new AgentContextDebugView(
+                        512, 512, 256,
+                        new AgentContextDebugView.DebugText("safe current text", true, false, "active_request"),
+                        List.of(), null, null, null, List.of(),
+                        List.of(new AgentContextSection("current_user_message", 1, 17, "current")),
+                        List.of())
         );
 
         service.saveSnapshot(11L, 22L, 33L, "trace-save", contextPackage);
@@ -56,6 +63,7 @@ class AgentContextSnapshotServiceTest {
         verify(snapshots).saveAndFlush(captor.capture());
         AgentContextSnapshot saved = captor.getValue();
         assertThat(saved.getSectionsJson()).contains("recent_messages");
+        assertThat(saved.getSectionsJson()).contains("safe current text", "active_request");
         assertThat(saved.getDroppedItemsJson()).contains("Dropped by window");
         assertThat(saved.getSectionsJson()).doesNotContain("secret draft text");
         assertThat(saved.getDroppedItemsJson()).doesNotContain("secret draft text");

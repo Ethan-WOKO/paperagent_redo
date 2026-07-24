@@ -51,6 +51,28 @@ class FinalSynthesisInputProjectorTest {
                 && item.status() == EvidenceStatus.INFERRED);
     }
 
+    @Test
+    void failedReceiptProjectsSafeProviderDiagnosticsIntoExecutionFact() {
+        String payload = """
+                {"executionId":"exec-diagnostic","provider":"e2b","status":"FAILED","exitCode":null,
+                 "timedOut":false,"command":["java","Sort.java"],"failurePhase":"CREATE",
+                 "failureType":"ProviderCommandException","providerErrorType":"TimeoutError",
+                 "providerCommandExitCode":70}
+                """;
+        AgentPlanEvent receipt = new AgentPlanEvent(20L, 21L, "sandbox_execution_failed", payload);
+
+        FinalSynthesisInput input = FinalSynthesisInputProjector.fromPlan(JSON, "FAILED", List.of(),
+                null, List.of(receipt), null, Map.of());
+
+        assertThat(input.evidence()).filteredOn(item -> item.category() == EvidenceCategory.EXECUTION_FACT)
+                .singleElement().satisfies(item -> {
+                    assertThat(item.executionFact().failurePhase()).isEqualTo("CREATE");
+                    assertThat(item.executionFact().failureType()).isEqualTo("ProviderCommandException");
+                    assertThat(item.executionFact().providerErrorType()).isEqualTo("TimeoutError");
+                    assertThat(item.executionFact().providerCommandExitCode()).isEqualTo(70);
+                });
+    }
+
     static Stream<Arguments> terminalReceipts() {
         return Stream.of(
                 Arguments.of("FAILED", 1, false, "FAILED"),

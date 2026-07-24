@@ -68,6 +68,7 @@ class AgentStrategySelectorTest {
     void naturalCandidateChangeIntentIsSharedAndAlwaysRequiresProjectPlan() {
         List<String> requests = List.of(
                 "\u8bf7\u4fee\u6539 Runner.java\uff0c\u8ba9\u5b83\u589e\u52a0\u8d85\u65f6\u5904\u7406\uff1b\u4e0d\u8981\u81ea\u52a8\u5e94\u7528",
+                "\u7ed9\u8fd9\u4efd\u4ee3\u7801\u52a0\u5165\u5f52\u5e76\u6392\u5e8f\uff0c\u4e0d\u4fee\u6539\u5f53\u524d\u6587\u4ef6",
                 "fix this Java file");
 
         assertThat(requests).allMatch(ProjectCandidateChangeIntent::requiresCandidateChange);

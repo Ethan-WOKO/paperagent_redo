@@ -8,5 +8,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface AgentContextSnapshotRepository extends JpaRepository<AgentContextSnapshot, Long> {
     Optional<AgentContextSnapshot> findByTurnIdAndSessionIdAndUserId(Long turnId, Long sessionId, Long userId);
 
-    List<AgentContextSnapshot> findBySessionIdAndUserIdOrderByCreatedAtDesc(Long sessionId, Long userId, Pageable page);
+    List<AgentContextSnapshot> findBySessionIdAndUserIdOrderByCreatedAtDescIdDesc(
+            Long sessionId, Long userId, Pageable page);
 }

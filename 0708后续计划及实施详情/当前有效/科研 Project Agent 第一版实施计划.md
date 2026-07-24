@@ -770,13 +770,19 @@ Worker 开发
 
 ### Worker 24：统一同会话上下文包与临时调试视图
 
-状态：`PLANNED`
+状态：`IN_PROGRESS_USER_VALIDATION`
 
 - 冻结范围：只处理同一个 session 内的跨轮次上下文，不实现跨 session 任务恢复、任务账本或旧会话自动继承。
 - 目标：复用并扩展现有 `ContextPackage`，稳定组装当前用户原文、最近完整 canonical 轮次、较早滚动摘要、当前 ProjectVersion、有效 Evidence 引用和受治理长期偏好。
 - 最近对话必须按完整轮次保留；滚动摘要只压缩更早语义，不能替代路径、版本、hash、Plan、Candidate、确认和执行事实。
 - 前端增加临时、可折叠的上下文调试视图，重点展示实际内容、分区、来源、截断与丢弃原因。该视图仅用于开发调试，后续可隐藏或删除；不得展示密钥、环境变量、内部思维链或未授权内容。
-- 本 Worker 不定义 TaskFrame，不改变 `DIRECT / PLAN_EXECUTE` 路由，不修改 Planner/Reflection 行为，不增加工具、权限、Provider、migration 或 Candidate 写入能力。
+- 用户验收中发现的执行闭环缺陷纳入本 Worker 收口：Broker 在完整执行生命周期内连续续租；区分 Provider 故障与用户代码编译/运行失败；将真实编译错误作为结构化 `RepairContext` 返回 LLM；LLM 只修改 `NOT_APPLIED` Candidate，并最多进行 2 次有界修复重试；成功后返回经过沙箱验证的代码，仍不得修改当前 Project。
+- 使用 `Sort.java` 的同 session 多轮请求完成真实验收：能够引用上一轮目标文件，读取当前版本，创建未应用 Candidate，确认后执行；缺失依赖或无用 import 导致编译失败时反馈真实 stderr，修复并重试；最终只保留一个 canonical answer。
+- 当前实现边界：Agent 不直接增删改 Project 文件；它可以在受治理 Candidate 中表达 `ADD / MODIFY / DELETE`，Candidate 必须先保持 `NOT_APPLIED`。沙箱只执行由服务端事件、依赖关系、ProjectVersion 和权限共同确认的 Candidate 覆盖层；只有用户显式接受后，既有 revision 流程才可以创建新 ProjectVersion。
+- 当前已实现并待用户终验的修复包括：Broker 全执行周期连续续租；Provider 故障与用户代码编译/运行失败分层；E2B 用户程序真实非零退出与 stderr 保留；编译错误进入结构化 `RepairContext`；最多 2 次 Candidate 修复；修复步骤恢复 `project_propose_candidate` 但不得超出原始用户变更授权；成功后返回实际执行的完整 Candidate 代码；Project 输入框支持 Enter 发送、Shift+Enter 换行并兼容输入法组合态。
+- 当前未关闭的验收缺口：真实请求仍曾出现 `INSUFFICIENT_EVIDENCE: Project step completed without a current authorized file observation.`。这表示文件相关步骤没有绑定当前 ProjectVersion 下、路径/hash/range 匹配的受权 `project_read_file` 观测，或 Planner/依赖链没有把该观测传给后续步骤。该错误必须通过重新读取、修正步骤依赖或有界重规划恢复，不能只返回内部错误，也不能使用旧 Evidence 放宽校验。
+- Worker 24 只有在重启加载最新后端后，用全新 session/Plan 完成下列真实链路才可验收：读取当前 `Sort.java` -> 创建加入归并排序且不应用的 Candidate -> 确认后执行 -> 首次因坏 import 编译失败 -> 将真实 stderr 反馈给修复步骤 -> 创建移除坏 import 且保留归并排序的新 Candidate -> 再次执行成功 -> 返回实际验证过的完整代码；全过程 ProjectVersion 不变、仅一个 canonical answer、无旧文件偷跑。终态旧 Plan 不会自动使用后续代码修复，禁止用旧 Plan 复测冒充通过。
+- 本 Worker 不定义 TaskFrame，不改变 Project 顶层 `DIRECT / PLAN_EXECUTE` 路由，不增加任意 shell、自动联网安装依赖、Provider 权限、migration 或 Candidate 自动应用能力。
 - 必测：当前消息完整；最近多轮 canonical 原文顺序稳定；process/临时消息不污染；较早内容进入滚动摘要；预算截断保留完整轮次；ProjectVersion/Evidence/长期偏好分区正确；刷新和 API 重启内容稳定；DIRECT、Plan、Candidate、沙箱确认和单 canonical answer 不回归；桌面与窄屏调试视图可读且无溢出。
 
 ### Worker 25：最小 TaskFrame 与同会话指代解析
@@ -802,6 +808,39 @@ Worker 开发
 - 在同一 session 内持久化滚动摘要、活跃任务、活跃对象和未完成要求，并在 API 重启后恢复。
 - 摘要只在唯一 canonical answer 后更新，不能把等待确认、Candidate 或推断写成已完成事实。
 - 长期记忆继续只承载用户确认的稳定偏好和事实，不承担当前任务状态，不跨 session 自动恢复任务。
+
+### 后续独立阶段：确定性 Project 文件差异工具
+
+状态：`PLANNED_AFTER_WORKER_27`
+
+- 新增只读 `project_compare_files`，用于同一 ProjectVersion 或两个明确 ProjectVersion 中的文件比较。输入至少绑定左右路径、版本和 hash；输出结构化行级 diff hunk、增加/删除/修改范围、截断状态和续页游标。
+- 大文件不得继续采用“分别摘要两个文件，再比较摘要”的方式冒充文件差异。首版先提供确定性行级 diff；后续可在不替代行级事实的前提下增加 symbol/AST 级比较。
+- 大文件默认先返回变更范围、符号和必要上下文，LLM 只解释结构化 diff Evidence，不得从文件大小、文件名或两份独立摘要推断“主要差异”。
+- 工具只读、无网络、无写入权限，不产生 Candidate；Evidence 必须绑定左右 ProjectVersion、path/hash 和实际比较范围。
+
+### 后续独立阶段：沙箱输入、执行配置与 Provider 可观测性
+
+状态：`PLANNED_AFTER_FILE_COMPARE`
+
+- 保留 Java、Python、JavaScript 等单文件直接执行；增加受控 stdin、参数和测试夹具，使 `Scanner`、命令行参数和固定输入测试可以由结构化配置驱动，而不是任意 shell 文本。
+- 统一区分 `MATERIALIZE / DEPENDENCY_INSTALL / BUILD / COMPILE / EXECUTE / COLLECT` 与 Provider 建箱、续租、网络、回执故障。每阶段保存权威 status、exitCode、timedOut、stdout/stderr 和诊断码。
+- Provider 间歇失败、空 receipt、Broker 续租和恢复必须有可定位诊断；用户代码错误不得被归类为 Provider 故障，Provider 故障也不得触发 LLM 随意改代码。
+- 继续坚持确认后执行、Candidate 覆盖层、不修改 Project、单 canonical answer 和有界修复。
+
+### 后续独立阶段：联网依赖安装与完整项目执行
+
+状态：`DEFERRED_AFTER_WORKER_27`
+
+- 该阶段不属于 Worker 24，也不得插入或替代 Worker 25 至 Worker 27 的同会话任务理解与记忆治理顺序。
+- 保留现有单文件 Java、Python、JavaScript 等直接执行能力；联网和构建工具是增量能力，不得把小文件强制升级为完整项目构建。
+- LLM 只负责提出结构化执行方案；服务端根据当前 ProjectVersion 和受信文件识别 Maven、Gradle、`requirements.txt`、`pyproject.toml`、`package.json` 等项目清单，并校验准备命令、构建命令和运行命令。
+- 用户确认后，将完整项目或最小必要文件集物化到临时 E2B 沙箱，按 `DEPENDENCY_INSTALL -> BUILD -> EXECUTE` 分阶段运行。允许联网获取依赖，但不得把本机 `.env`、数据库配置、密钥或无关文件传入沙箱。
+- Maven、Gradle、pip、uv、Poetry、npm 等依赖安装必须由明确命令触发；上传项目或源码中的 `import` 本身不会自动下载依赖。
+- 每个阶段分别保存 status、exitCode、timedOut、provider、stdout/stderr 和依赖清单来源。安装失败、编译失败和程序失败必须区分，不能被 LLM 推理覆盖。
+- 失败时复用受控 `RepairContext`；只允许修改 Candidate 或执行方案，不自动修改 Project。需要新增依赖时必须能追溯到当前受信构建清单或用户明确要求。
+- 首版不要求依赖缓存、任意 shell、复杂网络治理或多语言全覆盖；优先支持单文件直接执行、Maven 项目和 Python requirements/pyproject 项目。
+
+推荐串行顺序：Worker 24 用户终验 -> Worker 25 TaskFrame -> Worker 26 全链路消费与防漂移 -> Worker 27 短期工作记忆 -> 确定性文件差异工具 -> 沙箱输入与 Provider 可观测性 -> 联网依赖安装与完整项目执行 -> 固定真实用户验收矩阵。任何阶段均不得跳过上一阶段的用户验收门。
 
 ## 16. 审查与停止条件
 

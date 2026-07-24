@@ -17,7 +17,7 @@ final class ProjectCandidateChangeIntent {
             "(?iu)(?:(?:\u63d0\u51fa|\u751f\u6210|\u521b\u5efa|\u7ed9\u51fa|\u51c6\u5907).{0,12}(?:\u5019\u9009|\u8865\u4e01)|"
                     + "\\b(?:propose|generate|create|prepare|provide|give)\\b.{0,40}\\b(?:candidate|patch)\\b)");
     private static final Pattern CODE_CHANGE_ACTION = Pattern.compile(
-            "(?iu)(?:\u4fee\u6539|\u4fee\u590d|\u7f16\u8f91|\u91cd\u5199|\u6539\u5199|\u65b0\u589e|\u6dfb\u52a0|\u589e\u52a0|\u5220\u9664|\u79fb\u9664|"
+            "(?iu)(?:\u4fee\u6539|\u4fee\u590d|\u7f16\u8f91|\u91cd\u5199|\u6539\u5199|\u6539\u6210|\u65b0\u589e|\u6dfb\u52a0|\u52a0\u5165|\u589e\u52a0|\u5220\u9664|\u79fb\u9664|"
                     + "\\b(?:modify|fix|edit|rewrite|update|change|add|remove|delete)\\b)");
     private static final Pattern CODE_OR_FILE_TARGET = Pattern.compile(
             "(?iu)(?:\u4ee3\u7801|\u6587\u4ef6|\u811a\u672c|\u914d\u7f6e|\u8fd9\u4e2a\u7c7b|\u8be5\u7c7b|"

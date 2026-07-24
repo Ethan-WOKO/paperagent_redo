@@ -103,7 +103,7 @@ public class SandboxReceiptProjectionService {
 
     private Result reject(SandboxOutboxExecution value,LocalDateTime now){value.finishProjection("CANCELLED","SANDBOX_PROJECTION_AUTHORITY_REJECTED",now);return Result.REJECTED;}
     private void projectExactlyOnce(SandboxOutboxExecution value,AgentPlanStep step,AgentPlanExecutionLease lease,SandboxDispatch request,SandboxReceipt receipt){
-        String result="Sandbox receipt "+value.receiptDigest()+"; provider="+receipt.provider()+"; status="+receipt.status()+"; exitCode="+receipt.exitCode()+"; stdoutSha256="+sha256(receipt.stdout())+"; stderrSha256="+sha256(receipt.stderr())+"; candidate=NOT_APPLIED"
+        String result="Sandbox receipt "+value.receiptDigest()+"; provider="+receipt.provider()+"; status="+receipt.status()+"; exitCode="+receipt.exitCode()+diagnosticText(receipt)+"; stdoutSha256="+sha256(receipt.stdout())+"; stderrSha256="+sha256(receipt.stderr())+"; candidate=NOT_APPLIED"
                 +"; outputTrust=UNTRUSTED_DISPLAY_ONLY\nstdout:\n"+receipt.stdout()+"\nstderr:\n"+receipt.stderr();
         if(receipt.status()==SandboxExecutionStatus.SUCCEEDED)step.markCompleted(result);else step.markFailed("SANDBOX_"+receipt.status(),result);
         leases.saveOwnedStep(lease,step);
@@ -116,7 +116,21 @@ public class SandboxReceiptProjectionService {
         Map<String,Object> facts=new LinkedHashMap<>();facts.put("executionId",value.executionId());facts.put("status",receipt.status().name());
         facts.put("exitCode",receipt.exitCode());facts.put("timedOut",receipt.status()==SandboxExecutionStatus.TIMED_OUT);
         facts.put("provider",receipt.provider());facts.put("command",request.argv());
+        facts.put("errorCode",receipt.errorCode()==null?null:receipt.errorCode().name());
+        if(receipt.providerDiagnostic()!=null){
+            facts.put("failurePhase",receipt.providerDiagnostic().failurePhase());
+            facts.put("failureType",receipt.providerDiagnostic().failureType());
+            facts.put("providerErrorType",receipt.providerDiagnostic().providerErrorType());
+            facts.put("providerCommandExitCode",receipt.providerDiagnostic().providerCommandExitCode());
+        }
         facts.put("candidateApplicationStatus","NOT_APPLIED");return facts;
+    }
+    private String diagnosticText(SandboxReceipt receipt){
+        if(receipt.providerDiagnostic()==null)return "";
+        return "; failurePhase="+receipt.providerDiagnostic().failurePhase()
+                +"; failureType="+receipt.providerDiagnostic().failureType()
+                +"; providerErrorType="+receipt.providerDiagnostic().providerErrorType()
+                +"; providerCommandExitCode="+receipt.providerDiagnostic().providerCommandExitCode();
     }
     private void scheduleOutputAnalysisAfterCommit(String executionId){
         if(outputAnalysisProjection==null)return;

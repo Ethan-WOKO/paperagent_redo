@@ -11,6 +11,7 @@ import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatRequest;
 import com.yanban.core.model.ChatResponse;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -350,6 +351,374 @@ class PlanningAgentPlannerTest {
     }
 
     @Test
+    void combinedChineseChangeAndRunUsesStructuredRepairContextToRestoreCompletePlan() {
+        String goal = "\u8fd9\u4e2a\u4ee3\u7801\u8fd8\u6709\u6ca1\u6709\u4ec0\u4e48\u9700\u8981\u5b8c\u5584\u7684\uff1f"
+                + "\u80fd\u4e0d\u80fd\u6539\u6210\u6839\u636e\u7528\u6237\u8f93\u5165\uff0c\u7136\u540e\u6267\u884c\u8fd9\u4e2a\u7b97\u6cd5\u7684\u4ee3\u7801\uff1f";
+        List<ChatMessage> history = List.of(
+                ChatMessage.user("Read and run src/main/java/xhs_1111.java."),
+                ChatMessage.assistant("The previous run completed."));
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"Prepare change","steps":[
+                        {"id":"read","title":"Read source","description":"Read src/main/java/xhs_1111.java",
+                        "type":"FILE_READ","dependencies":[],"allowedTools":["project_read_file"],
+                        "successCriteria":"Trusted source observed"},
+                        {"id":"candidate","title":"Prepare Candidate","description":"Change code to accept user input",
+                        "type":"TOOL","dependencies":["read"],"allowedTools":["project_propose_candidate"],
+                        "budget":{"maxToolCalls":3,"maxRuntimeSteps":6},
+                        "successCriteria":"Candidate remains NOT_APPLIED"},
+                        {"id":"final","title":"Summarize","description":"Summarize the proposed change",
+                        "type":"ANALYSIS","dependencies":["candidate"],"allowedTools":[],
+                        "successCriteria":"Explain the governed result"}]}
+                        """), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"Change and validate","steps":[
+                        {"id":"read","title":"Read source","description":"Read src/main/java/xhs_1111.java",
+                        "type":"FILE_READ","deps":[],"tools":["project_read_file"],
+                        "budget":{"maxToolCalls":1,"maxRuntimeSteps":4},"success":"Trusted source observed"},
+                        {"id":"candidate","title":"Prepare Candidate","description":"Change code to accept user input",
+                        "type":"TOOL","deps":["read"],"tools":["project_propose_candidate"],
+                        "budget":{"maxToolCalls":3,"maxRuntimeSteps":6},"success":"Candidate remains NOT_APPLIED"},
+                        {"id":"run","title":"Run Candidate","description":"Run src/main/java/xhs_1111.java after confirmation",
+                        "type":"SANDBOX_EXECUTE","deps":["candidate"],"tools":["sandbox_execute"],
+                        "budget":{"maxToolCalls":1,"maxRuntimeSteps":4},"success":"Report the governed receipt"},
+                        {"id":"final","title":"Synthesize","description":"Summarize Candidate and sandbox results",
+                        "type":"ANALYSIS","deps":["candidate","run"],"tools":[],
+                        "budget":{"maxToolCalls":0,"maxRuntimeSteps":4},"success":"Provide the final governed result"}]}
+                        """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                goal, "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"),
+                AgentOrchestrationRequirements.empty(), null, history);
+
+        assertThat(plan.executable()).isTrue();
+        assertThat(plan.steps()).extracting(PlanningAgentPlanner.StepSpec::type)
+                .containsExactly("FILE_READ", "TOOL", "SANDBOX_EXECUTE", "ANALYSIS");
+        assertThat(plan.steps().get(1).allowedTools()).containsExactly("project_propose_candidate");
+        assertThat(plan.steps().get(1).budget().maxToolCalls()).isEqualTo(3);
+        assertThat(plan.steps().get(2).allowedTools()).containsExactly("sandbox_execute");
+        assertThat(plan.rawJson()).contains("NOT_APPLIED");
+
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues()).allSatisfy(request -> {
+            assertThat(request.messages()).containsSubsequence(history);
+            assertThat(request.messages().stream()
+                    .filter(message -> message.content() != null && message.content().contains(goal))
+                    .count()).isEqualTo(1);
+        });
+        assertThat(lastMessage(requests.getAllValues().get(0)).content())
+                .isEqualTo("Create an executable plan for this current user request:\n" + goal);
+        assertThat(lastMessage(requests.getAllValues().get(1)).content())
+                .isEqualTo("Create a fresh, complete replacement plan for this current user request:\n" + goal);
+        String repairPrompt = requests.getAllValues().get(1).messages().get(0).content();
+        assertThat(repairPrompt)
+                .contains("Server-produced repairContext")
+                .contains("\"failureCode\":\"INVALID_PLAN\"")
+                .contains("\"reason\":\"MISSING_REQUIRED_PLAN_ELEMENTS\"")
+                .contains("\"requiredElements\":[\"TRUSTED_PROJECT_EVIDENCE\",\"NOT_APPLIED_CANDIDATE\",\"CONFIRMED_SANDBOX_EXECUTION\",\"EXPLICIT_SANDBOX_TARGET\",\"FINAL_SYNTHESIS\"]")
+                .contains("\"missingElements\":[\"CONFIRMED_SANDBOX_EXECUTION\"]")
+                .contains("\"missingTools\":[\"sandbox_execute\"]")
+                .contains("\"requiredSandboxPaths\":[\"src/main/java/xhs_1111.java\"]")
+                .contains("\"id\":\"s1\",\"type\":\"FILE_READ\"")
+                .contains("\"id\":\"s2\",\"type\":\"TOOL\"")
+                .contains("\"id\":\"s3\",\"type\":\"SANDBOX_EXECUTE\"")
+                .contains("\"id\":\"s4\",\"type\":\"ANALYSIS\"")
+                .contains("Run src/main/java/xhs_1111.java")
+                .contains("Candidate NOT_APPLIED", "requires later explicit user confirmation")
+                .doesNotContain("Prepare change");
+    }
+
+    @Test
+    void combinedChangeAndRunRepairRejectsSandboxStepWithoutExplicitTargetPath() {
+        String firstAttempt = """
+                {"summary":"Prepare change","steps":[
+                {"id":"read","title":"Read source","description":"Read src/main/java/xhs_1111.java",
+                "type":"FILE_READ","dependencies":[],"allowedTools":["project_read_file"],
+                "successCriteria":"Trusted source observed"},
+                {"id":"candidate","title":"Prepare Candidate","description":"Change the observed source",
+                "type":"TOOL","dependencies":["read"],"allowedTools":["project_propose_candidate"],
+                "successCriteria":"Candidate remains NOT_APPLIED"},
+                {"id":"final","title":"Summarize","description":"Summarize the proposed change",
+                "type":"ANALYSIS","dependencies":["candidate"],"allowedTools":[],
+                "successCriteria":"Explain the governed result"}]}
+                """;
+        String pathlessRepair = """
+                {"summary":"Change and validate","steps":[
+                {"id":"read","title":"Read source","description":"Read src/main/java/xhs_1111.java",
+                "type":"FILE_READ","deps":[],"tools":["project_read_file"],"success":"Trusted source observed"},
+                {"id":"candidate","title":"Prepare Candidate","description":"Change the observed source",
+                "type":"TOOL","deps":["read"],"tools":["project_propose_candidate"],"success":"Candidate remains NOT_APPLIED"},
+                {"id":"run","title":"Run Candidate","description":"Run the Candidate after confirmation",
+                "type":"SANDBOX_EXECUTE","deps":["candidate"],"tools":["sandbox_execute"],"success":"Governed receipt recorded"},
+                {"id":"final","title":"Synthesize","description":"Summarize Candidate and sandbox results",
+                "type":"ANALYSIS","deps":["candidate","run"],"tools":[],"success":"Provide the governed result"}]}
+                """;
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(firstAttempt), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(pathlessRepair), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                "Modify and run this code.", "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureMessage()).contains("secondReason=MISSING_SANDBOX_TARGET");
+        verify(modelProvider, times(2)).chat(any());
+    }
+
+    @Test
+    void combinedChangeAndRunRepairsSandboxDependencyOnCandidate() {
+        String goal = "Modify src/main/java/xhs_1111.java, then run it and summarize the result.";
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(combinedPlanJson(
+                        "[\"read\"]", "[\"read\"]", "[\"sandbox\"]", 1, 1)), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(combinedPlanJson(
+                        "[\"read\"]", "[\"candidate\"]", "[\"sandbox\"]", 1, 1)), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                goal, "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+
+        assertThat(plan.executable()).isTrue();
+        assertThat(plan.steps().get(2).dependencies()).containsExactly("step_2");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("\"reason\":\"INVALID_DEPENDENCY_CHAIN\"")
+                .contains("\"missingElements\":[\"SANDBOX_DEPENDS_ON_CANDIDATE\"]")
+                .contains("SANDBOX_EXECUTE step must directly depend on the Candidate step");
+    }
+
+    @Test
+    void combinedChangeAndRunRejectsCandidateWithoutTrustedReadDependency() {
+        String invalid = combinedPlanJson(
+                "[]", "[\"candidate\"]", "[\"sandbox\"]", 1, 1);
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(invalid), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(invalid), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                "Modify src/main/java/xhs_1111.java, then run it and summarize.",
+                "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureMessage())
+                .contains("firstReason=INVALID_DEPENDENCY_CHAIN")
+                .contains("secondReason=INVALID_DEPENDENCY_CHAIN");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("\"missingElements\":[\"CANDIDATE_DEPENDS_ON_TRUSTED_READ\"]");
+    }
+
+    @Test
+    void combinedChangeAndRunRejectsFinalWithoutSandboxDependency() {
+        String invalid = combinedPlanJson(
+                "[\"read\"]", "[\"candidate\"]", "[\"candidate\"]", 1, 1);
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(invalid), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(invalid), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                "Modify src/main/java/xhs_1111.java, then run it and summarize.",
+                "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureMessage())
+                .contains("firstReason=INVALID_DEPENDENCY_CHAIN")
+                .contains("secondReason=INVALID_DEPENDENCY_CHAIN");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("\"missingElements\":[\"FINAL_SYNTHESIS_DEPENDS_ON_SANDBOX\"]");
+    }
+
+    @Test
+    void combinedChangeAndRunRejectsDuplicateCandidateAndSandboxSteps() {
+        String duplicateCandidate = combinedPlanJson(
+                "[\"read\"]", "[\"candidate\"]", "[\"sandbox\"]", 2, 1);
+        String duplicateSandbox = combinedPlanJson(
+                "[\"read\"]", "[\"candidate\"]", "[\"sandbox\"]", 1, 2);
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(duplicateCandidate), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(duplicateCandidate), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(duplicateSandbox), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(duplicateSandbox), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec candidatePlan = planner.createPlan(
+                "Modify src/main/java/xhs_1111.java, then run it and summarize.",
+                "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+        PlanningAgentPlanner.PlanSpec sandboxPlan = planner.createPlan(
+                "Modify src/main/java/xhs_1111.java, then run it and summarize.",
+                "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+
+        assertThat(candidatePlan.executable()).isFalse();
+        assertThat(candidatePlan.failureMessage()).contains("firstReason=DUPLICATE_REQUIRED_STEP");
+        assertThat(sandboxPlan.executable()).isFalse();
+        assertThat(sandboxPlan.failureMessage()).contains("firstReason=DUPLICATE_REQUIRED_STEP");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(4)).chat(requests.capture());
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("\"reason\":\"DUPLICATE_REQUIRED_STEP\"")
+                .contains("\"missingElements\":[\"UNIQUE_CANDIDATE_STEP\"]");
+        assertThat(requests.getAllValues().get(3).messages().get(0).content())
+                .contains("\"reason\":\"DUPLICATE_REQUIRED_STEP\"")
+                .contains("\"missingElements\":[\"UNIQUE_SANDBOX_STEP\"]");
+    }
+
+    @Test
+    void plannerReusesGovernedSessionContextWithoutDuplicatingCurrentMessage() {
+        String current = "这个代码改成根据用户输入，然后执行它。";
+        List<ChatMessage> context = List.of(
+                ChatMessage.user("请读取并运行 src/main/java/xhs_1111.java。"),
+                ChatMessage.assistant("已读取并运行 src/main/java/xhs_1111.java。"));
+        when(modelProvider.chat(any())).thenReturn(new ChatResponse(ChatMessage.assistant("""
+                {"summary":"Change and run","steps":[
+                {"id":"read","title":"Read","description":"Read src/main/java/xhs_1111.java",
+                "type":"FILE_READ","dependencies":[],"allowedTools":["project_read_file"],"successCriteria":"Read"},
+                {"id":"candidate","title":"Candidate","description":"Modify src/main/java/xhs_1111.java",
+                "type":"TOOL","dependencies":["read"],"allowedTools":["project_propose_candidate"],
+                "successCriteria":"Candidate remains NOT_APPLIED"},
+                {"id":"run","title":"Run","description":"Run src/main/java/xhs_1111.java after confirmation",
+                "type":"SANDBOX_EXECUTE","dependencies":["candidate"],"allowedTools":["sandbox_execute"],
+                "successCriteria":"Receipt"},
+                {"id":"final","title":"Final","description":"Summarize governed results",
+                "type":"ANALYSIS","dependencies":["candidate","run"],"allowedTools":[],"successCriteria":"Answer"}]}
+                """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                current, "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"),
+                AgentOrchestrationRequirements.empty(), null, context);
+
+        assertThat(plan.executable()).isTrue();
+        ArgumentCaptor<ChatRequest> request = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider).chat(request.capture());
+        assertThat(request.getValue().messages()).containsSubsequence(context);
+        assertThat(request.getValue().messages().stream()
+                .filter(message -> message.content() != null && message.content().contains(current)).count()).isEqualTo(1);
+        assertThat(request.getValue().messages().get(request.getValue().messages().size() - 1).content())
+                .isEqualTo("Create an executable plan for this current user request:\n" + current);
+    }
+
+    @Test
+    void combinedChangeAndRunRepairRestoresMissingCandidateWithoutAutoApplyingIt() {
+        String goal = "Modify src/main/java/xhs_1111.java to accept user input, then run the code.";
+        List<ChatMessage> history = List.of(
+                ChatMessage.user("Read src/main/java/xhs_1111.java."),
+                ChatMessage.assistant("The source was read."));
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"Read and run","steps":[
+                        {"id":"read","title":"Read","description":"Read src/main/java/xhs_1111.java",
+                        "type":"FILE_READ","dependencies":[],"allowedTools":["project_read_file"],"successCriteria":"Read"},
+                        {"id":"run","title":"Run","description":"Run src/main/java/xhs_1111.java",
+                        "type":"SANDBOX_EXECUTE","dependencies":["read"],"allowedTools":["sandbox_execute"],"successCriteria":"Receipt"},
+                        {"id":"final","title":"Final","description":"Summarize results",
+                        "type":"ANALYSIS","dependencies":["run"],"allowedTools":[],"successCriteria":"Answer"}]}
+                        """), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"Change and run","steps":[
+                        {"id":"read","title":"Read","description":"Read src/main/java/xhs_1111.java",
+                        "type":"FILE_READ","deps":[],"tools":["project_read_file"],"success":"Read"},
+                        {"id":"candidate","title":"Candidate","description":"Prepare the requested input change",
+                        "type":"TOOL","deps":["read"],"tools":["project_propose_candidate"],"success":"NOT_APPLIED"},
+                        {"id":"run","title":"Run","description":"Run src/main/java/xhs_1111.java after confirmation",
+                        "type":"SANDBOX_EXECUTE","deps":["candidate"],"tools":["sandbox_execute"],"success":"Receipt"},
+                        {"id":"final","title":"Final","description":"Summarize governed results",
+                        "type":"ANALYSIS","deps":["candidate","run"],"tools":[],"success":"Answer"}]}
+                        """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                goal, "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"),
+                AgentOrchestrationRequirements.empty(), null, history);
+
+        assertThat(plan.executable()).isTrue();
+        assertThat(plan.steps()).flatExtracting(PlanningAgentPlanner.StepSpec::allowedTools)
+                .contains("project_propose_candidate", "sandbox_execute");
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(2)).chat(requests.capture());
+        assertThat(requests.getAllValues()).allSatisfy(request -> {
+            assertThat(request.messages()).containsSubsequence(history);
+            assertThat(request.messages().stream()
+                    .filter(message -> message.content() != null && message.content().contains(goal))
+                    .count()).isEqualTo(1);
+        });
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("\"missingElements\":[\"NOT_APPLIED_CANDIDATE\"]")
+                .contains("\"missingTools\":[\"project_propose_candidate\"]");
+    }
+
+    @Test
+    void repairCannotAddUnavailableSandboxOrAnIllegalTool() {
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("not json"), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"Unauthorized run","steps":[{"id":"run","title":"Run","description":"Run code",
+                        "type":"SANDBOX_EXECUTE","deps":[],"tools":["sandbox_execute"],"success":"Receipt"}]}
+                        """), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("still not json"), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant("""
+                        {"summary":"Read","steps":[{"id":"read","title":"Read","description":"Read source",
+                        "type":"FILE_READ","deps":[],"tools":["project_read_file","search_web"],"success":"Read"}]}
+                        """), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec unavailableSandbox = planner.createPlan(
+                "Run this code.", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+        PlanningAgentPlanner.PlanSpec illegalTool = planner.createPlan(
+                "Inspect this Project source.", "deepseek", "model", "key", null, null,
+                List.of("project_read_file"));
+
+        assertThat(unavailableSandbox.executable()).isFalse();
+        assertThat(unavailableSandbox.failureCode()).isEqualTo(PlannerFailureCode.INVALID_PLAN);
+        assertThat(unavailableSandbox.failureMessage()).contains("secondReason=UNAUTHORIZED_SANDBOX_REQUEST");
+        assertThat(illegalTool.executable()).isTrue();
+        assertThat(illegalTool.steps()).singleElement().satisfies(step ->
+                assertThat(step.allowedTools()).containsExactly("project_read_file"));
+
+        ArgumentCaptor<ChatRequest> requests = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(modelProvider, times(4)).chat(requests.capture());
+        assertThat(requests.getAllValues().get(1).messages().get(0).content())
+                .contains("Resolved allowlist: project_read_file")
+                .doesNotContain("\"requiredTools\":[\"sandbox_execute\"]");
+    }
+
+    @Test
+    void repeatedMissingSandboxFailsAfterExactlyOneRepairWithoutLooping() {
+        String incomplete = """
+                {"summary":"Incomplete","steps":[
+                {"id":"read","title":"Read","description":"Read src/main/java/xhs_1111.java",
+                "type":"FILE_READ","dependencies":[],"allowedTools":["project_read_file"],"successCriteria":"Read"},
+                {"id":"candidate","title":"Candidate","description":"Prepare input change",
+                "type":"TOOL","dependencies":["read"],"allowedTools":["project_propose_candidate"],"successCriteria":"NOT_APPLIED"},
+                {"id":"final","title":"Final","description":"Summarize",
+                "type":"ANALYSIS","dependencies":["candidate"],"allowedTools":[],"successCriteria":"Answer"}]}
+                """;
+        when(modelProvider.chat(any()))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(incomplete), "stop", null))
+                .thenReturn(new ChatResponse(ChatMessage.assistant(incomplete), "stop", null));
+
+        PlanningAgentPlanner.PlanSpec plan = planner.createPlan(
+                "Modify src/main/java/xhs_1111.java and run the code.",
+                "deepseek", "model", "key", null, null,
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"));
+
+        assertThat(plan.executable()).isFalse();
+        assertThat(plan.failureMessage())
+                .contains("firstReason=MISSING_REQUIRED_PLAN_ELEMENTS")
+                .contains("secondReason=MISSING_REQUIRED_PLAN_ELEMENTS");
+        verify(modelProvider, times(2)).chat(any());
+    }
+
+    @Test
     void createPlanReceivesBoundedCrossMaterialRequirementsInSystemPromptOnly() {
         when(modelProvider.chat(any())).thenReturn(new ChatResponse(ChatMessage.assistant("""
                 {"summary":"Audit materials","steps":[{
@@ -384,7 +753,7 @@ class PlanningAgentPlannerTest {
                 .contains("Include a verification step")
                 .contains("do not add tools, permissions, identity, network, command, or write authority");
         assertThat(request.messages().get(1).content())
-                .isEqualTo("Create an executable plan for this user task:\nAudit the implementation claims.");
+                .isEqualTo("Create an executable plan for this current user request:\nAudit the implementation claims.");
     }
 
     @Test
@@ -659,5 +1028,43 @@ class PlanningAgentPlannerTest {
                 .contains("\u9ed8\u8ba4\u4f7f\u7528\u4e2d\u6587\u56de\u7b54")
                 .contains("never changes tools, permissions, or evidence requirements")
                 .contains("project_read_file");
+    }
+
+    private ChatMessage lastMessage(ChatRequest request) {
+        return request.messages().get(request.messages().size() - 1);
+    }
+
+    private String combinedPlanJson(String candidateDependencies,
+                                    String sandboxDependencies,
+                                    String finalDependencies,
+                                    int candidateCount,
+                                    int sandboxCount) {
+        List<String> planSteps = new ArrayList<>();
+        planSteps.add("""
+                {"id":"read","title":"Read","description":"Read src/main/java/xhs_1111.java",
+                "type":"FILE_READ","deps":[],"tools":["project_read_file"],"success":"Trusted source read"}""");
+        planSteps.add("""
+                {"id":"candidate","title":"Candidate","description":"Propose the requested change",
+                "type":"TOOL","deps":%s,"tools":["project_propose_candidate"],"success":"Candidate NOT_APPLIED"}"""
+                .formatted(candidateDependencies));
+        if (candidateCount > 1) {
+            planSteps.add("""
+                    {"id":"candidate2","title":"Candidate two","description":"Propose another change",
+                    "type":"TOOL","deps":["read"],"tools":["project_propose_candidate"],"success":"Candidate NOT_APPLIED"}""");
+        }
+        planSteps.add("""
+                {"id":"sandbox","title":"Run","description":"Run src/main/java/xhs_1111.java after confirmation",
+                "type":"SANDBOX_EXECUTE","deps":%s,"tools":["sandbox_execute"],"success":"Receipt"}"""
+                .formatted(sandboxDependencies));
+        if (sandboxCount > 1) {
+            planSteps.add("""
+                    {"id":"sandbox2","title":"Run again","description":"Run src/main/java/xhs_1111.java after confirmation",
+                    "type":"SANDBOX_EXECUTE","deps":["candidate"],"tools":["sandbox_execute"],"success":"Receipt"}""");
+        }
+        planSteps.add("""
+                {"id":"final","title":"Final","description":"Summarize governed results",
+                "type":"ANALYSIS","deps":%s,"tools":[],"success":"Answer"}"""
+                .formatted(finalDependencies));
+        return "{\"summary\":\"Change and run\",\"steps\":[" + String.join(",", planSteps) + "]}";
     }
 }

@@ -87,6 +87,29 @@ class BrokerMigrationTest {
         assertThat(dispatches.status(accepted.executionId()).receipt()).isNull();
     }
 
+    @Test void stagedReceiptSurvivesLeaseExpiryAndRecoveryClaim() {
+        SandboxDispatch request = signed(new SandboxDispatch("staged-recovery-key", "", 1, 2, 3, 4, 9, 13,
+                "a".repeat(64), "b".repeat(64), Map.of("Main.java", "class Main {}"), List.of("java", "Main.java"),
+                1, 536_870_912L, 60_000, 1_048_576, false));
+        var accepted=dispatches.dispatch(request);
+        var original=leases.claim("worker-a",Duration.ofMinutes(1)).orElseThrow();
+        String digest="e".repeat(64);
+        String receipt="{\"status\":\"SUCCEEDED\"}";
+        leases.stageReceipt(original,digest,receipt);
+        leases.transition(original,"SUCCEEDED_PENDING_CLEANUP","{\"phase\":\"CLEANUP_REQUIRED\"}");
+
+        JdbcTemplate jdbc=new JdbcTemplate(dataSource);
+        jdbc.update("update sandbox_executions set lease_expires_at=dateadd('SECOND',-1,current_timestamp) where execution_id=?",
+                accepted.executionId());
+        var recovered=leases.claim("worker-b",Duration.ofMinutes(1)).orElseThrow();
+        var stored=executions.findByExecutionId(accepted.executionId()).orElseThrow();
+
+        assertThat(recovered.recovery()).isTrue();
+        assertThat(recovered.previousStatus()).isEqualTo("SUCCEEDED_PENDING_CLEANUP");
+        assertThat(stored.receiptDigest()).isEqualTo(digest);
+        assertThat(stored.receiptJson()).isEqualTo(receipt);
+    }
+
     private SandboxDispatch signed(SandboxDispatch value) {
         String digest = SandboxCanonicalDigest.compute(value);
         return new SandboxDispatch(value.idempotencyKey(), digest, value.userId(), value.projectId(), value.sessionId(),

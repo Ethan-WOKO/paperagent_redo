@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
+import java.util.Set;
 import com.yanban.sandbox.contract.SandboxCommandProfiles;
 import com.yanban.core.agent.AgentPlanStep;
 import org.junit.jupiter.api.Test;
@@ -108,6 +109,14 @@ class SandboxStepTypeNormalizationTest {
         assertThat(PlanAgentService.requiredSandboxMaterialPaths(step,
                 "Run First.java and Second.java"))
                 .isEmpty();
+    }
+
+    @Test
+    void missingSandboxTargetIsAnInvalidPathInsteadOfInfrastructureUnavailability() {
+        assertThat(PlanAgentService.sandboxTargetValidationError(Set.of()))
+                .isEqualTo("INVALID_PATH: an explicit Project-relative sandbox target is required.");
+        assertThat(PlanAgentService.sandboxTargetValidationError(
+                Set.of("src/main/java/xhs_1111.java"))).isNull();
     }
 
     private PlanningAgentPlanner.StepSpec step(String type, List<String> tools, String description) {

@@ -14,8 +14,26 @@ public record AgentContextBuildRequest(
         Integer maxRecentMessages,
         Integer maxContextCharacters,
         AgentContextRetention retention,
-        List<AgentContextEvidence> evidence
+        List<AgentContextEvidence> evidence,
+        String currentUserMessage,
+        AgentContextProjectState projectState
 ) {
+    public AgentContextBuildRequest(Long sessionId,
+                                    Long userId,
+                                    String providerKey,
+                                    String modelName,
+                                    String sessionSummary,
+                                    AgentLongTermMemoryContext longTermMemoryContext,
+                                    String ragContext,
+                                    String toolTraceContext,
+                                    Integer maxRecentMessages,
+                                    Integer maxContextCharacters,
+                                    AgentContextRetention retention,
+                                    List<AgentContextEvidence> evidence) {
+        this(sessionId, userId, providerKey, modelName, sessionSummary, longTermMemoryContext, ragContext,
+                toolTraceContext, maxRecentMessages, maxContextCharacters, retention, evidence, null, null);
+    }
+
     public AgentContextBuildRequest(Long sessionId,
                                     Long userId,
                                     String providerKey,
@@ -23,7 +41,7 @@ public record AgentContextBuildRequest(
                                     String sessionSummary,
                                     Integer maxRecentMessages,
                                     Integer maxContextCharacters) {
-        this(sessionId, userId, providerKey, modelName, sessionSummary, null, null, null, maxRecentMessages, maxContextCharacters, null, List.of());
+        this(sessionId, userId, providerKey, modelName, sessionSummary, null, null, null, maxRecentMessages, maxContextCharacters, null, List.of(), null, null);
     }
 
     public AgentContextBuildRequest(Long sessionId,
@@ -35,7 +53,7 @@ public record AgentContextBuildRequest(
                                     String toolTraceContext,
                                     Integer maxRecentMessages,
                                     Integer maxContextCharacters) {
-        this(sessionId, userId, providerKey, modelName, sessionSummary, null, ragContext, toolTraceContext, maxRecentMessages, maxContextCharacters, null, List.of());
+        this(sessionId, userId, providerKey, modelName, sessionSummary, null, ragContext, toolTraceContext, maxRecentMessages, maxContextCharacters, null, List.of(), null, null);
     }
 
     public AgentContextBuildRequest(Long sessionId,
@@ -49,7 +67,7 @@ public record AgentContextBuildRequest(
                                     Integer maxRecentMessages,
                                     Integer maxContextCharacters) {
         this(sessionId, userId, providerKey, modelName, sessionSummary, longTermMemoryContext, ragContext, toolTraceContext,
-                maxRecentMessages, maxContextCharacters, null, List.of());
+                maxRecentMessages, maxContextCharacters, null, List.of(), null, null);
     }
 
     public AgentContextBuildRequest {

@@ -1,5 +1,5 @@
 import http from './http';
-import type { CreateAgentPlanPayload, AgentPlanResponse, AgentMessageResponse, AgentSessionResponse, CreateSessionPayload, SendMessageRequestPayload, SendMessageResponse } from './agent';
+import type { AgentContextSnapshotResponse, CreateAgentPlanPayload, AgentPlanResponse, AgentMessageResponse, AgentSessionResponse, CreateSessionPayload, SendMessageRequestPayload, SendMessageResponse } from './agent';
 
 export interface ProjectSummaryResponse {
   id: number;
@@ -158,6 +158,12 @@ export function uploadProject(payload: UploadProjectPayload) {
 export function deleteProject(projectId: number) { return http.delete<void>(`/projects/${projectId}`); }
 export function getProjectManifest(projectId: number) { return http.get<ProjectManifestResponse>(`/projects/${projectId}/manifest`); }
 export function listProjectSessions(projectId: number) { return http.get<AgentSessionResponse[]>(`/projects/${projectId}/agent/sessions`); }
+export function listProjectContextSnapshots(projectId: number, sessionId: number, limit = 20) {
+  return http.get<AgentContextSnapshotResponse[]>(
+    `/projects/${projectId}/agent/sessions/${sessionId}/context-snapshots`,
+    { params: { limit } },
+  );
+}
 export function createProjectSession(projectId: number, payload: CreateSessionPayload) {
   return http.post<AgentSessionResponse>(`/projects/${projectId}/agent/sessions`, payload);
 }

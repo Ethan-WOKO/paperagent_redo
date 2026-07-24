@@ -356,7 +356,11 @@ public class AgentService {
                 null,
                 null,
                 null,
-                projectEvidence
+                projectEvidence,
+                request.content(),
+                projectContext == null || !StringUtils.hasText(projectContext.projectVersion())
+                        ? null
+                        : new AgentContextProjectState(projectContext.projectId(), projectContext.projectVersion())
         );
         AgentMemoryExperimentResult memoryExperiment = agentMemoryExperimentService.buildContext(experimentContext, contextBuildRequest);
         AgentContextPackage contextPackage = memoryExperiment.contextPackage();
@@ -502,7 +506,10 @@ public class AgentService {
                     session.getId(),
                     effectiveHistory,
                     userId,
-                    request.content(),
+                    contextPackage.currentUserMessage() != null
+                            && StringUtils.hasText(contextPackage.currentUserMessage().content())
+                            ? contextPackage.currentUserMessage().content()
+                            : request.content(),
                     endpoint.providerKey(),
                     endpoint.modelName(),
                     null,

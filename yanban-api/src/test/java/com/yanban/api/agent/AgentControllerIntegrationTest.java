@@ -399,7 +399,7 @@ class AgentControllerIntegrationTest {
     }
 
     @Test
-    void sendMessagePersistsContextSnapshotAndDebugApiReturnsMetadataOnly() throws Exception {
+    void sendMessagePersistsContextSnapshotAndDebugApiReturnsActualCurrentInput() throws Exception {
         when(chatModelProvider.providerName()).thenReturn("mock");
         when(chatModelProvider.chat(any()))
                 .thenReturn(new ChatResponse(ChatMessage.assistant("debug reply"), "stop", null));
@@ -414,6 +414,12 @@ class AgentControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
 
+        ArgumentCaptor<ChatRequest> contextRequest = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(chatModelProvider).chat(contextRequest.capture());
+        assertThat(contextRequest.getValue().messages().stream()
+                .filter(message -> "secret draft paragraph for context debugging".equals(message.content())))
+                .hasSize(1);
+
         MvcResult listResult = mockMvc.perform(get("/api/v1/agent/sessions/{id}/context-snapshots", sessionId)
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
@@ -426,7 +432,7 @@ class AgentControllerIntegrationTest {
         JsonNode snapshots = objectMapper.readTree(listResult.getResponse().getContentAsString());
         JsonNode snapshot = snapshots.get(0);
         assertThat(snapshot.toString()).contains("runtime_identity_guard");
-        assertThat(snapshot.toString()).doesNotContain("secret draft paragraph");
+        assertThat(snapshot.toString()).contains("secret draft paragraph", "active_request");
 
         long turnId = snapshot.get("turnId").asLong();
         mockMvc.perform(get("/api/v1/agent/sessions/{sessionId}/turns/{turnId}/context-snapshot", sessionId, turnId)

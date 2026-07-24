@@ -9,6 +9,11 @@ describe('Project unified input contract', () => {
   it('has one user composer and only submits through the Project message route', () => {
     expect(source.match(/v-model:value="chatInput"/g)).toHaveLength(1);
     expect(source).toContain('@click="sendChat"');
+    expect(source).toContain('@keydown="handleComposerKeydown"');
+    expect(source).toContain("event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229");
+    expect(source).toContain('event.preventDefault()');
+    expect(source).toContain('void sendChat()');
+    expect(source).not.toContain('@keydown.ctrl.enter.prevent="sendChat"');
     expect(source).toContain('sendProjectWithFallback(projectId, sessionId, content, requestId)');
     expect(source).not.toContain('v-model:value="planInput"');
     expect(source).not.toContain('@click="createPlan"');

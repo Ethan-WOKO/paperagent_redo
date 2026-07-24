@@ -11,6 +11,7 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestPropertySource;
 
@@ -36,6 +37,7 @@ class AgentRepositoryTest {
     private final AgentContextSnapshotRepository contextSnapshots;
     private final AgentLongTermMemoryRepository longTermMemories;
     private final AgentTaskEventRepository taskEvents;
+    private final JdbcTemplate jdbc;
 
     @Autowired
     AgentRepositoryTest(AgentSessionRepository sessions,
@@ -45,7 +47,8 @@ class AgentRepositoryTest {
                         AgentTurnRepository turns,
                         AgentContextSnapshotRepository contextSnapshots,
                         AgentLongTermMemoryRepository longTermMemories,
-                        AgentTaskEventRepository taskEvents) {
+                        AgentTaskEventRepository taskEvents,
+                        JdbcTemplate jdbc) {
         this.sessions = sessions;
         this.messages = messages;
         this.toolRuns = toolRuns;
@@ -54,6 +57,7 @@ class AgentRepositoryTest {
         this.contextSnapshots = contextSnapshots;
         this.longTermMemories = longTermMemories;
         this.taskEvents = taskEvents;
+        this.jdbc = jdbc;
     }
 
     @Test
@@ -154,11 +158,58 @@ class AgentRepositoryTest {
 
         assertThat(contextSnapshots.findByTurnIdAndSessionIdAndUserId(turn.getId(), session.getId(), 1003L))
                 .contains(snapshot);
-        assertThat(contextSnapshots.findBySessionIdAndUserIdOrderByCreatedAtDesc(
+        assertThat(contextSnapshots.findBySessionIdAndUserIdOrderByCreatedAtDescIdDesc(
                 session.getId(),
                 1003L,
                 PageRequest.of(0, 10)
         )).containsExactly(snapshot);
+    }
+
+    @Test
+    void ordersTurnsWithSameStartedAtByDescendingId() {
+        AgentSession session = sessions.saveAndFlush(new AgentSession(
+                1024L,
+                "stable turn order",
+                "deepseek",
+                "deepseek-chat",
+                20,
+                false
+        ));
+        AgentTurn older = turns.saveAndFlush(new AgentTurn(session.getId(), 1024L, 2401L));
+        AgentTurn newer = turns.saveAndFlush(new AgentTurn(session.getId(), 1024L, 2402L));
+        jdbc.update("UPDATE agent_turns SET started_at = TIMESTAMP '2026-07-23 00:00:00' "
+                + "WHERE id IN (?, ?)", older.getId(), newer.getId());
+
+        assertThat(turns.findBySessionIdAndUserIdOrderByStartedAtDescIdDesc(session.getId(), 1024L))
+                .extracting(AgentTurn::getId)
+                .containsExactly(newer.getId(), older.getId());
+    }
+
+    @Test
+    void ordersSnapshotsWithSameCreatedAtByDescendingIdSoLatestIsMaximumId() {
+        AgentSession session = sessions.saveAndFlush(new AgentSession(
+                1025L,
+                "stable snapshot order",
+                "deepseek",
+                "deepseek-chat",
+                20,
+                false
+        ));
+        AgentContextSnapshot older = contextSnapshots.saveAndFlush(new AgentContextSnapshot(
+                2501L, session.getId(), 1025L, "trace-older", "[]", "[]", 0, 0, 0, 1));
+        AgentContextSnapshot newer = contextSnapshots.saveAndFlush(new AgentContextSnapshot(
+                2502L, session.getId(), 1025L, "trace-newer", "[]", "[]", 0, 0, 0, 2));
+        jdbc.update("UPDATE agent_context_snapshots SET created_at = TIMESTAMP '2026-07-23 00:00:00' "
+                + "WHERE id IN (?, ?)", older.getId(), newer.getId());
+
+        assertThat(contextSnapshots.findBySessionIdAndUserIdOrderByCreatedAtDescIdDesc(
+                session.getId(), 1025L, PageRequest.of(0, 10)))
+                .extracting(AgentContextSnapshot::getId)
+                .containsExactly(newer.getId(), older.getId());
+        assertThat(contextSnapshots.findBySessionIdAndUserIdOrderByCreatedAtDescIdDesc(
+                session.getId(), 1025L, PageRequest.of(0, 1)))
+                .extracting(AgentContextSnapshot::getId)
+                .containsExactly(newer.getId());
     }
 
     @Test

@@ -4,7 +4,7 @@ import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface AgentTurnRepository extends JpaRepository<AgentTurn, Long> {
-    List<AgentTurn> findBySessionIdAndUserIdOrderByStartedAtDesc(Long sessionId, Long userId);
+    List<AgentTurn> findBySessionIdAndUserIdOrderByStartedAtDescIdDesc(Long sessionId, Long userId);
 
     void deleteBySessionId(Long sessionId);
 }

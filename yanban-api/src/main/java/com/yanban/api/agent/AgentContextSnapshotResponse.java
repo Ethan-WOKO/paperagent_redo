@@ -15,6 +15,7 @@ public record AgentContextSnapshotResponse(
         int normalizedMessageCount,
         int contextMessageCount,
         int estimatedCharacters,
-        Instant createdAt
+        Instant createdAt,
+        AgentContextDebugView context
 ) {
 }

@@ -18,11 +18,20 @@ public class ProjectAgentRuntimeService {
     private final ProjectService projects;
     private final AgentService agentService;
     private final PlanAgentService planAgentService;
+    private final AgentContextSnapshotService contextSnapshots;
 
     public ProjectAgentRuntimeService(ProjectService projects, AgentService agentService, PlanAgentService planAgentService) {
+        this(projects, agentService, planAgentService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProjectAgentRuntimeService(ProjectService projects, AgentService agentService,
+                                      PlanAgentService planAgentService,
+                                      AgentContextSnapshotService contextSnapshots) {
         this.projects = projects;
         this.agentService = agentService;
         this.planAgentService = planAgentService;
+        this.contextSnapshots = contextSnapshots;
     }
 
     public AgentSessionResponse createSession(Long userId, Long projectId, CreateSessionRequest request) {
@@ -53,7 +62,7 @@ public class ProjectAgentRuntimeService {
         var manifest = projects.manifest(userId, projectId);
         agentService.getOwnedProjectSession(userId, projectId, sessionId);
         SendMessageResponse response = agentService.sendProjectMessage(userId, sessionId, request,
-                new ProjectRuntimeContext(userId, projectId));
+                new ProjectRuntimeContext(userId, projectId, manifest.version()));
         return projectResponse(response, manifest);
     }
 
@@ -74,7 +83,7 @@ public class ProjectAgentRuntimeService {
                 userId,
                 sessionId,
                 request,
-                new ProjectRuntimeContext(userId, projectId),
+                new ProjectRuntimeContext(userId, projectId, manifest.version()),
                 ignoredAttemptToken -> { },
                 processConsumer
         );
@@ -136,6 +145,16 @@ public class ProjectAgentRuntimeService {
 
     public List<ProjectEvidenceResponse> listPlanEvidence(Long userId, Long projectId, Long planId) {
         return planAgentService.listProjectEvidence(userId, projectId, planId);
+    }
+
+    public List<AgentContextSnapshotResponse> listContextSnapshots(Long userId, Long projectId,
+                                                                   Long sessionId, Integer limit) {
+        projects.manifest(userId, projectId);
+        agentService.getOwnedProjectSession(userId, projectId, sessionId);
+        if (contextSnapshots == null) {
+            throw new IllegalStateException("Context snapshots are not configured");
+        }
+        return contextSnapshots.listSessionSnapshots(userId, sessionId, limit);
     }
 
 }

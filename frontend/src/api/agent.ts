@@ -25,6 +25,79 @@ export interface AgentMessageResponse {
   createdAt: string;
 }
 
+export interface AgentContextSection {
+  type: string;
+  itemCount: number;
+  estimatedCharacters: number;
+  note: string;
+}
+
+export interface AgentContextDroppedItem {
+  type: string;
+  count: number;
+  reason: string;
+}
+
+export interface AgentContextEvidenceRef {
+  id: string;
+  sourceType: string;
+  source: string;
+  file: string | null;
+  chunk: string | null;
+  citation: string | null;
+  version: string | null;
+  selectionReason: string | null;
+  projectVersion: string | null;
+  fileHash: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  parserVersion: string | null;
+  versionStatus: string;
+}
+
+export interface AgentContextDebugView {
+  requestedBudgetCharacters: number;
+  effectiveBudgetCharacters: number;
+  estimatedCharacters: number;
+  currentMessage: { content: string | null; present: boolean; truncated: boolean; source: string };
+  recentTurns: Array<{
+    turnId: number;
+    userMessageId: number;
+    assistantMessageId: number;
+    user: string;
+    assistant: string;
+    estimatedCharacters: number;
+  }>;
+  sessionSummary: { content: string | null; present: boolean; truncated: boolean; source: string };
+  project: { projectId: number; projectVersion: string; source: string } | null;
+  longTermMemory: {
+    content: string | null;
+    includedCount: number;
+    omittedCount: number;
+    truncated: boolean;
+    source: string;
+    note: string | null;
+  };
+  evidence: AgentContextEvidenceRef[];
+  sections: AgentContextSection[];
+  droppedItems: AgentContextDroppedItem[];
+}
+
+export interface AgentContextSnapshotResponse {
+  id: number;
+  turnId: number;
+  sessionId: number;
+  traceId: string | null;
+  sections: AgentContextSection[];
+  droppedItems: AgentContextDroppedItem[];
+  rawMessageCount: number;
+  normalizedMessageCount: number;
+  contextMessageCount: number;
+  estimatedCharacters: number;
+  createdAt: string;
+  context: AgentContextDebugView | null;
+}
+
 export function listSessions() {
   return http.get<AgentSessionResponse[]>('/agent/sessions');
 }
@@ -175,6 +248,10 @@ export interface ExecutionFact {
   command: string[];
   stdout: string | null;
   stderr: string | null;
+  failurePhase?: string | null;
+  failureType?: string | null;
+  providerErrorType?: string | null;
+  providerCommandExitCode?: number | null;
 }
 
 export interface SynthesisEvidence {

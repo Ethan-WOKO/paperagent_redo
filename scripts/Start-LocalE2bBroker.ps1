@@ -79,13 +79,15 @@ $broker = Start-Process -FilePath java -ArgumentList @('-jar', $brokerJar) -Work
 try {
     $headers = @{ Authorization = "Bearer $($settings['YANBAN_SANDBOX_BROKER_TOKEN'])" }
     $health = $null
-    for ($i = 0; $i -lt 120; $i++) {
+    $healthDeadline = [DateTimeOffset]::UtcNow.AddSeconds(90)
+    while ([DateTimeOffset]::UtcNow -lt $healthDeadline) {
         if ($broker.HasExited) { break }
         try {
-            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$brokerPort/internal/v1/health" -Headers $headers -TimeoutSec 2
+            # Provider health includes a real helper probe and can take several seconds on Windows.
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$brokerPort/internal/v1/health" -Headers $headers -TimeoutSec 10
             if ($health.status -eq 'UP' -and $health.provider -eq 'e2b') { break }
         } catch { }
-        Start-Sleep -Milliseconds 250
+        Start-Sleep -Milliseconds 500
     }
     if (-not $health -or $health.status -ne 'UP' -or $health.provider -ne 'e2b') {
         $detail = if (Test-Path -LiteralPath $stderrLog) {

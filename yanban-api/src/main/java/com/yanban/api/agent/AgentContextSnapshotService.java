@@ -44,11 +44,11 @@ public class AgentContextSnapshotService {
                 sessionId,
                 userId,
                 traceId,
-                writeJson(safePackage.sections()),
+                writeJson(new StoredProjection(safePackage.sections(), safePackage.debugView())),
                 writeJson(safePackage.droppedItems()),
                 safePackage.rawMessageCount(),
                 safePackage.normalizedMessageCount(),
-                safePackage.messages().size(),
+                safePackage.messages().size() + (safePackage.currentUserMessage() == null ? 0 : 1),
                 safePackage.estimatedCharacters()
         );
         return snapshots.saveAndFlush(snapshot);
@@ -65,7 +65,7 @@ public class AgentContextSnapshotService {
     @Transactional(readOnly = true)
     public List<AgentContextSnapshotResponse> listSessionSnapshots(Long userId, Long sessionId, Integer limit) {
         assertOwnedSession(userId, sessionId);
-        return snapshots.findBySessionIdAndUserIdOrderByCreatedAtDesc(
+        return snapshots.findBySessionIdAndUserIdOrderByCreatedAtDescIdDesc(
                         sessionId,
                         userId,
                         PageRequest.of(0, safeLimit(limit))
@@ -88,19 +88,21 @@ public class AgentContextSnapshotService {
     }
 
     private AgentContextSnapshotResponse toResponse(AgentContextSnapshot snapshot) {
+        StoredProjection projection = readProjection(snapshot.getSectionsJson());
         return new AgentContextSnapshotResponse(
                 snapshot.getId(),
                 snapshot.getTurnId(),
                 snapshot.getSessionId(),
                 snapshot.getUserId(),
                 snapshot.getTraceId(),
-                readSections(snapshot.getSectionsJson()),
+                projection.sections(),
                 readDroppedItems(snapshot.getDroppedItemsJson()),
                 snapshot.getRawMessageCount(),
                 snapshot.getNormalizedMessageCount(),
                 snapshot.getContextMessageCount(),
                 snapshot.getEstimatedCharacters(),
-                snapshot.getCreatedAt()
+                snapshot.getCreatedAt(),
+                projection.context()
         );
     }
 
@@ -112,10 +114,14 @@ public class AgentContextSnapshotService {
         }
     }
 
-    private List<AgentContextSection> readSections(String json) {
+    private StoredProjection readProjection(String json) {
         try {
-            return objectMapper.readValue(json, new TypeReference<>() {
-            });
+            var node = objectMapper.readTree(json);
+            if (node.isArray()) {
+                List<AgentContextSection> legacy = objectMapper.convertValue(node, new TypeReference<>() { });
+                return new StoredProjection(legacy, null);
+            }
+            return objectMapper.treeToValue(node, StoredProjection.class);
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to parse agent context snapshot sections.", ex);
         }
@@ -127,6 +133,12 @@ public class AgentContextSnapshotService {
             });
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to parse agent context snapshot dropped items.", ex);
+        }
+    }
+
+    private record StoredProjection(List<AgentContextSection> sections, AgentContextDebugView context) {
+        private StoredProjection {
+            sections = sections == null ? List.of() : List.copyOf(sections);
         }
     }
 }

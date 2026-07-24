@@ -9,6 +9,7 @@ import com.yanban.api.agent.CreateAgentPlanRequest;
 import com.yanban.api.agent.ProjectEvidenceResponse;
 import com.yanban.api.agent.AgentSessionResponse;
 import com.yanban.api.agent.CreateSessionRequest;
+import com.yanban.api.agent.AgentContextSnapshotResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -192,6 +193,16 @@ public class ProjectController {
                                                           @PathVariable Long projectId) {
         if (projectAgentRuntimeService == null) throw new IllegalStateException("Project runtime is not configured");
         return projectAgentRuntimeService.listSessions(userId, projectId);
+    }
+
+    @GetMapping("/{projectId}/agent/sessions/{sessionId}/context-snapshots")
+    public List<AgentContextSnapshotResponse> listProjectContextSnapshots(
+            @AuthenticationPrincipal(expression = "id") Long userId,
+            @PathVariable Long projectId,
+            @PathVariable Long sessionId,
+            @RequestParam(defaultValue = "20") Integer limit) {
+        if (projectAgentRuntimeService == null) throw new IllegalStateException("Project runtime is not configured");
+        return projectAgentRuntimeService.listContextSnapshots(userId, projectId, sessionId, limit);
     }
 
     @org.springframework.web.bind.annotation.PostMapping("/{projectId}/agent/sessions")

@@ -3,7 +3,15 @@ import java.time.Instant; import java.util.Map;
 public record SandboxReceipt(String executionId,String idempotencyKey,String requestDigest,long userId,long projectId,
  long sessionId,long planId,long stepId,long fence,String projectVersion,String policyDigest,String provider,
  SandboxExecutionStatus status,Integer exitCode,String stdout,String stderr,boolean outputTruncated,
- Map<String,Artifact> artifacts,Instant startedAt,Instant finishedAt,SandboxErrorCode errorCode) {
+ Map<String,Artifact> artifacts,Instant startedAt,Instant finishedAt,SandboxErrorCode errorCode,
+ SandboxProviderDiagnostic providerDiagnostic) {
  public SandboxReceipt { artifacts=artifacts==null?Map.of():Map.copyOf(artifacts); }
+ public SandboxReceipt(String executionId,String idempotencyKey,String requestDigest,long userId,long projectId,
+  long sessionId,long planId,long stepId,long fence,String projectVersion,String policyDigest,String provider,
+  SandboxExecutionStatus status,Integer exitCode,String stdout,String stderr,boolean outputTruncated,
+  Map<String,Artifact> artifacts,Instant startedAt,Instant finishedAt,SandboxErrorCode errorCode) {
+  this(executionId,idempotencyKey,requestDigest,userId,projectId,sessionId,planId,stepId,fence,projectVersion,
+   policyDigest,provider,status,exitCode,stdout,stderr,outputTruncated,artifacts,startedAt,finishedAt,errorCode,null);
+ }
  public record Artifact(String sha256,long sizeBytes){}
 }

@@ -10,11 +10,17 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.settings.SysUserSettings;
+import com.yanban.api.agent.sandbox.CandidateArtifactResponse;
+import com.yanban.api.agent.sandbox.SandboxExecutionException;
+import com.yanban.api.agent.sandbox.SandboxFailureCode;
+import com.yanban.api.agent.sandbox.SandboxExecutionOutboxService;
 import com.yanban.api.project.ProjectService;
 import com.yanban.api.project.ProjectManifestResponse;
 import com.yanban.api.project.ProjectFileEntry;
@@ -24,7 +30,9 @@ import com.yanban.api.skills.ResolvedSkill;
 import com.yanban.core.agent.AgentPlan;
 import com.yanban.core.agent.AgentPlanEvent;
 import com.yanban.core.agent.AgentPlanEventRepository;
+import com.yanban.core.agent.AgentPlanExecutionLease;
 import com.yanban.core.agent.AgentPlanRepository;
+import com.yanban.core.agent.AgentPlanRunLeaseService;
 import com.yanban.core.agent.AgentPlanStatus;
 import com.yanban.core.agent.AgentPlanStep;
 import com.yanban.core.agent.AgentPlanStepRepository;
@@ -36,6 +44,7 @@ import com.yanban.core.model.ChatRequest;
 import com.yanban.core.model.ChatResponse;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -102,6 +111,18 @@ class PlanAgentServiceTest {
     @Mock
     ProjectService projectService;
 
+    @Mock
+    CandidateChangeArtifactService candidateArtifacts;
+
+    @Mock
+    SandboxExecutionOutboxService sandboxOutbox;
+
+    @Mock
+    AgentPlanRunLeaseService runLeases;
+
+    @Mock
+    AgentPlanCheckpointService checkpoints;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private PlanAgentService service;
     private AgentPlan plan;
@@ -124,6 +145,7 @@ class PlanAgentServiceTest {
                 objectMapper,
                 projectService
         );
+        ReflectionTestUtils.setField(service, "candidateArtifacts", candidateArtifacts);
         plan = newPlan();
         session = newSession();
 
@@ -143,6 +165,282 @@ class PlanAgentServiceTest {
                 .thenReturn(new AgentToolPolicyEngine.Decision(List.of(), 3, 1, "test_plan_policy"));
         lenient().when(projectService.manifest(anyLong(), anyLong()))
                 .thenReturn(new ProjectManifestResponse(42L, "manifest-test", List.of()));
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void sandboxStepResolvesOnlyItsServerPersistedDependencyCandidate() {
+        AgentPlanStep candidate = new AgentPlanStep(PLAN_ID, "candidate", 1, "Candidate",
+                "Propose src/main/java/xhs_1111.java", "TOOL", "[]",
+                "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run src/main/java/xhs_1111.java", "SANDBOX_EXECUTE", "[\"candidate\"]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(candidate, "id", 201L);
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        CandidateArtifactResponse artifact = org.mockito.Mockito.mock(CandidateArtifactResponse.class);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(candidate, sandbox));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, candidate.getId(), "step_governed_candidate_proposed",
+                        "{\"artifactId\":27,\"applicationStatus\":\"NOT_APPLIED\"}")));
+        when(candidateArtifacts.getCurrent(USER_ID, 27L)).thenReturn(artifact);
+
+        CandidateArtifactResponse resolved = ReflectionTestUtils.invokeMethod(
+                service, "sandboxCandidate", plan, sandbox);
+
+        assertThat(resolved).isSameAs(artifact);
+        verify(candidateArtifacts).getCurrent(USER_ID, 27L);
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void sandboxStepFailsClosedWhenRequiredCandidateEventIsMissing() {
+        AgentPlanStep candidate = new AgentPlanStep(PLAN_ID, "candidate", 1, "Candidate",
+                "Propose src/main/java/xhs_1111.java", "TOOL", "[]",
+                "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run src/main/java/xhs_1111.java", "SANDBOX_EXECUTE", "[\"candidate\"]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(candidate, "id", 201L);
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(candidate, sandbox));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(
+                service, "sandboxCandidate", plan, sandbox))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Candidate artifact event is missing");
+        verify(candidateArtifacts, never()).getCurrent(anyLong(), anyLong());
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    @SuppressWarnings("unchecked")
+    void missingCandidateEventPreventsSandboxDispatchOfOldProjectFile() {
+        PlanAgentService sandboxService = new PlanAgentService(
+                plans, steps, events, agentService, agentRuntimeService, null, planner, stepVerifier,
+                userSettingsService, skillsService, toolPolicyEngine, objectMapper, projectService,
+                null, runLeases, checkpoints);
+        ReflectionTestUtils.setField(sandboxService, "candidateArtifacts", candidateArtifacts);
+        ReflectionTestUtils.setField(sandboxService, "sandboxOutbox", sandboxOutbox);
+        AgentPlanStep candidate = new AgentPlanStep(PLAN_ID, "candidate", 1, "Candidate",
+                "Propose src/main/java/xhs_1111.java", "TOOL", "[]",
+                "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run src/main/java/xhs_1111.java", "SANDBOX_EXECUTE", "[\"candidate\"]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(candidate, "id", 201L);
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(candidate, sandbox));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of());
+        AgentPlanExecutionLease lease = new AgentPlanExecutionLease(
+                PLAN_ID, USER_ID, "worker24-test", "token", 1L, LocalDateTime.now().plusMinutes(1), false);
+        InheritableThreadLocal<AgentPlanExecutionLease> leaseHolder =
+                (InheritableThreadLocal<AgentPlanExecutionLease>) ReflectionTestUtils.getField(
+                        sandboxService, "executionLease");
+        leaseHolder.set(lease);
+        try {
+            ReflectionTestUtils.invokeMethod(
+                    sandboxService,
+                    "executeSandboxPlanStep",
+                    plan,
+                    sandbox,
+                    new ResolvedToolPolicy(List.of("sandbox_execute"), 1, 1, "worker24-test"),
+                    new AgentPlanCheckpointService.BudgetCeiling(240, 2, 1, 4),
+                    Set.of("src/main/java/xhs_1111.java"),
+                    "trace-worker24");
+        } finally {
+            leaseHolder.remove();
+            sandboxService.shutdownPlanExecutor();
+        }
+
+        assertThat(sandbox.getStatus()).isEqualTo(AgentPlanStepStatus.FAILED.name());
+        assertThat(sandbox.getErrorMessage())
+                .isEqualTo("AUTHORITY_REJECTED: governed Candidate is unavailable for sandbox execution.");
+        verifyNoInteractions(sandboxOutbox);
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    @SuppressWarnings("unchecked")
+    void sandboxPreparationFailureKeepsStructuredPathDiagnostic() throws Exception {
+        ReflectionTestUtils.setField(service, "sandboxOutbox", sandboxOutbox);
+        ReflectionTestUtils.setField(service, "runLeases", runLeases);
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run Sort.java", "SANDBOX_EXECUTE", "[]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(sandbox));
+        SandboxExecutionException failure = new SandboxExecutionException(
+                SandboxFailureCode.INVALID_PATH,
+                "requested file missing",
+                "MATERIALIZE",
+                Set.of("Sort.java", "src/main/java/Sort.java"),
+                Set.of("src/main/java/Sort.java"),
+                Set.of("Sort.java"),
+                java.util.Map.of());
+        org.mockito.Mockito.doThrow(failure).when(sandboxOutbox).claim(
+                any(), eq(202L), any(), any(), any(), any(), any(),
+                org.mockito.ArgumentMatchers.isNull());
+        AgentPlanExecutionLease lease = new AgentPlanExecutionLease(
+                PLAN_ID, USER_ID, "worker24-test", "token", 1L,
+                LocalDateTime.now().plusMinutes(1), false);
+        InheritableThreadLocal<AgentPlanExecutionLease> leaseHolder =
+                (InheritableThreadLocal<AgentPlanExecutionLease>) ReflectionTestUtils.getField(
+                        service, "executionLease");
+        leaseHolder.set(lease);
+        try {
+            ReflectionTestUtils.invokeMethod(
+                    service,
+                    "executeSandboxPlanStep",
+                    plan,
+                    sandbox,
+                    new ResolvedToolPolicy(List.of("sandbox_execute"), 1, 1, "worker24-test"),
+                    new AgentPlanCheckpointService.BudgetCeiling(240, 2, 1, 4),
+                    Set.of("Sort.java"),
+                    "trace-worker24");
+        } finally {
+            leaseHolder.remove();
+        }
+
+        assertThat(sandbox.getStatus()).isEqualTo(AgentPlanStepStatus.FAILED.name());
+        assertThat(sandbox.getErrorMessage())
+                .contains("SANDBOX_PREPARE_FAILED", "phase=MATERIALIZE", "code=INVALID_PATH")
+                .doesNotContain("worker failed unexpectedly");
+        ArgumentCaptor<AgentPlanEvent> event = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(runLeases).saveOwnedEvent(eq(lease), event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo("sandbox_execution_prepare_failed");
+        JsonNode payload = objectMapper.readTree(event.getValue().getPayloadJson());
+        assertThat(payload.path("phase").asText()).isEqualTo("MATERIALIZE");
+        assertThat(payload.path("code").asText()).isEqualTo("INVALID_PATH");
+        assertThat(payload.path("requestedPaths").toString()).contains("Sort.java");
+        assertThat(payload.path("resolvedPaths").toString()).contains("src/main/java/Sort.java");
+        assertThat(payload.path("missingPaths").toString()).contains("Sort.java");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void sandboxStepFailsClosedWhenPersistedCandidateArtifactCannotBeResolved() {
+        AgentPlanStep candidate = new AgentPlanStep(PLAN_ID, "candidate", 1, "Candidate",
+                "Propose src/main/java/xhs_1111.java", "TOOL", "[]",
+                "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run src/main/java/xhs_1111.java", "SANDBOX_EXECUTE", "[\"candidate\"]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(candidate, "id", 201L);
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(candidate, sandbox));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, candidate.getId(), "step_governed_candidate_proposed",
+                        "{\"artifactId\":27,\"applicationStatus\":\"NOT_APPLIED\"}")));
+        when(candidateArtifacts.getCurrent(USER_ID, 27L)).thenReturn(null);
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(
+                service, "sandboxCandidate", plan, sandbox))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Candidate artifact could not be resolved");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void sandboxStepForExistingProjectFileDoesNotRequireCandidate() {
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 1, "Sandbox",
+                "Run src/main/java/xhs_1111.java", "SANDBOX_EXECUTE", "[]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(sandbox));
+
+        CandidateArtifactResponse resolved = ReflectionTestUtils.invokeMethod(
+                service, "sandboxCandidate", plan, sandbox);
+
+        assertThat(resolved).isNull();
+        verify(events, never()).findByPlanIdOrderByCreatedAtAsc(anyLong());
+        verify(candidateArtifacts, never()).getCurrent(anyLong(), anyLong());
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void governedNonZeroSandboxReceiptExposesCompilerErrorAsUntrustedRepairContext() {
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run src/main/java/Sort.java", "SANDBOX_EXECUTE", "[]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        sandbox.markFailed("SANDBOX_FAILED", """
+                Sandbox receipt digest; provider=e2b; status=FAILED; exitCode=1
+                stdout:
+
+                stderr:
+                src/main/java/Sort.java:1: error: package ch.qos.logback.core.rolling does not exist
+                """);
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, sandbox.getId(), "sandbox_execution_failed",
+                        "{\"status\":\"FAILED\",\"exitCode\":1,\"provider\":\"e2b\"}")));
+
+        boolean repairable = ReflectionTestUtils.invokeMethod(
+                service, "sandboxUserCodeFailure", PLAN_ID, sandbox);
+        String context = ReflectionTestUtils.invokeMethod(
+                service, "buildRepairContext", plan, List.of(sandbox), sandbox, true);
+
+        assertThat(repairable).isTrue();
+        assertThat(context)
+                .contains("SANDBOX_USER_CODE_FAILURE")
+                .contains("package ch.qos.logback.core.rolling does not exist")
+                .contains("untrusted compiler/runtime data")
+                .contains("NOT_APPLIED")
+                .contains("Do not modify the Project");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void providerDiagnosticSandboxFailureNeverBecomesCodeRepair() {
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run src/main/java/Sort.java", "SANDBOX_EXECUTE", "[]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(sandbox, "id", 202L);
+        sandbox.markFailed("SANDBOX_FAILED", "provider failed");
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, sandbox.getId(), "sandbox_execution_failed",
+                        "{\"status\":\"FAILED\",\"exitCode\":70,\"provider\":\"e2b\","
+                                + "\"failurePhase\":\"EXECUTE\",\"providerErrorType\":\"TimeoutError\"}")));
+
+        boolean repairable = ReflectionTestUtils.invokeMethod(
+                service, "sandboxUserCodeFailure", PLAN_ID, sandbox);
+        boolean terminal = ReflectionTestUtils.invokeMethod(
+                service, "terminalSandboxExecutionFailure", PLAN_ID, sandbox);
+
+        assertThat(repairable).isFalse();
+        assertThat(terminal).isTrue();
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void repairedSandboxUsesOnlyItsDirectReplacementCandidate() {
+        AgentPlanStep originalCandidate = new AgentPlanStep(PLAN_ID, "candidate", 1, "Candidate",
+                "Original candidate", "TOOL", "[]", "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep repairedCandidate = new AgentPlanStep(PLAN_ID, "repair_candidate", 3, "Repair Candidate",
+                "Correct compiler error", "TOOL", "[]", "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep repairedSandbox = new AgentPlanStep(PLAN_ID, "repair_sandbox", 4, "Sandbox",
+                "Run src/main/java/Sort.java", "SANDBOX_EXECUTE", "[\"repair_candidate\"]",
+                "[\"sandbox_execute\"]", "Receipt");
+        ReflectionTestUtils.setField(originalCandidate, "id", 201L);
+        ReflectionTestUtils.setField(repairedCandidate, "id", 203L);
+        ReflectionTestUtils.setField(repairedSandbox, "id", 204L);
+        CandidateArtifactResponse repairedArtifact = org.mockito.Mockito.mock(CandidateArtifactResponse.class);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID))
+                .thenReturn(List.of(originalCandidate, repairedCandidate, repairedSandbox));
+        when(events.findByPlanIdOrderByCreatedAtAsc(PLAN_ID)).thenReturn(List.of(
+                new AgentPlanEvent(PLAN_ID, originalCandidate.getId(), "step_governed_candidate_proposed",
+                        "{\"artifactId\":27}"),
+                new AgentPlanEvent(PLAN_ID, repairedCandidate.getId(), "step_governed_candidate_proposed",
+                        "{\"artifactId\":28}")));
+        when(candidateArtifacts.getCurrent(USER_ID, 28L)).thenReturn(repairedArtifact);
+
+        CandidateArtifactResponse resolved = ReflectionTestUtils.invokeMethod(
+                service, "sandboxCandidate", plan, repairedSandbox);
+
+        assertThat(resolved).isSameAs(repairedArtifact);
+        verify(candidateArtifacts).getCurrent(USER_ID, 28L);
+        verify(candidateArtifacts, never()).getCurrent(USER_ID, 27L);
     }
 
     @Test
@@ -450,10 +748,36 @@ class PlanAgentServiceTest {
                         List.of("search_web"), 6, 1, "current_policy"));
 
         ResolvedToolPolicy repairPolicy = ReflectionTestUtils.invokeMethod(
-                service, "resolveRepairToolPolicy", plan, List.of(legacy), null, null);
+                service, "resolveRepairToolPolicy", plan, List.of(legacy), null, null, false);
 
         assertThat(repairPolicy.allowedTools()).isEmpty();
         assertThat(repairPolicy.reason()).contains("unknown_plan_ceiling_deny_all");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void sandboxCodeRepairRestoresCandidateToolWithinCurrentUserAuthority() {
+        ReflectionTestUtils.setField(plan, "goal",
+                "\u7ed9\u8fd9\u4efd\u4ee3\u7801\u52a0\u5165\u5f52\u5e76\u6392\u5e8f\uff0c\u5e76\u5728\u6c99\u7bb1\u91cc\u6d4b\u8bd5");
+        AgentPlanStep read = newStep("read", 1, List.of(), "[\"project_read_file\"]");
+        AgentPlanStep sandbox = new AgentPlanStep(PLAN_ID, "sandbox", 2, "Sandbox",
+                "Run Sort.java", "SANDBOX_EXECUTE", "[\"read\"]", "[\"sandbox_execute\"]", "exit 0");
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file", "project_propose_candidate", "sandbox_execute"),
+                12, 1, "project"));
+
+        ResolvedToolPolicy repairPolicy = ReflectionTestUtils.invokeMethod(
+                service, "resolveRepairToolPolicy", plan, List.of(read, sandbox), null,
+                new ProjectRuntimeContext(USER_ID, 42L), true);
+        PlanningAgentPlanner.StepSpec candidateRepair = new PlanningAgentPlanner.StepSpec(
+                "candidate", "Correct Candidate", "Create a corrected Candidate after compile failure",
+                "TOOL", List.of("read"), List.of("project_read_file"), "Candidate remains NOT_APPLIED",
+                new PlanningAgentPlanner.StepBudget(4, 3));
+        List<String> stepTools = ReflectionTestUtils.invokeMethod(
+                service, "repairStepAllowedTools", candidateRepair, true);
+
+        assertThat(repairPolicy.allowedTools()).contains("project_propose_candidate");
+        assertThat(stepTools).contains("project_propose_candidate");
     }
 
     @Test
@@ -857,6 +1181,69 @@ class PlanAgentServiceTest {
         assertThat(evidence.get(0).path("endLine").asInt()).isEqualTo(7);
         assertThat(evidence.get(0).path("parserVersion").asText()).isEqualTo("project-read-file@1");
         assertThat(evidence.get(0).path("versionStatus").asText()).isEqualTo("VERIFIED");
+    }
+
+    @Test
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    void projectReadFileStepResolvesUniqueBasenameToCanonicalManifestPath() throws Exception {
+        String hash = "e".repeat(64);
+        String projectVersion = "b".repeat(64);
+        String canonicalPath = "src/main/java/Sort.java";
+        ReflectionTestUtils.setField(plan, "rawPlanJson", ProjectPlanEnvelope.wrap(
+                objectMapper, "{}", new ProjectRuntimeContext(USER_ID, 42L)));
+        AgentPlanStep step = new AgentPlanStep(
+                PLAN_ID,
+                "read-sort",
+                1,
+                "Read Sort.java",
+                "Use project_read_file to read Sort.java as current trusted evidence.",
+                "FILE_READ",
+                "[]",
+                "[\"project_read_file\"]",
+                "Sort.java has a current version, hash, line range, and parser provenance."
+        );
+        ReflectionTestUtils.setField(step, "id", 1L);
+        when(steps.findByPlanIdOrderBySortOrderAsc(PLAN_ID)).thenReturn(List.of(step));
+        when(projectService.manifest(USER_ID, 42L)).thenReturn(new ProjectManifestResponse(
+                42L, projectVersion, List.of(new ProjectFileEntry(canonicalPath, 2_689, Instant.EPOCH, hash))));
+        when(toolPolicyEngine.decideProject(any(), any())).thenReturn(new AgentToolPolicyEngine.Decision(
+                List.of("project_read_file"), 3, 1, "project"));
+        com.yanban.core.model.ToolCall call = new com.yanban.core.model.ToolCall(
+                "read-sort-call", "function",
+                new com.yanban.core.model.ToolCall.FunctionCall(
+                        "project_read_file", "{\"relativePath\":\"" + canonicalPath + "\"}"));
+        String result = "{\"projectId\":42,\"projectVersion\":\"" + projectVersion
+                + "\",\"relativePath\":\"" + canonicalPath + "\",\"hash\":\"" + hash
+                + "\",\"version\":\"" + hash + "\",\"startLine\":1,\"endLine\":98,"
+                + "\"parserVersion\":\"project-read-file@1\","
+                + "\"evidenceRefs\":[\"read-sort-ref\"]}";
+        when(agentRuntimeService.run(any(AgentRuntimeRequest.class))).thenReturn(new AgentRuntimeResult(
+                true,
+                "Sort.java content was read.",
+                List.of(new ChatMessage("assistant", null, List.of(call), null),
+                        ChatMessage.tool("read-sort-call", result)),
+                2,
+                null,
+                List.of("step=1 tool=project_read_file success=true"),
+                List.of(),
+                null,
+                null,
+                null
+        ));
+        when(stepVerifier.verify(any())).thenReturn(PlanStepVerifier.VerificationResult.passed("ok"));
+
+        AgentPlanResponse response = service.executePlan(USER_ID, PLAN_ID);
+
+        assertThat(response.status()).isEqualTo(AgentPlanStatus.COMPLETED.name());
+        assertThat(step.getStatus()).isEqualTo(AgentPlanStepStatus.COMPLETED.name());
+        ArgumentCaptor<AgentPlanEvent> eventsCaptor = ArgumentCaptor.forClass(AgentPlanEvent.class);
+        verify(events, atLeast(1)).save(eventsCaptor.capture());
+        assertThat(eventsCaptor.getAllValues())
+                .anySatisfy(event -> {
+                    assertThat(event.getEventType()).isEqualTo("step_project_evidence");
+                    assertThat(event.getPayloadJson()).contains(canonicalPath, projectVersion, hash);
+                })
+                .noneSatisfy(event -> assertThat(event.getEventType()).isEqualTo("step_evidence_insufficient"));
     }
 
     @Test

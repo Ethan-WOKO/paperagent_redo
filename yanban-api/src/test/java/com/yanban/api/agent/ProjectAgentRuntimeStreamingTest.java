@@ -76,7 +76,7 @@ class ProjectAgentRuntimeStreamingTest {
         verify(agentService).sendProjectMessageStreaming(
                 eq(7L), eq(34L), eq(request), context.capture(),
                 org.mockito.Mockito.<Consumer<String>>any(), org.mockito.Mockito.<Consumer<String>>any());
-        assertThat(context.getValue()).isEqualTo(new ProjectRuntimeContext(7L, 18L));
+        assertThat(context.getValue()).isEqualTo(new ProjectRuntimeContext(7L, 18L, "manifest-hash"));
     }
 
     @Test

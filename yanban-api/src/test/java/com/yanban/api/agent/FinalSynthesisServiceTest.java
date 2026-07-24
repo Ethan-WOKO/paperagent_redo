@@ -4,16 +4,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yanban.api.memory.LongTermMemoryRetrievalService;
+import com.yanban.api.agent.sandbox.CandidateArtifactResponse;
 import com.yanban.api.project.ProjectService;
 import com.yanban.api.project.ProjectFileResponse;
 import com.yanban.api.settings.UserSettingsService;
+import com.yanban.core.agent.AgentPlanEvent;
 import com.yanban.core.agent.AgentPlan;
 import com.yanban.core.agent.AgentPlanStep;
 import com.yanban.core.agent.AgentSession;
+import com.yanban.core.agent.sandbox.CandidateChangeSet;
+import com.yanban.core.agent.sandbox.CandidateFileChange;
+import com.yanban.core.agent.sandbox.CandidateTextPayload;
+import com.yanban.core.research.ProjectRelativePath;
 import com.yanban.core.model.ChatMessage;
 import com.yanban.core.model.ChatModelProvider;
 import com.yanban.core.model.ChatRequest;
@@ -64,6 +71,45 @@ class FinalSynthesisServiceTest {
     }
 
     @Test
+    void successfulSandboxAppendsExactExecutedNotAppliedCandidateCode() {
+        Fixture fixture = fixture(2_000);
+        when(fixture.models.chat(any())).thenReturn(response("执行成功，输出为 42。"));
+        AgentPlanStep candidateStep = new AgentPlanStep(21L, "candidate", 1, "Candidate",
+                "Create replacement", "TOOL", "[]", "[\"project_propose_candidate\"]", "NOT_APPLIED");
+        AgentPlanStep sandboxStep = new AgentPlanStep(21L, "sandbox", 2, "Run",
+                "Run Main.java", "SANDBOX_EXECUTE", "[\"candidate\"]", "[\"sandbox_execute\"]", "exit 0");
+        ReflectionTestUtils.setField(candidateStep, "id", 31L);
+        ReflectionTestUtils.setField(sandboxStep, "id", 32L);
+        candidateStep.markCompleted("Candidate created.");
+        sandboxStep.markCompleted("Sandbox receipt succeeded.");
+        String source = "public class Main { public static void main(String[] args) { System.out.println(42); } }";
+        CandidateFileChange change = mock(CandidateFileChange.class);
+        CandidateTextPayload payload = CandidateTextPayload.fromText(source);
+        when(change.type()).thenReturn(CandidateFileChange.Type.MODIFY);
+        when(change.relativePath()).thenReturn(new ProjectRelativePath("Main.java"));
+        when(change.resultFileHash()).thenReturn(payload.contentHash());
+        when(change.candidateText()).thenReturn(payload);
+        CandidateArtifactResponse artifact = mock(CandidateArtifactResponse.class);
+        when(artifact.applicationStatus()).thenReturn(CandidateChangeSet.ApplicationStatus.NOT_APPLIED);
+        when(artifact.changes()).thenReturn(List.of(change));
+        when(fixture.candidates.getCurrent(1L, 77L)).thenReturn(artifact);
+        List<AgentPlanEvent> events = List.of(
+                new AgentPlanEvent(21L, 31L, "step_governed_candidate_proposed", "{\"artifactId\":77}"),
+                new AgentPlanEvent(21L, 32L, "step_project_evidence",
+                        "{\"status\":\"SUCCEEDED\",\"exitCode\":0,\"provider\":\"e2b\"}"));
+        FinalSynthesisInput input = input("SUCCESS", "SUCCESS", EvidenceStatus.SUPPORTED,
+                new ExecutionFact("e2b", "SUCCEEDED", 0, false, List.of("java", "Main.java"),
+                        "42", "", null, null, null, null));
+
+        String answer = fixture.service.synthesize(fixture.plan, fixture.session,
+                List.of(candidateStep, sandboxStep), events, projection(fixture.plan, input), "trace");
+
+        assertThat(answer)
+                .contains("尚未应用到 Project", "path=Main.java", source);
+        verify(fixture.candidates).getCurrent(1L, 77L);
+    }
+
+    @Test
     void contradictoryFailureSummaryIsRejectedAndDeterministicFallbackKeepsReceiptFacts() {
         Fixture fixture = fixture(2_000);
         when(fixture.models.chat(any())).thenReturn(response("Execution succeeded and completed successfully."));
@@ -76,6 +122,56 @@ class FinalSynthesisServiceTest {
         assertThat(answer)
                 .contains("executionOutcome=FAILED", "status=FAILED", "exitCode=17", "partial", "boom")
                 .doesNotContain("Execution succeeded", "Review the Plan card");
+    }
+
+    @Test
+    void emptyProviderFailureDoesNotCallModelOrGuessCodeCause() {
+        Fixture fixture = fixture(2_000);
+        when(fixture.models.chat(any())).thenReturn(response(
+                "The classpath or source imports probably caused the failure."));
+        FinalSynthesisInput input = input("FAILED", "FAILED", EvidenceStatus.UNVERIFIED,
+                new ExecutionFact("e2b", "FAILED", null, false,
+                        List.of("java", "Sort.java"), "", ""));
+
+        String answer = fixture.service.synthesize(fixture.plan, fixture.session, List.of(fixture.step), List.of(),
+                projection(fixture.plan, input), "trace-21");
+
+        assertThat(answer).contains("executionOutcome=FAILED", "status=FAILED", "exitCode=unknown")
+                .doesNotContain("classpath", "source imports", "probably caused");
+        verifyNoInteractions(fixture.models);
+    }
+
+    @Test
+    void failedStepPromptKeepsAuthoritativeErrorWhenAResultSummaryAlsoExists() {
+        Fixture fixture = fixture(2_000);
+        String error = "INSUFFICIENT_EVIDENCE: Project step completed without a current authorized file observation.";
+        fixture.plan.markFailed("Step read-sort failed: " + error);
+        AgentPlanStep failedRead = new AgentPlanStep(
+                21L,
+                "read-sort",
+                1,
+                "Read Sort.java",
+                "Read Sort.java",
+                "FILE_READ",
+                "[]",
+                "[\"project_read_file\"]",
+                "Current trusted evidence exists."
+        );
+        ReflectionTestUtils.setField(failedRead, "id", 23L);
+        failedRead.markFailed(error, "Sort.java content was read and summarized.");
+        when(fixture.models.chat(any())).thenReturn(response(
+                "The server rejected the completed file-read step because its current Project evidence was insufficient."));
+        FinalSynthesisInput input = new FinalSynthesisInput(
+                "UNAVAILABLE", "FAILED", EvidenceStatus.UNVERIFIED, List.of(), VerificationScope.standard());
+
+        String answer = fixture.service.synthesize(fixture.plan, fixture.session, List.of(failedRead), List.of(),
+                projection(fixture.plan, input), "trace-21");
+
+        ArgumentCaptor<ChatRequest> request = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(fixture.models).chat(request.capture());
+        assertThat(request.getValue().messages().get(1).content())
+                .contains("Authoritative Plan failure", error, "Sort.java content was read and summarized.");
+        assertThat(answer).contains("Authoritative Plan failure", error);
     }
 
     @Test
@@ -210,6 +306,7 @@ class FinalSynthesisServiceTest {
         ChatModelProvider models = mock(ChatModelProvider.class);
         UserSettingsService settings = mock(UserSettingsService.class);
         LongTermMemoryRetrievalService memories = mock(LongTermMemoryRetrievalService.class);
+        CandidateChangeArtifactService candidates = mock(CandidateChangeArtifactService.class);
         when(memories.retrieve(any(), any())).thenReturn(AgentLongTermMemoryContext.empty());
         when(settings.resolveModelEndpoint(1L, "test", "model")).thenReturn(
                 new UserSettingsService.ModelEndpoint("test", "model", null, "key", "test", "Test"));
@@ -224,8 +321,8 @@ class FinalSynthesisServiceTest {
         step.markCompleted("Main printed its result.");
         ProjectService projects = mock(ProjectService.class);
         FinalSynthesisService service = new FinalSynthesisService(models, settings, memories,
-                projects, new ObjectMapper(), timeoutMillis, executor);
-        return new Fixture(service, models, settings, memories, projects, plan, session, step);
+                projects, candidates, new ObjectMapper(), timeoutMillis, executor);
+        return new Fixture(service, models, settings, memories, projects, candidates, plan, session, step);
     }
 
     private FinalSynthesisInput input(String execution, String task, EvidenceStatus answer, ExecutionFact fact) {
@@ -250,6 +347,7 @@ class FinalSynthesisServiceTest {
                            UserSettingsService settings,
                            LongTermMemoryRetrievalService memories,
                            ProjectService projects,
+                           CandidateChangeArtifactService candidates,
                            AgentPlan plan,
                            AgentSession session,
                            AgentPlanStep step) {
